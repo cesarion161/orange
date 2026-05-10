@@ -1,0 +1,49 @@
+services:
+  postgres:
+    image: 'postgres:18-alpine'
+    environment:
+      - 'POSTGRES_DB=orange'
+      - 'POSTGRES_PASSWORD=secret'
+      - 'POSTGRES_USER=orange'
+    ports:
+      - '5432:5432'
+    volumes:
+      - ./.docker/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U orange']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  temporal:
+    image: 'temporalio/auto-setup:1.x'
+    environment:
+      - 'DB=postgres12'
+      - 'DB_PORT=5432'
+      - 'POSTGRES_USER=orange'
+      - 'POSTGRES_PWD=secret'
+      - 'POSTGRES_SEEDS=postgres'
+      - 'DBNAME=temporal'
+      - 'VISIBILITY_DBNAME=temporal_visibility'
+    ports:
+      - '7233:7233'
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  temporal-ui:
+    image: 'temporalio/ui:latest'
+    environment:
+      - 'TEMPORAL_ADDRESS=temporal:7233'
+      - 'TEMPORAL_CORS_ORIGINS=http://localhost:3000'
+    ports:
+      - '8233:8080'
+    depends_on:
+      - temporal
+
+  grafana-lgtm:
+    image: 'grafana/otel-lgtm:latest'
+    ports:
+      - '3001:3000'   # Grafana UI (moved off 3000 to keep that range for dev envs)
+      - '4317:4317'   # OTLP gRPC
+      - '4318:4318'   # OTLP HTTP

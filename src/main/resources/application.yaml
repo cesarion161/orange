@@ -1,0 +1,44 @@
+spring:
+  application:
+    name: orange
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    hikari:
+      maximum-pool-size: 30
+  flyway:
+    locations: classpath:db/migration
+  ai:
+    anthropic:
+      api-key: ${ANTHROPIC_API_KEY:}
+  temporal:
+    connection:
+      target: ${TEMPORAL_TARGET:local}
+    namespace: ${TEMPORAL_NAMESPACE:default}
+    workers-auto-discovery:
+      packages:
+        - com.ai.orange.workflow
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+orange:
+  agent-runner:
+    python: ${AGENT_RUNNER_PYTHON:../agent-runner/.venv/bin/python}
+    module: agent_runner
+  worktrees:
+    root: ${WORKTREES_ROOT:./.worktrees}
+  github:
+    webhook-secret: ${GITHUB_WEBHOOK_SECRET:}
+    webhook-path: /webhooks/github
+
+gg:
+  jte:
+    development-mode: true
