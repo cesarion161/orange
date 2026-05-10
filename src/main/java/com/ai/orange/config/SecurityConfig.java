@@ -6,10 +6,12 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 @Configuration
+@EnableWebSecurity
 @EnableConfigurationProperties(GithubWebhookProperties.class)
 public class SecurityConfig {
 
@@ -26,6 +28,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/actuator/health", "/actuator/info", "/actuator/prometheus").permitAll()
                         .requestMatchers("/webhooks/github").permitAll()  // HMAC filter authenticates instead
+                        .requestMatchers("/error").permitAll()             // Tomcat forwards here on sendError(); must not denyAll
                         .requestMatchers("/", "/dashboard/**", "/htmx/**", "/static/**", "/webjars/**").permitAll()
                         .anyRequest().denyAll()
                 )

@@ -36,7 +36,6 @@ dependencies {
     implementation("org.springframework.ai:spring-ai-starter-model-anthropic")
     implementation("io.temporal:temporal-spring-boot-starter-alpha:${property("temporalVersion")}")
     implementation("org.kohsuke:github-api:1.330")
-    implementation("me.paulschwarz:spring-dotenv:5.1.0")
     compileOnly("org.projectlombok:lombok")
     developmentOnly("org.springframework.boot:spring-boot-devtools")
     developmentOnly("org.springframework.boot:spring-boot-docker-compose")
@@ -67,6 +66,35 @@ dependencyManagement {
 jte {
     generate()
     binaryStaticContent = true
+}
+
+// Load .env into the bootRun task and tests so secrets stay out of source/control
+// while still being picked up by `./gradlew bootRun` and `./gradlew test`.
+fun parseDotEnv(): Map<String, String> {
+    val f = file(".env")
+    if (!f.exists()) return emptyMap()
+    return f.readLines()
+        .map { it.trim() }
+        .filter { it.isNotBlank() && !it.startsWith("#") }
+        .mapNotNull { line ->
+            val idx = line.indexOf('=')
+            if (idx < 1) null
+            else {
+                val key = line.substring(0, idx).trim()
+                val rawValue = line.substring(idx + 1).trim()
+                val value = when {
+                    rawValue.startsWith("\"") && rawValue.endsWith("\"") -> rawValue.substring(1, rawValue.length - 1)
+                    rawValue.startsWith("'") && rawValue.endsWith("'") -> rawValue.substring(1, rawValue.length - 1)
+                    else -> rawValue
+                }
+                key to value
+            }
+        }
+        .toMap()
+}
+
+tasks.named<org.springframework.boot.gradle.tasks.run.BootRun>("bootRun") {
+    parseDotEnv().forEach { (k, v) -> environment(k, v) }
 }
 
 tasks.withType<Test> {
