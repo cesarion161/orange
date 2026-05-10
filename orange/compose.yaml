@@ -16,7 +16,7 @@ services:
       retries: 10
 
   temporal:
-    image: 'temporalio/auto-setup:1.x'
+    image: 'temporalio/auto-setup:1.29.6.1'
     environment:
       - 'DB=postgres12'
       - 'DB_PORT=5432'
@@ -44,6 +44,6 @@ services:
   grafana-lgtm:
     image: 'grafana/otel-lgtm:latest'
     ports:
-      - '3001:3000'   # Grafana UI (moved off 3000 to keep that range for dev envs)
+      - '3010:3000'   # Grafana UI (away from 3000-3004 dev range and from 3001 which is often used by Node dev servers)
       - '4317:4317'   # OTLP gRPC
       - '4318:4318'   # OTLP HTTP
