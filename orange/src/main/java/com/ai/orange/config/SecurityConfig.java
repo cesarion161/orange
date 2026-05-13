@@ -35,6 +35,7 @@ public class SecurityConfig {
                         .requestMatchers("/dev-envs", "/dev-envs/**").permitAll()
                         .requestMatchers("/concurrency").permitAll()
                         .requestMatchers("/health/**").permitAll()
+                        .requestMatchers("/api/version").permitAll()
                         .anyRequest().denyAll()
                 )
                 .addFilterBefore(hmacFilter, UsernamePasswordAuthenticationFilter.class)
