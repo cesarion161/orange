@@ -1,8 +1,7 @@
 package com.ai.orange.config;
 
+import com.ai.orange.github.GithubProperties;
 import com.ai.orange.webhook.GithubWebhookHmacFilter;
-import com.ai.orange.webhook.GithubWebhookProperties;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -12,11 +11,10 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 
 @Configuration
 @EnableWebSecurity
-@EnableConfigurationProperties(GithubWebhookProperties.class)
 public class SecurityConfig {
 
     @Bean
-    public GithubWebhookHmacFilter githubWebhookHmacFilter(GithubWebhookProperties props) {
+    public GithubWebhookHmacFilter githubWebhookHmacFilter(GithubProperties props) {
         return new GithubWebhookHmacFilter(props);
     }
 
@@ -30,6 +28,13 @@ public class SecurityConfig {
                         .requestMatchers("/webhooks/github").permitAll()  // HMAC filter authenticates instead
                         .requestMatchers("/error").permitAll()             // Tomcat forwards here on sendError(); must not denyAll
                         .requestMatchers("/", "/dashboard/**", "/htmx/**", "/static/**", "/webjars/**").permitAll()
+                        .requestMatchers("/tasks", "/tasks/**").permitAll()  // operator-driven; auth lands later
+                        .requestMatchers("/plans", "/plans/**").permitAll()  // operator-driven; auth lands later
+                        .requestMatchers("/claims", "/claims/**").permitAll()  // chat-as-executor; auth lands later
+                        .requestMatchers("/events/**").permitAll()           // live narration feed
+                        .requestMatchers("/dev-envs", "/dev-envs/**").permitAll()
+                        .requestMatchers("/concurrency").permitAll()
+                        .requestMatchers("/health/**").permitAll()
                         .anyRequest().denyAll()
                 )
                 .addFilterBefore(hmacFilter, UsernamePasswordAuthenticationFilter.class)

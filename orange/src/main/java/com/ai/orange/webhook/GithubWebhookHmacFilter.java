@@ -1,5 +1,6 @@
 package com.ai.orange.webhook;
 
+import com.ai.orange.github.GithubProperties;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -27,7 +28,7 @@ public class GithubWebhookHmacFilter extends OncePerRequestFilter {
     private final String secret;
     private final String path;
 
-    public GithubWebhookHmacFilter(GithubWebhookProperties props) {
+    public GithubWebhookHmacFilter(GithubProperties props) {
         this.secret = props.webhookSecret();
         this.path = props.webhookPath();
     }

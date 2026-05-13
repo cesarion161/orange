@@ -1,7 +1,10 @@
 package com.ai.orange.webhook;
 
+import com.ai.orange.github.GithubProperties;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.http.HttpServletResponse;
+import java.time.Duration;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
@@ -24,7 +27,11 @@ class GithubWebhookHmacFilterTest {
     private static final String BODY = "{\"action\":\"opened\"}";
 
     private final GithubWebhookHmacFilter filter =
-            new GithubWebhookHmacFilter(new GithubWebhookProperties(SECRET, PATH));
+            new GithubWebhookHmacFilter(props(SECRET, PATH));
+
+    private static GithubProperties props(String secret, String path) {
+        return new GithubProperties("", "", "main", List.of(), Duration.ofDays(7), secret, path);
+    }
 
     @Test
     void valid_signature_passes_through() throws Exception {
@@ -65,7 +72,7 @@ class GithubWebhookHmacFilterTest {
     @Test
     void unconfigured_secret_yields_503() throws Exception {
         GithubWebhookHmacFilter unconfigured =
-                new GithubWebhookHmacFilter(new GithubWebhookProperties("", PATH));
+                new GithubWebhookHmacFilter(props("", PATH));
         MockHttpServletRequest req = makeRequest(sign(BODY, SECRET));
         MockHttpServletResponse res = new MockHttpServletResponse();
         FilterChain chain = mock(FilterChain.class);

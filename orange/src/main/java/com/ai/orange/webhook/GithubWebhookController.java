@@ -1,5 +1,6 @@
 package com.ai.orange.webhook;
 
+import com.ai.orange.github.GithubEventRouter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
@@ -13,6 +14,12 @@ public class GithubWebhookController {
 
     private static final Logger log = LoggerFactory.getLogger(GithubWebhookController.class);
 
+    private final GithubEventRouter router;
+
+    public GithubWebhookController(GithubEventRouter router) {
+        this.router = router;
+    }
+
     @PostMapping("/webhooks/github")
     public ResponseEntity<Void> receive(
             @RequestHeader(name = "X-GitHub-Event", required = false) String event,
@@ -20,8 +27,12 @@ public class GithubWebhookController {
             @RequestBody(required = false) String payload) {
         log.info("GitHub webhook accepted: event={} delivery={} bytes={}",
                 event, delivery, payload == null ? 0 : payload.length());
-        // TODO: route to a Temporal signal (`signal_workflow`) based on event type
-        // (pull_request_review, issue_comment, pull_request.closed, …).
+        try {
+            router.route(event, payload);
+        } catch (Exception e) {
+            // We always return 202 so GitHub stops retrying; failures are logged.
+            log.error("webhook router threw on event={} delivery={}", event, delivery, e);
+        }
         return ResponseEntity.accepted().build();
     }
 }
