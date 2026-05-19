@@ -81,6 +81,15 @@ public class DevEnvRepository {
         return dsl.fetchCount(DEV_ENVS, DEV_ENVS.STATUS.eq(status.dbValue()));
     }
 
+    /** All envs currently in {@link DevEnvStatus#LEASED}. Used by the auto-releaser sweep. */
+    public List<DevEnv> findLeased() {
+        return dsl.selectFrom(DEV_ENVS)
+                .where(DEV_ENVS.STATUS.eq(DevEnvStatus.LEASED.dbValue()))
+                .orderBy(DEV_ENVS.LEASED_AT.asc())
+                .fetch()
+                .map(DevEnvRepository::toDomain);
+    }
+
     /** All envs, ordered by name. Used by {@code GET /dev-envs} for status views. */
     public List<DevEnv> findAll() {
         return dsl.selectFrom(DEV_ENVS)

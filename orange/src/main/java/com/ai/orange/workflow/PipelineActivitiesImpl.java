@@ -28,7 +28,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.OffsetDateTime;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -104,15 +103,10 @@ public class PipelineActivitiesImpl implements PipelineActivities {
             DevEnv env = devEnvs.acquire("task-" + taskId, envAcquireTimeout)
                     .orElseThrow(() -> new IllegalStateException(
                             "dev_env acquire timed out after " + envAcquireTimeout + " for task " + taskId));
-            Map<String, Integer> ports = parsePorts(env);
-            Map<String, Object> meta = parseMetadata(env);
-            String dataDir = (String) meta.get("data_dir");
-            String authBypassToken = (String) meta.get("auth_bypass_token");
-            String fixtureSet = (String) meta.get("fixture_set");
             taskEvents.append(taskId, "orchestrator", "env_acquired", JSONB.valueOf(
                     "{\"env_id\":\"" + env.id() + "\",\"env_name\":" + jsonString(env.name()) + "}"));
             log.info("acquired env {} for task {}", env.name(), taskId);
-            info = new EnvInfo(env.id(), env.name(), ports, dataDir, authBypassToken, fixtureSet);
+            info = EnvInfo.from(env);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new RuntimeException("acquireDevEnv interrupted for task " + taskId, e);
@@ -304,32 +298,6 @@ public class PipelineActivitiesImpl implements PipelineActivities {
             sb.append("\n\n--- Previous attempt's QA report ---\n").append(augmentation);
         }
         return sb.toString();
-    }
-
-    private static Map<String, Integer> parsePorts(DevEnv env) {
-        if (env.ports() == null) return Map.of();
-        try {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> raw = ProtocolCodec.mapper().readValue(env.ports().data(), Map.class);
-            Map<String, Integer> out = new LinkedHashMap<>();
-            for (Map.Entry<String, Object> e : raw.entrySet()) {
-                if (e.getValue() instanceof Number n) out.put(e.getKey(), n.intValue());
-            }
-            return out;
-        } catch (Exception ex) {
-            return Map.of();
-        }
-    }
-
-    private static Map<String, Object> parseMetadata(DevEnv env) {
-        if (env.metadata() == null) return Map.of();
-        try {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> out = ProtocolCodec.mapper().readValue(env.metadata().data(), Map.class);
-            return out == null ? Map.of() : out;
-        } catch (Exception ex) {
-            return Map.of();
-        }
     }
 
     private void persistEvent(UUID taskId, String actor, Event event,
