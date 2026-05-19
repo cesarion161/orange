@@ -36,6 +36,7 @@ public class SecurityConfig {
                         .requestMatchers("/concurrency").permitAll()
                         .requestMatchers("/health/**").permitAll()
                         .requestMatchers("/api/status").permitAll()  // dev_qa pipeline smoke check
+                        .requestMatchers("/api/ready").permitAll()  // smoke / readiness probe
                         .anyRequest().denyAll()
                 )
                 .addFilterBefore(hmacFilter, UsernamePasswordAuthenticationFilter.class)
