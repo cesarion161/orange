@@ -48,6 +48,11 @@ orange:
   worktrees:
     root: ${WORKTREES_ROOT:./.worktrees}
     base-repo: ${WORKTREES_BASE_REPO:}
+    # Branch every new worktree is branched off. Should match
+    # orange.github.base-branch so worktrees and PRs share a trunk; if the
+    # base repo has an `origin` remote, the service fetches this branch
+    # before branching so stale local refs never become the base.
+    base-branch: ${WORKTREES_BASE_BRANCH:${ORANGE_GITHUB_BASE_BRANCH:main}}
     max-count: ${WORKTREES_MAX_COUNT:20}
     disposer-delay: ${ORANGE_WORKTREE_DISPOSER_DELAY:5m}
     disposer-initial-delay: ${ORANGE_WORKTREE_DISPOSER_INITIAL_DELAY:1m}

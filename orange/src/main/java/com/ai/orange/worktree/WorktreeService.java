@@ -17,7 +17,15 @@ import org.springframework.stereotype.Service;
 
 /**
  * Manages per-task git worktrees on disk. One worktree per task UUID, rooted at
- * {@code orange.worktrees.root/<uuid>}, branched off the configured base repo.
+ * {@code orange.worktrees.root/<uuid>}, branched off
+ * {@code orange.worktrees.base-branch} (default {@code main}).
+ *
+ * <p>When the base repo has an {@code origin} remote, {@link #create} fetches
+ * the base branch from origin first and branches from {@code origin/<baseBranch>}
+ * — that way a worktree is never branched off a stale local ref. This is the
+ * load-bearing invariant: local {@code main} can lag arbitrarily behind the
+ * actual trunk on GitHub, and we don't want add/add conflicts from agents
+ * recreating files that were merged in via PRs.
  *
  * The {@code agent-runner} sandbox ({@code chdir_guard} + {@code worktree_guard}
  * in {@code hooks.py}) enforces the path boundary at the agent level — this
@@ -42,18 +50,17 @@ public class WorktreeService {
         log.info("worktree root = {}", root);
     }
 
-    public Path create(UUID taskId, String baseRef) throws IOException, InterruptedException {
-        return create(taskId, baseRef, props.baseRepo());
-    }
-
     /**
-     * Create a worktree for {@code taskId} at {@code root/<taskId>}, branched
-     * off {@code baseRef} of {@code baseRepo} on a fresh branch named
-     * {@code orange/<taskId>}. Refuses if the global worktree count is at the
-     * configured cap.
+     * Create a worktree for {@code taskId} at {@code root/<taskId>}, branched off
+     * the configured {@code orange.worktrees.base-branch} on a fresh branch
+     * named {@code orange/<taskId>}. If the base repo has an {@code origin}
+     * remote, fetches {@code baseBranch} from origin first and uses
+     * {@code origin/<baseBranch>} as the source ref. Refuses if the global
+     * worktree count is at the configured cap.
      */
-    public Path create(UUID taskId, String baseRef, String baseRepoOverride) throws IOException, InterruptedException {
-        String repo = requireBaseRepo(baseRepoOverride);
+    public Path create(UUID taskId) throws IOException, InterruptedException {
+        String repo = requireBaseRepo();
+        String baseBranch = props.baseBranch();
         Path root = rootPath();
         long existing = countExisting(root);
         if (existing >= props.maxCount()) {
@@ -65,10 +72,29 @@ public class WorktreeService {
             throw new IllegalStateException("worktree already exists: " + target);
         }
 
+        String sourceRef = resolveSourceRef(repo, baseBranch);
         String branch = "orange/" + taskId;
-        runGit(repo, List.of("worktree", "add", "-b", branch, target.toString(), baseRef));
-        log.info("created worktree taskId={} path={} baseRef={} branch={}", taskId, target, baseRef, branch);
+        runGit(repo, List.of("worktree", "add", "-b", branch, target.toString(), sourceRef));
+        log.info("created worktree taskId={} path={} sourceRef={} branch={}", taskId, target, sourceRef, branch);
         return target;
+    }
+
+    /**
+     * If the base repo has an {@code origin} remote, fetch {@code baseBranch}
+     * from origin and use {@code origin/<baseBranch>} as the source ref.
+     * Otherwise fall back to the local branch — this is the test path, where
+     * the repo is initialised with no remote.
+     */
+    private String resolveSourceRef(String repo, String baseBranch) throws IOException, InterruptedException {
+        if (!hasOriginRemote(repo)) {
+            return baseBranch;
+        }
+        runGit(repo, List.of("fetch", "--quiet", "origin", baseBranch));
+        return "origin/" + baseBranch;
+    }
+
+    private boolean hasOriginRemote(String repo) throws IOException, InterruptedException {
+        return runGitSilent(repo, List.of("remote", "get-url", "origin")) == 0;
     }
 
     /**
@@ -76,11 +102,7 @@ public class WorktreeService {
      * doesn't exist we still {@code git worktree prune} so the registry stays clean.
      */
     public void remove(UUID taskId) throws IOException, InterruptedException {
-        remove(taskId, props.baseRepo());
-    }
-
-    public void remove(UUID taskId, String baseRepoOverride) throws IOException, InterruptedException {
-        String repo = requireBaseRepo(baseRepoOverride);
+        String repo = requireBaseRepo();
         Path target = rootPath().resolve(taskId.toString()).toAbsolutePath();
         if (Files.exists(target)) {
             runGit(repo, List.of("worktree", "remove", "--force", target.toString()));
@@ -123,11 +145,10 @@ public class WorktreeService {
         return Path.of(props.root()).toAbsolutePath();
     }
 
-    private String requireBaseRepo(String override) {
-        String repo = (override != null && !override.isBlank()) ? override : props.baseRepo();
+    private String requireBaseRepo() {
+        String repo = props.baseRepo();
         if (repo == null || repo.isBlank()) {
-            throw new IllegalStateException(
-                    "orange.worktrees.base-repo is not configured; set it or pass an override");
+            throw new IllegalStateException("orange.worktrees.base-repo is not configured");
         }
         return repo;
     }
@@ -182,5 +203,22 @@ public class WorktreeService {
         if (code != 0) {
             throw new IOException("git " + args + " failed (exit " + code + "):\n" + out);
         }
+    }
+
+    /** Same as {@link #runGit} but swallows non-zero exits and returns the code. */
+    private int runGitSilent(String repo, List<String> args) throws IOException, InterruptedException {
+        List<String> cmd = new java.util.ArrayList<>(args.size() + 1);
+        cmd.add("git");
+        cmd.addAll(args);
+        Process proc = new ProcessBuilder(cmd)
+                .directory(Path.of(repo).toFile())
+                .redirectErrorStream(true)
+                .start();
+        proc.getInputStream().readAllBytes();
+        if (!proc.waitFor(GIT_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+            proc.destroyForcibly();
+            return -1;
+        }
+        return proc.exitValue();
     }
 }

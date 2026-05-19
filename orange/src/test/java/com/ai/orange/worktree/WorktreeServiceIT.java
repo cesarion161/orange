@@ -47,7 +47,7 @@ class WorktreeServiceIT {
 
     private WorktreeService service(int maxCount) throws IOException {
         WorktreeProperties props = new WorktreeProperties(
-                worktreesRoot.toString(), baseRepo.toString(), maxCount);
+                worktreesRoot.toString(), baseRepo.toString(), "main", maxCount);
         WorktreeService svc = new WorktreeService(props);
         // Manually invoke the @PostConstruct since we're not in a Spring context.
         Files.createDirectories(worktreesRoot);
@@ -59,7 +59,7 @@ class WorktreeServiceIT {
         WorktreeService svc = service(20);
         UUID taskId = UUID.randomUUID();
 
-        Path worktree = svc.create(taskId, "main");
+        Path worktree = svc.create(taskId);
         assertThat(worktree).exists().isDirectory();
         assertThat(worktree.resolve("README.md")).exists();
         assertThat(worktree.getFileName().toString()).isEqualTo(taskId.toString());
@@ -75,10 +75,10 @@ class WorktreeServiceIT {
     @Test
     void create_refuses_when_max_count_reached() throws Exception {
         WorktreeService svc = service(2);
-        svc.create(UUID.randomUUID(), "main");
-        svc.create(UUID.randomUUID(), "main");
+        svc.create(UUID.randomUUID());
+        svc.create(UUID.randomUUID());
 
-        assertThatThrownBy(() -> svc.create(UUID.randomUUID(), "main"))
+        assertThatThrownBy(() -> svc.create(UUID.randomUUID()))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("worktree cap reached");
     }
@@ -87,7 +87,7 @@ class WorktreeServiceIT {
     void gcStale_removes_non_uuid_directories_but_keeps_uuid_ones() throws Exception {
         WorktreeService svc = service(20);
         UUID legit = UUID.randomUUID();
-        svc.create(legit, "main");
+        svc.create(legit);
 
         Path stray = worktreesRoot.resolve("not-a-uuid");
         Files.createDirectories(stray);
@@ -101,12 +101,61 @@ class WorktreeServiceIT {
     }
 
     @Test
+    void create_branches_from_origin_not_stale_local_main() throws Exception {
+        // Set up a bare origin and a local clone whose `main` is intentionally
+        // 1 commit behind origin/main. Verifies the load-bearing fix: a worktree
+        // created via the service must include the upstream commit even though
+        // the local main ref doesn't see it yet.
+        Path origin = tempDir.resolve("origin.git");
+        Files.createDirectories(origin);
+        run(origin, "git", "init", "-q", "--bare", "-b", "main");
+
+        // Seed origin with an initial v1 commit pushed from a scratch tree.
+        Path remoteWork = tempDir.resolve("remote-work");
+        Files.createDirectories(remoteWork);
+        run(remoteWork, "git", "init", "-q", "-b", "main");
+        run(remoteWork, "git", "config", "user.email", "remote@example.com");
+        run(remoteWork, "git", "config", "user.name", "Remote");
+        run(remoteWork, "git", "remote", "add", "origin", origin.toString());
+        Files.writeString(remoteWork.resolve("README.md"), "v1\n");
+        run(remoteWork, "git", "add", ".");
+        run(remoteWork, "git", "commit", "-q", "-m", "v1");
+        run(remoteWork, "git", "push", "-q", "origin", "main");
+
+        // Local clone: catches up to origin/main with the v1 commit.
+        Path localClone = tempDir.resolve("local-clone");
+        Files.createDirectories(localClone);
+        run(localClone, "git", "clone", "-q", "-b", "main", origin.toString(), ".");
+        run(localClone, "git", "config", "user.email", "test@example.com");
+        run(localClone, "git", "config", "user.name", "Test");
+
+        // Upstream advances with a v2 commit. Local main stays at v1 (no pull).
+        Files.writeString(remoteWork.resolve("NEW.md"), "added upstream\n");
+        run(remoteWork, "git", "add", ".");
+        run(remoteWork, "git", "commit", "-q", "-m", "v2 upstream-only");
+        run(remoteWork, "git", "push", "-q", "origin", "main");
+
+        WorktreeProperties props = new WorktreeProperties(
+                worktreesRoot.toString(), localClone.toString(), "main", 20);
+        WorktreeService svc = new WorktreeService(props);
+        Files.createDirectories(worktreesRoot);
+
+        UUID taskId = UUID.randomUUID();
+        Path wt = svc.create(taskId);
+
+        // The new worktree must contain the upstream-only file. If the service
+        // had branched off local `main`, NEW.md would be missing.
+        assertThat(wt.resolve("NEW.md")).exists();
+        assertThat(wt.resolve("README.md")).exists();
+    }
+
+    @Test
     void create_refuses_if_target_already_exists_on_disk() throws Exception {
         WorktreeService svc = service(20);
         UUID taskId = UUID.randomUUID();
         Files.createDirectories(worktreesRoot.resolve(taskId.toString()));
 
-        assertThatThrownBy(() -> svc.create(taskId, "main"))
+        assertThatThrownBy(() -> svc.create(taskId))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("already exists");
     }

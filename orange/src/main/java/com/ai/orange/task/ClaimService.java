@@ -129,7 +129,7 @@ public class ClaimService {
             cwd = worktrees.resolve(task.id()).toString();
         } else {
             try {
-                cwd = worktrees.create(task.id(), "main").toString();
+                cwd = worktrees.create(task.id()).toString();
             } catch (IOException | InterruptedException e) {
                 if (e instanceof InterruptedException) Thread.currentThread().interrupt();
                 throw new RuntimeException(

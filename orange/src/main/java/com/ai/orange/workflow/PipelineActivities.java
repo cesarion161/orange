@@ -19,8 +19,14 @@ public interface PipelineActivities {
     @ActivityMethod
     boolean claim(UUID taskId, String workerId);
 
+    /**
+     * Create the agent's sandbox worktree for {@code taskId}. Branches off the
+     * configured trunk ({@code orange.worktrees.base-branch}); see
+     * {@link com.ai.orange.worktree.WorktreeService} for the fetch-from-origin
+     * guarantee that keeps it from going stale.
+     */
     @ActivityMethod
-    String prepareWorktree(UUID taskId, String baseRef);
+    String prepareWorktree(UUID taskId);
 
     /**
      * Lease a {@code dev_env} for {@code taskId}. Blocks up to
