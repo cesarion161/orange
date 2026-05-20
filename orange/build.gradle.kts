@@ -40,7 +40,7 @@ repositories {
 }
 
 extra["springAiVersion"] = "2.0.0-M5"
-extra["temporalVersion"] = "1.23.2"
+extra["temporalVersion"] = "1.30.1"
 
 dependencies {
     implementation("org.springframework.boot:spring-boot-starter-actuator")
@@ -54,7 +54,7 @@ dependencies {
     implementation("io.github.wimdeblauwe:htmx-spring-boot:5.1.0")
     implementation("org.flywaydb:flyway-database-postgresql")
     implementation("org.springframework.ai:spring-ai-starter-model-anthropic")
-    implementation("io.temporal:temporal-spring-boot-starter-alpha:${property("temporalVersion")}")
+    implementation("io.temporal:temporal-spring-boot-starter:${property("temporalVersion")}")
     implementation("org.kohsuke:github-api:1.330")
     compileOnly("org.projectlombok:lombok")
     developmentOnly("org.springframework.boot:spring-boot-devtools")
