@@ -1,0 +1,5 @@
+{
+  "name": "orange",
+  "version": "0.1.0",
+  "description": "Drive the orange-ai multi-agent feature factory from the Claude Code chat: planning, parallel execution, live narration."
+}

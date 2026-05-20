@@ -86,9 +86,9 @@ public class PipelineActivitiesImpl implements PipelineActivities {
     }
 
     @Override
-    public String prepareWorktree(UUID taskId, String baseRef) {
+    public String prepareWorktree(UUID taskId) {
         try {
-            Path p = worktrees.create(taskId, baseRef);
+            Path p = worktrees.create(taskId);
             return p.toString();
         } catch (IOException | InterruptedException e) {
             if (e instanceof InterruptedException) Thread.currentThread().interrupt();

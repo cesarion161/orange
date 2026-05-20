@@ -128,7 +128,7 @@ class PipelineActivitiesIT {
         // Idempotent re-claim by same worker should also return true.
         assertThat(activities.claim(taskId, workerId)).isTrue();
 
-        String worktreePath = activities.prepareWorktree(taskId, "main");
+        String worktreePath = activities.prepareWorktree(taskId);
         assertThat(Path.of(worktreePath)).exists().isDirectory();
 
         StageOutcome outcome = activities.runStage(taskId, "dev", worktreePath, null, null);

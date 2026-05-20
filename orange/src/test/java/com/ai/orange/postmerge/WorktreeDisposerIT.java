@@ -98,7 +98,7 @@ class WorktreeDisposerIT {
                 List.of(new TaskDef("t", "T", null, "dev", null, null, null)),
                 List.of()).get(0);
 
-        Path wt = worktrees.create(task.id(), "main");
+        Path wt = worktrees.create(task.id());
         assertThat(Files.exists(wt)).isTrue();
 
         // Move the task to a terminal status without going through the workflow.
@@ -123,7 +123,7 @@ class WorktreeDisposerIT {
         Task task = taskService.createGraph(
                 List.of(new TaskDef("t", "T", null, "dev", null, null, null)),
                 List.of()).get(0);
-        Path wt = worktrees.create(task.id(), "main");
+        Path wt = worktrees.create(task.id());
 
         // Stay in READY — disposer must not touch it.
         disposer.sweep();

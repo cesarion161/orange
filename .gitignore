@@ -1,0 +1,43 @@
+# IDE / editor state — never check in.
+.idea/
+.vscode/
+*.iml
+
+# Claude Code local state (auto-generated transcripts, plans, memory).
+# The plugin itself under plugin/ IS tracked; this is the host state.
+.claude/
+
+# OS detritus
+.DS_Store
+Thumbs.db
+
+# Python (covers agent-runner/ and orange-mcp/)
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+.venv-*/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.tox/
+.coverage
+htmlcov/
+
+# Build/dist
+build/
+dist/
+
+# Orange ephemeral state — per-run planner outputs and agent worktrees.
+orange/.plans/
+orange/.worktrees/
+
+# Local planning / scratch notes — not part of the project.
+TODO.md
+
+# Local env files — secrets stay out of git.
+.env
+.env.local
+.env.*.local

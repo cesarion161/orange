@@ -60,7 +60,7 @@ public class PipelineWorkflowImpl implements PipelineWorkflow {
 
         String worktreePath;
         try {
-            worktreePath = shortActivities.prepareWorktree(taskId, "main");
+            worktreePath = shortActivities.prepareWorktree(taskId);
         } catch (Exception e) {
             log.error("prepareWorktree failed for {}: {}", taskId, e.getMessage());
             shortActivities.markFailed(taskId, "worktree-setup: " + e.getMessage());

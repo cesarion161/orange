@@ -120,7 +120,7 @@ class PipelineRetryIT {
 
         String workerId = "test-worker";
         assertThat(activities.claim(taskId, workerId)).isTrue();
-        String worktreePath = activities.prepareWorktree(taskId, "main");
+        String worktreePath = activities.prepareWorktree(taskId);
 
         // Mirror PipelineWorkflowImpl.iterateStages by hand so we can verify
         // the intermediate states without running Temporal.

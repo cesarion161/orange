@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "orange": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "${CLAUDE_PROJECT_DIR}/orange-mcp",
+        "run",
+        "orange-mcp"
+      ],
+      "env": {
+        "ORANGE_BASE_URL": "http://localhost:8080"
+      }
+    }
+  }
+}
