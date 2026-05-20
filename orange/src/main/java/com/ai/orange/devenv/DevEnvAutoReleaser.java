@@ -8,6 +8,8 @@ import com.ai.orange.task.TaskStatus;
 import com.ai.orange.workflow.EnvInfo;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import java.io.IOException;
+import java.time.Duration;
+import java.time.OffsetDateTime;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
@@ -43,10 +45,14 @@ import org.springframework.stereotype.Service;
  * <p>Release boundary: any task status that's downstream of the qa stage —
  * {@link TaskStatus#PR_OPEN}, {@link TaskStatus#DEV_READY},
  * {@link TaskStatus#IN_TEST}, {@link TaskStatus#TEST_DONE},
- * {@link TaskStatus#FAILED}, {@link TaskStatus#CANCELLED}. Active states
- * ({@code PENDING}, {@code READY}, {@code IN_PROGRESS}) are skipped on
- * purpose; a stale {@code IN_PROGRESS} lease where the workflow has actually
- * died is a separate failure mode that needs heartbeat-driven detection.
+ * {@link TaskStatus#FAILED}, {@link TaskStatus#CANCELLED}. The purely active
+ * states {@code PENDING} and {@code READY} are skipped on purpose. {@code
+ * IN_PROGRESS} tasks are also left alone <em>unless</em> their {@code
+ * heartbeat_at} is older than {@code orange.heartbeat.stale-after} (default
+ * 5 m), which indicates the workflow is dead; those envs are reclaimed with
+ * reason {@code stale_heartbeat}. {@code IN_PROGRESS} tasks that have never
+ * written a heartbeat ({@code heartbeat_at} is {@code null}) are treated as
+ * not-yet-stale and skipped.
  */
 @Service
 public class DevEnvAutoReleaser {
@@ -71,19 +77,22 @@ public class DevEnvAutoReleaser {
     private final TaskRepository tasks;
     private final TaskEventRepository taskEvents;
     private final boolean enabled;
+    private final Duration staleAfter;
 
     public DevEnvAutoReleaser(DevEnvRepository envs,
                               DevEnvService envService,
                               EnvComposeRunner composeRunner,
                               TaskRepository tasks,
                               TaskEventRepository taskEvents,
-                              @Value("${orange.envs.auto-release-enabled:true}") boolean enabled) {
+                              @Value("${orange.envs.auto-release-enabled:true}") boolean enabled,
+                              @Value("${orange.heartbeat.stale-after:5m}") Duration staleAfter) {
         this.envs = envs;
         this.envService = envService;
         this.composeRunner = composeRunner;
         this.tasks = tasks;
         this.taskEvents = taskEvents;
         this.enabled = enabled;
+        this.staleAfter = staleAfter;
     }
 
     @Scheduled(fixedDelayString = "${orange.envs.auto-release-delay:1m}",
@@ -117,7 +126,17 @@ public class DevEnvAutoReleaser {
                 if (releaseEnv(env, taskId, "task_missing", false)) released++;
                 continue;
             }
-            TaskStatus status = taskOpt.get().status();
+            Task task = taskOpt.get();
+            TaskStatus status = task.status();
+            // IN_PROGRESS with a stale heartbeat means the workflow is dead;
+            // reclaim the env. Null heartbeat_at (task never checked in) is
+            // treated as not-yet-stale and skipped.
+            if (status == TaskStatus.IN_PROGRESS
+                    && task.heartbeatAt() != null
+                    && task.heartbeatAt().isBefore(OffsetDateTime.now().minus(staleAfter))) {
+                if (releaseEnv(env, taskId, "stale_heartbeat", true)) released++;
+                continue;
+            }
             if (!RELEASE_BOUNDARY.contains(status)) continue;
             if (releaseEnv(env, taskId, status.dbValue(), true)) released++;
         }
