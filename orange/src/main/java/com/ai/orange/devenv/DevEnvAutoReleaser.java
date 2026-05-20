@@ -110,6 +110,10 @@ public class DevEnvAutoReleaser {
      */
     public int sweepOnce() {
         List<DevEnv> leased = envs.findLeased();
+        // Compute the staleness cutoff once per sweep so every env in the
+        // batch is compared against the same threshold (matches HeartbeatReaper's
+        // pattern) and we don't re-read the clock per row.
+        OffsetDateTime staleThreshold = OffsetDateTime.now().minus(staleAfter);
         int released = 0;
         for (DevEnv env : leased) {
             UUID taskId = parseTaskHolder(env.leasedBy());
@@ -133,7 +137,7 @@ public class DevEnvAutoReleaser {
             // treated as not-yet-stale and skipped.
             if (status == TaskStatus.IN_PROGRESS
                     && task.heartbeatAt() != null
-                    && task.heartbeatAt().isBefore(OffsetDateTime.now().minus(staleAfter))) {
+                    && task.heartbeatAt().isBefore(staleThreshold)) {
                 if (releaseEnv(env, taskId, "stale_heartbeat", true)) released++;
                 continue;
             }

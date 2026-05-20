@@ -13,6 +13,7 @@ import com.ai.orange.task.TaskRepository;
 import com.ai.orange.task.TaskService;
 import com.ai.orange.task.TaskStatus;
 import java.time.Duration;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -118,6 +119,64 @@ class DevEnvAutoReleaserIT {
 
         assertThat(released).isEqualTo(1);
         assertThat(envs.findLeased()).isEmpty();
+    }
+
+    @Test
+    void releases_lease_when_in_progress_heartbeat_is_stale() throws Exception {
+        UUID taskId = createTask();
+        DevEnv leased = envService.acquire("task-" + taskId, Duration.ofSeconds(2)).orElseThrow();
+        tasks.transitionStatus(taskId, TaskStatus.READY, TaskStatus.IN_PROGRESS);
+        // Default orange.heartbeat.stale-after is 5m; backdate by 10m so we're
+        // unambiguously past the threshold regardless of clock skew.
+        tasks.updateHeartbeat(taskId, OffsetDateTime.now().minus(Duration.ofMinutes(10)));
+
+        int released = releaser.sweepOnce();
+
+        assertThat(released).isEqualTo(1);
+        assertThat(envs.findLeased()).isEmpty();
+        assertThat(envs.findById(leased.id()).orElseThrow().status())
+                .isEqualTo(DevEnvStatus.FREE);
+
+        String payload = dsl.select(TASK_EVENTS.PAYLOAD).from(TASK_EVENTS)
+                .where(TASK_EVENTS.TASK_ID.eq(taskId)
+                        .and(TASK_EVENTS.EVENT_TYPE.eq("env_auto_released")))
+                .fetchOne(0, String.class);
+        // Postgres JSONB normalises whitespace with a space after the colon.
+        assertThat(payload).contains("\"reason\": \"stale_heartbeat\"");
+    }
+
+    @Test
+    void leaves_lease_alone_when_in_progress_heartbeat_is_fresh() throws Exception {
+        UUID taskId = createTask();
+        envService.acquire("task-" + taskId, Duration.ofSeconds(2));
+        tasks.transitionStatus(taskId, TaskStatus.READY, TaskStatus.IN_PROGRESS);
+        // A live workflow would refresh heartbeat_at well within staleAfter.
+        tasks.updateHeartbeat(taskId, OffsetDateTime.now());
+
+        int released = releaser.sweepOnce();
+
+        assertThat(released).isZero();
+        assertThat(envs.findLeased()).hasSize(1);
+        int events = dsl.fetchCount(TASK_EVENTS,
+                TASK_EVENTS.TASK_ID.eq(taskId).and(TASK_EVENTS.EVENT_TYPE.eq("env_auto_released")));
+        assertThat(events).isZero();
+    }
+
+    @Test
+    void stale_heartbeat_release_is_idempotent() throws Exception {
+        UUID taskId = createTask();
+        envService.acquire("task-" + taskId, Duration.ofSeconds(2));
+        tasks.transitionStatus(taskId, TaskStatus.READY, TaskStatus.IN_PROGRESS);
+        tasks.updateHeartbeat(taskId, OffsetDateTime.now().minus(Duration.ofMinutes(10)));
+
+        assertThat(releaser.sweepOnce()).isEqualTo(1);
+        // Second sweep: env is already FREE so the LEASED-only filter in
+        // DevEnvRepository.release() means no work + no duplicated event.
+        assertThat(releaser.sweepOnce()).isZero();
+
+        int events = dsl.fetchCount(TASK_EVENTS,
+                TASK_EVENTS.TASK_ID.eq(taskId).and(TASK_EVENTS.EVENT_TYPE.eq("env_auto_released")));
+        assertThat(events).isEqualTo(1);
     }
 
     @Test
