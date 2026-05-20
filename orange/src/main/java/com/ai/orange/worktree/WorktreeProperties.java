@@ -5,8 +5,10 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 
 /**
  * @param root       directory under which per-task worktrees live (one subdir per task UUID)
- * @param baseRepo   path to the git repo we worktree-add from. Empty means "set per-call"
- *                   (used in tests; production should set this to the target project's repo)
+ * @param baseRepo   path to the git repo we worktree-add from. Required at runtime —
+ *                   {@link WorktreeService} throws if blank. Tests that exercise the
+ *                   service construct {@link WorktreeProperties} directly with a
+ *                   per-test temp repo path.
  * @param baseBranch branch new worktrees are branched off. Should match
  *                   {@code orange.github.base-branch} so worktrees and PRs share a trunk.
  *                   When an {@code origin} remote exists, {@link WorktreeService#create}

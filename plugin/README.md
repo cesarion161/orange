@@ -2,7 +2,7 @@
 
 One-install front-end for the [orange-ai](../) orchestrator. Ships:
 
-- the `orange` MCP server (HTTP shim over the Spring Boot backend) — 14 tools for plan / claim / heartbeat / complete / fail / release / status
+- the `orange` MCP server (HTTP shim over the Spring Boot backend) — 20 tools spanning the planning/task surface (plan, create, list, task, tail, cancel, replay, reopen), the chat-as-executor flow (claim_next_task, heartbeat, complete, fail, release, submit_plan, dep_artifacts, my_active_claims), and read-only monitoring (status_live, health, envs, concurrency)
 - the `orange-orchestrate` skill — teaches the chat when and how to drive orange end-to-end (idea → planner → review → parallel execution → live narration)
 
 ## Install (development, from this repo)

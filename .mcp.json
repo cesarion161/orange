@@ -4,13 +4,12 @@
       "command": "uv",
       "args": [
         "--directory",
-        "/Users/alexlexa/stuff/2026/orange-ai/orange-mcp",
+        "${CLAUDE_PROJECT_DIR}/orange-mcp",
         "run",
         "orange-mcp"
       ],
       "env": {
-        "ORANGE_BASE_URL": "http://localhost:8080",
-        "ORANGE_DEFAULT_PIPELINE": "dev_qa"
+        "ORANGE_BASE_URL": "http://localhost:8080"
       }
     }
   }

@@ -93,8 +93,20 @@ public class WorktreeService {
         return "origin/" + baseBranch;
     }
 
+    /**
+     * Returns true iff the base repo has an {@code origin} remote configured.
+     * git distinguishes "no such remote" (exit 2) from other failures; only
+     * the former is silently treated as "no remote". Any other non-zero exit
+     * (e.g. corrupt config) bubbles up so we don't accidentally fall through
+     * to the stale-local-ref path the PR exists to prevent. Timeouts throw
+     * via {@link #runGitOrTimeoutOrMissing}.
+     */
     private boolean hasOriginRemote(String repo) throws IOException, InterruptedException {
-        return runGitSilent(repo, List.of("remote", "get-url", "origin")) == 0;
+        int exit = runGitOrTimeoutOrMissing(repo, List.of("remote", "get-url", "origin"));
+        if (exit == 0) return true;
+        if (exit == 2) return false;
+        throw new IOException("git remote get-url origin failed with exit " + exit
+                + " (not the 'remote not found' case); refusing to fall back to local ref");
     }
 
     /**
@@ -205,8 +217,13 @@ public class WorktreeService {
         }
     }
 
-    /** Same as {@link #runGit} but swallows non-zero exits and returns the code. */
-    private int runGitSilent(String repo, List<String> args) throws IOException, InterruptedException {
+    /**
+     * Run git, swallow non-zero exits, return the exit code. Timeouts throw
+     * (so callers don't confuse "command timed out" with "exited normally with
+     * code N") — this is the same fail-loud posture as {@link #runGit}.
+     */
+    private int runGitOrTimeoutOrMissing(String repo, List<String> args)
+            throws IOException, InterruptedException {
         List<String> cmd = new java.util.ArrayList<>(args.size() + 1);
         cmd.add("git");
         cmd.addAll(args);
@@ -217,7 +234,7 @@ public class WorktreeService {
         proc.getInputStream().readAllBytes();
         if (!proc.waitFor(GIT_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
             proc.destroyForcibly();
-            return -1;
+            throw new IOException("git " + args + " timed out after " + GIT_TIMEOUT_SECONDS + "s");
         }
         return proc.exitValue();
     }

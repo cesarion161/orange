@@ -34,6 +34,9 @@ dist/
 orange/.plans/
 orange/.worktrees/
 
+# Local planning / scratch notes — not part of the project.
+TODO.md
+
 # Local env files — secrets stay out of git.
 .env
 .env.local

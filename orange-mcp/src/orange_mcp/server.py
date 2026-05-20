@@ -17,7 +17,6 @@ Two flavors of tools live here:
 
 Configuration via env vars:
   ORANGE_BASE_URL          base URL of the orange-ai REST API (default localhost:8080)
-  ORANGE_DEFAULT_PIPELINE  default pipeline name for plan/create_task (default dev_qa)
 """
 
 from __future__ import annotations
@@ -33,7 +32,6 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 BASE_URL = os.environ.get("ORANGE_BASE_URL", "http://localhost:8080").rstrip("/")
-DEFAULT_PIPELINE = os.environ.get("ORANGE_DEFAULT_PIPELINE", "dev_qa")
 
 server: Server = Server("orange-mcp")
 
@@ -58,14 +56,6 @@ def _tools() -> list[Tool]:
                     "description": {
                         "type": "string",
                         "description": "Free-text feature request to plan.",
-                    },
-                    "pipeline": {
-                        "type": "string",
-                        "description": (
-                            "Optional pipeline name applied to each generated task. "
-                            "One of: dev_only, dev_qa, dev_review_qa. "
-                            f"Defaults to {DEFAULT_PIPELINE}."
-                        ),
                     },
                 },
                 "required": ["description"],
@@ -169,7 +159,6 @@ def _tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "task_id": {"type": "string"},
-                    "reason": {"type": "string"},
                 },
                 "required": ["task_id"],
             },
@@ -516,10 +505,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
 async def _plan(args: dict[str, Any]) -> list[TextContent]:
     description = args["description"]
-    # Pipeline is passed through but orange-ai's current /plans endpoint
-    # doesn't yet accept a pipeline override per request (the planner's
-    # generated tasks default to dev_only). When that lands, this will
-    # become a real field; for now we surface the intent in the description.
     body = {"description": description}
     async with httpx.AsyncClient(timeout=httpx.Timeout(600.0)) as client:
         r = await client.post(f"{BASE_URL}/plans", json=body)
