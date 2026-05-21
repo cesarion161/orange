@@ -12,12 +12,15 @@ import com.ai.orange.task.TaskDef;
 import com.ai.orange.task.TaskRepository;
 import com.ai.orange.task.TaskService;
 import com.ai.orange.task.TaskStatus;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.jooq.DSLContext;
+import org.jooq.JSONB;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -42,6 +45,15 @@ class DevEnvAutoReleaserIT {
     @Autowired TaskRepository tasks;
     @Autowired DSLContext dsl;
 
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    /**
+     * Staleness window pinned for the test so assertions don't depend on the
+     * production default of {@code orange.heartbeat.stale-after}. Heartbeat
+     * backdates below are derived from this value.
+     */
+    private static final Duration STALE_AFTER = Duration.ofMinutes(5);
+
     @DynamicPropertySource
     static void disableAutoStartAndScheduler(DynamicPropertyRegistry r) {
         r.add("orange.workflow.auto-start", () -> "false");
@@ -49,6 +61,9 @@ class DevEnvAutoReleaserIT {
         // synchronously to assert behavior without racing the scheduler.
         r.add("orange.envs.auto-release-initial-delay", () -> "1h");
         r.add("orange.envs.auto-release-delay", () -> "1h");
+        // Pin the staleness window so the stale/fresh heartbeat tests are
+        // deterministic regardless of the production default or environment.
+        r.add("orange.heartbeat.stale-after", STALE_AFTER::toString);
     }
 
     @BeforeEach
@@ -126,9 +141,9 @@ class DevEnvAutoReleaserIT {
         UUID taskId = createTask();
         DevEnv leased = envService.acquire("task-" + taskId, Duration.ofSeconds(2)).orElseThrow();
         tasks.transitionStatus(taskId, TaskStatus.READY, TaskStatus.IN_PROGRESS);
-        // Default orange.heartbeat.stale-after is 5m; backdate by 10m so we're
-        // unambiguously past the threshold regardless of clock skew.
-        tasks.updateHeartbeat(taskId, OffsetDateTime.now().minus(Duration.ofMinutes(10)));
+        // Backdate well past the pinned staleAfter so we're unambiguously over
+        // the threshold regardless of clock skew.
+        tasks.updateHeartbeat(taskId, OffsetDateTime.now().minus(STALE_AFTER.multipliedBy(2)));
 
         int released = releaser.sweepOnce();
 
@@ -137,12 +152,12 @@ class DevEnvAutoReleaserIT {
         assertThat(envs.findById(leased.id()).orElseThrow().status())
                 .isEqualTo(DevEnvStatus.FREE);
 
-        String payload = dsl.select(TASK_EVENTS.PAYLOAD).from(TASK_EVENTS)
+        JSONB payload = dsl.select(TASK_EVENTS.PAYLOAD).from(TASK_EVENTS)
                 .where(TASK_EVENTS.TASK_ID.eq(taskId)
                         .and(TASK_EVENTS.EVENT_TYPE.eq("env_auto_released")))
-                .fetchOne(0, String.class);
-        // Postgres JSONB normalises whitespace with a space after the colon.
-        assertThat(payload).contains("\"reason\": \"stale_heartbeat\"");
+                .fetchOne(0, JSONB.class);
+        JsonNode node = MAPPER.readTree(payload.data());
+        assertThat(node.path("reason").asText()).isEqualTo("stale_heartbeat");
     }
 
     @Test
@@ -150,8 +165,9 @@ class DevEnvAutoReleaserIT {
         UUID taskId = createTask();
         envService.acquire("task-" + taskId, Duration.ofSeconds(2));
         tasks.transitionStatus(taskId, TaskStatus.READY, TaskStatus.IN_PROGRESS);
-        // A live workflow would refresh heartbeat_at well within staleAfter.
-        tasks.updateHeartbeat(taskId, OffsetDateTime.now());
+        // A live workflow would refresh heartbeat_at well within staleAfter;
+        // half the window is comfortably fresh.
+        tasks.updateHeartbeat(taskId, OffsetDateTime.now().minus(STALE_AFTER.dividedBy(2)));
 
         int released = releaser.sweepOnce();
 
@@ -167,7 +183,7 @@ class DevEnvAutoReleaserIT {
         UUID taskId = createTask();
         envService.acquire("task-" + taskId, Duration.ofSeconds(2));
         tasks.transitionStatus(taskId, TaskStatus.READY, TaskStatus.IN_PROGRESS);
-        tasks.updateHeartbeat(taskId, OffsetDateTime.now().minus(Duration.ofMinutes(10)));
+        tasks.updateHeartbeat(taskId, OffsetDateTime.now().minus(STALE_AFTER.multipliedBy(2)));
 
         assertThat(releaser.sweepOnce()).isEqualTo(1);
         // Second sweep: env is already FREE so the LEASED-only filter in
