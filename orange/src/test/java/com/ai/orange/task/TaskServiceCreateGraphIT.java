@@ -9,6 +9,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.ai.orange.TestcontainersConfiguration;
 import com.ai.orange.task.exception.DagCycleException;
 import java.util.List;
+import java.util.UUID;
+import java.util.stream.Collectors;
 import org.jooq.DSLContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -64,6 +66,59 @@ class TaskServiceCreateGraphIT {
         assertThat(created).filteredOn(t -> t.status() == TaskStatus.PENDING)
                 .extracting(Task::title)
                 .containsExactly("Merge");
+    }
+
+    @Test
+    void dependent_promoted_to_ready_only_when_all_parents_reach_dev_ready() {
+        // a, b -> c : c depends on BOTH a and b. (diamond-ish fan-in)
+        var defs = List.of(
+                new TaskDef("a", "A", null, "dev", null, null, null),
+                new TaskDef("b", "B", null, "dev", null, null, null),
+                new TaskDef("c", "C", null, "dev", null, null, null));
+        var edges = List.of(new EdgeKey("a", "c"), new EdgeKey("b", "c"));
+        List<Task> created = taskService.createGraph(defs, edges);
+        var byTitle = created.stream().collect(Collectors.toMap(Task::title, t -> t));
+        UUID a = byTitle.get("A").id();
+        UUID b = byTitle.get("B").id();
+        UUID c = byTitle.get("C").id();
+        assertThat(byTitle.get("C").status()).isEqualTo(TaskStatus.PENDING);
+
+        // First parent reaches dev_ready — c must stay pending (b not done yet).
+        driveToDevReady(a);
+        assertThat(taskRepository.findById(c).orElseThrow().status()).isEqualTo(TaskStatus.PENDING);
+
+        // Second (last) parent reaches dev_ready — the trigger promotes c → ready.
+        driveToDevReady(b);
+        assertThat(taskRepository.findById(c).orElseThrow().status()).isEqualTo(TaskStatus.READY);
+    }
+
+    @Test
+    void dependent_stays_blocked_when_a_parent_fails() {
+        // a, b -> c. a merges (dev_ready) but b FAILS — c must NOT be promoted:
+        // a broken dependency must not unblock downstream work.
+        var defs = List.of(
+                new TaskDef("a", "A", null, "dev", null, null, null),
+                new TaskDef("b", "B", null, "dev", null, null, null),
+                new TaskDef("c", "C", null, "dev", null, null, null));
+        var edges = List.of(new EdgeKey("a", "c"), new EdgeKey("b", "c"));
+        List<Task> created = taskService.createGraph(defs, edges);
+        var byTitle = created.stream().collect(Collectors.toMap(Task::title, t -> t));
+        UUID a = byTitle.get("A").id();
+        UUID b = byTitle.get("B").id();
+        UUID c = byTitle.get("C").id();
+
+        driveToDevReady(a);
+        taskRepository.transitionStatus(b, TaskStatus.READY, TaskStatus.IN_PROGRESS);
+        taskRepository.transitionStatus(b, TaskStatus.IN_PROGRESS, TaskStatus.FAILED);
+
+        assertThat(taskRepository.findById(c).orElseThrow().status()).isEqualTo(TaskStatus.PENDING);
+    }
+
+    /** Walk a root task through the FSM to dev_ready (the merged state). */
+    private void driveToDevReady(UUID id) {
+        taskRepository.transitionStatus(id, TaskStatus.READY, TaskStatus.IN_PROGRESS);
+        taskRepository.transitionStatus(id, TaskStatus.IN_PROGRESS, TaskStatus.PR_OPEN);
+        taskRepository.transitionStatus(id, TaskStatus.PR_OPEN, TaskStatus.DEV_READY);
     }
 
     @Test
