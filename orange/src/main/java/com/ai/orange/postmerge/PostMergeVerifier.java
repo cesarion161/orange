@@ -3,6 +3,7 @@ package com.ai.orange.postmerge;
 import com.ai.orange.task.TaskEventRepository;
 import com.ai.orange.task.TaskRepository;
 import com.ai.orange.task.TaskService;
+import com.ai.orange.task.TaskStatus;
 import com.ai.orange.worktree.WorktreeProperties;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -92,11 +93,13 @@ public class PostMergeVerifier {
     public Result verifyAfterMerge(UUID taskId, boolean syncFromOrigin) {
         if (buildCommand == null || buildCommand.isBlank()) {
             log.debug("post-merge verify skipped for task {} (no build-command configured)", taskId);
+            advanceToTestDone(taskId);
             return Result.SKIPPED;
         }
         String baseRepo = worktreeProps.baseRepo();
         if (baseRepo == null || baseRepo.isBlank()) {
             log.warn("post-merge verify for task {}: orange.worktrees.base-repo not set; skipping", taskId);
+            advanceToTestDone(taskId);
             return Result.SKIPPED;
         }
         Path repoPath = Path.of(baseRepo).toAbsolutePath();
@@ -130,6 +133,7 @@ public class PostMergeVerifier {
                     asJsonb(Map.of("exit_code", 0, "command", buildCommand)));
             log.info("post-merge build passed for task {}", taskId);
             maybeRunRegression(taskId, repoPath);
+            advanceToTestDone(taskId);
             return Result.PASSED;
         }
         recordFailure(taskId, "build_failed", "exit_code=" + outcome.exitCode() + " tail=" + outcome.tail());
@@ -252,6 +256,26 @@ public class PostMergeVerifier {
             meta.put("main_verified_at", OffsetDateTime.now().toString());
             tasks.updateMetadata(taskId, asJsonb(meta));
         });
+    }
+
+    /**
+     * A merged task whose post-merge verification passed (or was skipped because
+     * none is configured) is fully done. Walk it {@code dev_ready → in_test →
+     * test_done} so it reaches a terminal state instead of parking at
+     * {@code dev_ready} forever, and so the worktree disposer reclaims its
+     * worktree. No-op unless the task is currently at {@code dev_ready} (the
+     * compare-and-set on the first transition fails silently otherwise — e.g.
+     * for test entrypoints that invoke verify on a non-dev_ready task).
+     */
+    private void advanceToTestDone(UUID taskId) {
+        try {
+            if (tasks.transitionStatus(taskId, TaskStatus.DEV_READY, TaskStatus.IN_TEST)) {
+                tasks.transitionStatus(taskId, TaskStatus.IN_TEST, TaskStatus.TEST_DONE);
+                log.info("post-merge: task {} advanced dev_ready → test_done", taskId);
+            }
+        } catch (RuntimeException e) {
+            log.warn("post-merge: could not advance task {} to test_done: {}", taskId, e.getMessage());
+        }
     }
 
     private void recordFailure(UUID taskId, String kind, String detail) {
