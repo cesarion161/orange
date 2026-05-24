@@ -112,13 +112,35 @@ public class WorktreeService {
     /**
      * Remove the worktree for {@code taskId}. Idempotent: if the directory
      * doesn't exist we still {@code git worktree prune} so the registry stays clean.
+     *
+     * <p>If the directory exists but git refuses to remove it as a worktree
+     * (e.g. "is not a working tree" — an orphaned dir left by a partial/failed
+     * removal, or a nested leftover), we delete the directory outright rather
+     * than fail. Otherwise the post-merge disposer would retry the same broken
+     * path every sweep forever, spamming logs and never freeing the worktree
+     * slot against {@code orange.worktrees.max-count}.
      */
     public void remove(UUID taskId) throws IOException, InterruptedException {
         String repo = requireBaseRepo();
         Path target = rootPath().resolve(taskId.toString()).toAbsolutePath();
         if (Files.exists(target)) {
-            runGit(repo, List.of("worktree", "remove", "--force", target.toString()));
-            log.info("removed worktree taskId={}", taskId);
+            try {
+                runGit(repo, List.of("worktree", "remove", "--force", target.toString()));
+                log.info("removed worktree taskId={}", taskId);
+            } catch (IOException e) {
+                // A timeout means git is hung (e.g. a stuck index lock), not that
+                // the dir is an orphan — propagate rather than blindly deleting a
+                // possibly-live worktree (same fail-loud-on-timeout posture as
+                // runGitOrTimeoutOrMissing). Any other failure (exit 128 "is not a
+                // working tree", etc.) means git won't manage this dir, so we do.
+                if (e.getMessage() != null && e.getMessage().contains("timed out")) {
+                    throw e;
+                }
+                log.warn("git worktree remove failed for task {}; deleting dir directly: {}",
+                        taskId, e.getMessage());
+                deleteRecursively(target);
+                log.info("deleted stale worktree dir taskId={}", taskId);
+            }
         }
         runGit(repo, List.of("worktree", "prune"));
     }

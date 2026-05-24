@@ -73,6 +73,25 @@ class WorktreeServiceIT {
     }
 
     @Test
+    void remove_deletes_orphaned_dir_that_is_not_a_registered_worktree() throws Exception {
+        WorktreeService svc = service(20);
+        UUID taskId = UUID.randomUUID();
+
+        // Simulate the disposer's problem case: a directory left under the
+        // worktree root that git no longer recognizes as a worktree (orphaned
+        // by a partial/failed removal). `git worktree remove` fails here with
+        // "is not a working tree"; remove() must still clean it up rather than
+        // throw and let the disposer retry it forever.
+        Path orphan = worktreesRoot.resolve(taskId.toString());
+        Files.createDirectories(orphan);
+        Files.writeString(orphan.resolve("leftover.txt"), "stale\n");
+
+        svc.remove(taskId); // must not throw
+
+        assertThat(orphan).doesNotExist();
+    }
+
+    @Test
     void create_refuses_when_max_count_reached() throws Exception {
         WorktreeService svc = service(2);
         svc.create(UUID.randomUUID());
