@@ -92,6 +92,28 @@ class TaskServiceCreateGraphIT {
         assertThat(taskRepository.findById(c).orElseThrow().status()).isEqualTo(TaskStatus.READY);
     }
 
+    @Test
+    void dependent_stays_blocked_when_a_parent_fails() {
+        // a, b -> c. a merges (dev_ready) but b FAILS — c must NOT be promoted:
+        // a broken dependency must not unblock downstream work.
+        var defs = List.of(
+                new TaskDef("a", "A", null, "dev", null, null, null),
+                new TaskDef("b", "B", null, "dev", null, null, null),
+                new TaskDef("c", "C", null, "dev", null, null, null));
+        var edges = List.of(new EdgeKey("a", "c"), new EdgeKey("b", "c"));
+        List<Task> created = taskService.createGraph(defs, edges);
+        var byTitle = created.stream().collect(Collectors.toMap(Task::title, t -> t));
+        UUID a = byTitle.get("A").id();
+        UUID b = byTitle.get("B").id();
+        UUID c = byTitle.get("C").id();
+
+        driveToDevReady(a);
+        taskRepository.transitionStatus(b, TaskStatus.READY, TaskStatus.IN_PROGRESS);
+        taskRepository.transitionStatus(b, TaskStatus.IN_PROGRESS, TaskStatus.FAILED);
+
+        assertThat(taskRepository.findById(c).orElseThrow().status()).isEqualTo(TaskStatus.PENDING);
+    }
+
     /** Walk a root task through the FSM to dev_ready (the merged state). */
     private void driveToDevReady(UUID id) {
         taskRepository.transitionStatus(id, TaskStatus.READY, TaskStatus.IN_PROGRESS);
