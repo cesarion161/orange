@@ -175,8 +175,24 @@ public class WorktreeService {
         return rootPath().resolve(taskId.toString()).toAbsolutePath();
     }
 
+    /**
+     * Absolute, canonical worktree root. A <em>relative</em> {@code
+     * orange.worktrees.root} is resolved against the configured base repo, NOT
+     * the process working directory. Otherwise any orange process whose CWD
+     * happens to be inside a worktree (e.g. an agent running the app or tests
+     * from its own worktree) would compute a root nested inside that worktree
+     * and create worktrees-within-worktrees. Anchoring to the base repo makes
+     * the root deterministic regardless of who computes it.
+     */
     public Path rootPath() {
-        return Path.of(props.root()).toAbsolutePath();
+        Path root = Path.of(props.root());
+        if (!root.isAbsolute()) {
+            String base = props.baseRepo();
+            if (base != null && !base.isBlank()) {
+                root = Path.of(base).resolve(root);
+            }
+        }
+        return root.toAbsolutePath().normalize();
     }
 
     private String requireBaseRepo() {
