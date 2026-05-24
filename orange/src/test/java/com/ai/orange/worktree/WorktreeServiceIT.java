@@ -55,6 +55,28 @@ class WorktreeServiceIT {
     }
 
     @Test
+    void root_path_resolves_relative_root_against_base_repo_not_cwd() {
+        // A relative worktrees.root must anchor to the base repo, not the
+        // process CWD — otherwise a process whose CWD is inside a worktree
+        // would nest new worktrees inside it.
+        WorktreeProperties props = new WorktreeProperties(
+                ".orange-worktrees", baseRepo.toString(), "main", 20);
+        Path root = new WorktreeService(props).rootPath();
+
+        assertThat(root).isAbsolute()
+                .isEqualTo(baseRepo.resolve(".orange-worktrees").toAbsolutePath().normalize());
+    }
+
+    @Test
+    void root_path_leaves_absolute_root_unchanged() {
+        Path abs = worktreesRoot.toAbsolutePath().normalize();
+        WorktreeProperties props = new WorktreeProperties(
+                abs.toString(), baseRepo.toString(), "main", 20);
+
+        assertThat(new WorktreeService(props).rootPath()).isEqualTo(abs);
+    }
+
+    @Test
     void create_then_remove_round_trip() throws Exception {
         WorktreeService svc = service(20);
         UUID taskId = UUID.randomUUID();
