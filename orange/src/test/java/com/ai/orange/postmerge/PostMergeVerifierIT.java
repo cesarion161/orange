@@ -11,6 +11,7 @@ import com.ai.orange.task.TaskDef;
 import com.ai.orange.task.TaskEventRepository;
 import com.ai.orange.task.TaskRepository;
 import com.ai.orange.task.TaskService;
+import com.ai.orange.task.TaskStatus;
 import com.ai.orange.worktree.WorktreeProperties;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -201,6 +202,36 @@ class PostMergeVerifierIT {
             throw new IllegalStateException("git " + String.join(" ", args) + " failed: "
                     + new String(p.getInputStream().readAllBytes()));
         }
+    }
+
+    @Test
+    void passing_build_advances_dev_ready_task_to_test_done() {
+        UUID taskId = createTask().id();
+        driveToDevReady(taskId);
+
+        assertThat(verifier.verifyAfterMerge(taskId, false)).isEqualTo(PostMergeVerifier.Result.PASSED);
+
+        assertThat(tasks.findById(taskId).orElseThrow().status()).isEqualTo(TaskStatus.TEST_DONE);
+    }
+
+    @Test
+    void skipped_verify_still_advances_dev_ready_task_to_test_done() {
+        // No build-command → SKIPPED, but a merged task must not park at
+        // dev_ready forever; it advances to the terminal test_done.
+        UUID taskId = createTask().id();
+        driveToDevReady(taskId);
+        PostMergeVerifier blank = configured("");
+
+        assertThat(blank.verifyAfterMerge(taskId, false)).isEqualTo(PostMergeVerifier.Result.SKIPPED);
+
+        assertThat(tasks.findById(taskId).orElseThrow().status()).isEqualTo(TaskStatus.TEST_DONE);
+    }
+
+    /** Walk a freshly-created (READY) task through the FSM to dev_ready. */
+    private void driveToDevReady(UUID id) {
+        tasks.transitionStatus(id, TaskStatus.READY, TaskStatus.IN_PROGRESS);
+        tasks.transitionStatus(id, TaskStatus.IN_PROGRESS, TaskStatus.PR_OPEN);
+        tasks.transitionStatus(id, TaskStatus.PR_OPEN, TaskStatus.DEV_READY);
     }
 
     private Task createTask() {
