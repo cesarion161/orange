@@ -311,7 +311,10 @@ public class PipelineActivitiesImpl implements PipelineActivities {
             }
         }
         if (augmentation != null && !augmentation.isBlank()) {
-            sb.append("\n\n--- Previous attempt's QA report ---\n").append(augmentation);
+            // Augmentation is the prior failing stage's feedback — a tester's QA
+            // report or a reviewer's code review (both bounce here via retryPrevious).
+            sb.append("\n\n--- Feedback from the previous stage (QA report or code review) ---\n")
+                    .append(augmentation);
         }
         return sb.toString();
     }
