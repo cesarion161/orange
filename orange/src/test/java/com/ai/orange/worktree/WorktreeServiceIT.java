@@ -68,6 +68,15 @@ class WorktreeServiceIT {
     }
 
     @Test
+    void root_path_leaves_absolute_root_unchanged() {
+        Path abs = worktreesRoot.toAbsolutePath().normalize();
+        WorktreeProperties props = new WorktreeProperties(
+                abs.toString(), baseRepo.toString(), "main", 20);
+
+        assertThat(new WorktreeService(props).rootPath()).isEqualTo(abs);
+    }
+
+    @Test
     void create_then_remove_round_trip() throws Exception {
         WorktreeService svc = service(20);
         UUID taskId = UUID.randomUUID();

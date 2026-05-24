@@ -45,7 +45,7 @@ public class WorktreeService {
 
     @PostConstruct
     void ensureRootExists() throws IOException {
-        Path root = Path.of(props.root()).toAbsolutePath();
+        Path root = rootPath();
         Files.createDirectories(root);
         log.info("worktree root = {}", root);
     }
