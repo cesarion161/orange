@@ -154,6 +154,28 @@ class PipelineActivitiesIT {
     }
 
     @Test
+    void reviewer_runStage_captures_final_message_as_the_review() throws Exception {
+        // runStage with role "reviewer" must capture the agent's final message
+        // as the review (so a VERDICT line can gate). The stub emits no VERDICT,
+        // so the review is advisory (verdict null → succeeded).
+        TaskDef def = new TaskDef("rev-1", "Review me", null, DEFAULT_AGENT_ROLE, "dev_review_qa", null, null);
+        UUID taskId = taskService.createGraph(List.of(def), List.<EdgeKey>of()).get(0).id();
+        activities.claim(taskId, "rev-worker");
+        String worktreePath = activities.prepareWorktree(taskId);
+
+        StageOutcome outcome = activities.runStage(taskId, "reviewer", worktreePath, null, null);
+
+        assertThat(outcome.agentStatus()).isEqualTo("success");
+        // The stub's assistant_message was captured as the review report.
+        assertThat(outcome.report()).contains("doing the work");
+        // No VERDICT line in the stub output → advisory, non-blocking.
+        assertThat(outcome.verdict()).isNull();
+        assertThat(outcome.succeeded()).isTrue();
+
+        activities.cleanupWorktree(taskId);
+    }
+
+    @Test
     void second_worker_cannot_claim_a_task_already_owned() throws Exception {
         TaskDef def = new TaskDef("race-1", "Race", null, DEFAULT_AGENT_ROLE, "dev_only", null, null);
         UUID taskId = taskService.createGraph(List.of(def), List.of()).get(0).id();

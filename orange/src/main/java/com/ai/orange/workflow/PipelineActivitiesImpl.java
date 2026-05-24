@@ -174,9 +174,14 @@ public class PipelineActivitiesImpl implements PipelineActivities {
         AtomicReference<String> finalStatus = new AtomicReference<>("failure");
         AtomicReference<Map<String, String>> finalArtifacts = new AtomicReference<>(Map.of());
         AtomicReference<BigDecimal> totalCost = new AtomicReference<>(BigDecimal.ZERO);
+        // Last assistant message text — the reviewer's verdict lives here (it's
+        // read-only and has no report file like the tester does).
+        AtomicReference<String> lastAssistant = new AtomicReference<>("");
 
-        Consumer<Event> sink = event -> persistEvent(taskId, agent.name(), event,
-                finalStatus, finalArtifacts, totalCost);
+        Consumer<Event> sink = event -> {
+            if (event instanceof Event.AssistantMessage am) lastAssistant.set(am.text());
+            persistEvent(taskId, agent.name(), event, finalStatus, finalArtifacts, totalCost);
+        };
 
         try (AgentRunnerProcess proc = launcher.launch(start, sink)) {
             while (!proc.awaitTermination(POLL)) {
@@ -213,6 +218,17 @@ public class PipelineActivitiesImpl implements PipelineActivities {
                 }
             } else {
                 log.warn("tester for task {} produced no report at {}", taskId, reportPath);
+            }
+        } else if ("reviewer".equals(agentRole)) {
+            // The reviewer is read-only (no report file); its verdict is the
+            // VERDICT: line in its final summary. "fail" makes succeeded() false,
+            // so the review stage's retryPrevious bounces back to dev with the
+            // review attached as augmentation. No verdict line → null → the stage
+            // passes (advisory), so a malformed review never wedges the pipeline.
+            report = lastAssistant.get();
+            verdict = parseReviewVerdict(report);
+            if (verdict == null) {
+                log.warn("reviewer for task {} emitted no VERDICT line; treating review as non-blocking", taskId);
             }
         }
 
@@ -325,6 +341,27 @@ public class PipelineActivitiesImpl implements PipelineActivities {
         if (firstLine.contains("VERDICT") && firstLine.contains("PASS")) return "pass";
         if (firstLine.contains("VERDICT") && firstLine.contains("FAIL")) return "fail";
         return null;
+    }
+
+    /**
+     * Parse a reviewer's verdict from its final message. Unlike the tester
+     * (whose VERDICT is the first line of report.md), the reviewer emits a
+     * {@code VERDICT: PASS|FAIL} line at the END of a multi-line summary, so we
+     * scan every line for a line that starts with VERDICT. The last such line
+     * wins (guards against the word appearing earlier in prose). Returns
+     * {@code null} when no verdict line is present.
+     */
+    static String parseReviewVerdict(String finalMessage) {
+        if (finalMessage == null) return null;
+        String verdict = null;
+        for (String line : (Iterable<String>) finalMessage.lines()::iterator) {
+            String u = line.trim().toUpperCase();
+            if (u.startsWith("VERDICT")) {
+                if (u.contains("FAIL")) verdict = "fail";
+                else if (u.contains("PASS")) verdict = "pass";
+            }
+        }
+        return verdict;
     }
 
     private static String eventType(Event e) {
