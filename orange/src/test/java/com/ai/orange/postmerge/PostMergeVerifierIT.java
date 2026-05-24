@@ -151,6 +151,58 @@ class PostMergeVerifierIT {
         assertThat(regressionPass).isEqualTo(2);
     }
 
+    @Test
+    void sync_checks_out_the_configured_base_branch_not_main() throws Exception {
+        // Bare origin whose only branch is `e2e-trunk` (NOT main), cloned, then
+        // advanced upstream. The verifier (syncFromOrigin=true) must fetch +
+        // checkout + reset the CONFIGURED base branch. With the old hardcoded
+        // "main", `git checkout main` would fail (no such branch) → FAILED.
+        Path tmp = Files.createTempDirectory("pmv-branch-it-");
+        Path origin = tmp.resolve("origin.git");
+        Path remoteWork = tmp.resolve("remote-work");
+        Path clone = tmp.resolve("clone");
+        Files.createDirectories(origin);
+        runGit(origin, "init", "-q", "--bare", "-b", "e2e-trunk");
+        Files.createDirectories(remoteWork);
+        runGit(remoteWork, "init", "-q", "-b", "e2e-trunk");
+        runGit(remoteWork, "config", "user.email", "r@example.com");
+        runGit(remoteWork, "config", "user.name", "R");
+        runGit(remoteWork, "remote", "add", "origin", origin.toString());
+        Files.writeString(remoteWork.resolve("README.md"), "v1\n");
+        runGit(remoteWork, "add", ".");
+        runGit(remoteWork, "commit", "-q", "-m", "v1");
+        runGit(remoteWork, "push", "-q", "origin", "e2e-trunk");
+        runGit(tmp, "clone", "-q", "-b", "e2e-trunk", origin.toString(), clone.toString());
+        // Upstream advances with a commit the clone doesn't have yet.
+        Files.writeString(remoteWork.resolve("UPSTREAM.md"), "added upstream\n");
+        runGit(remoteWork, "add", ".");
+        runGit(remoteWork, "commit", "-q", "-m", "v2");
+        runGit(remoteWork, "push", "-q", "origin", "e2e-trunk");
+
+        WorktreeProperties props = new WorktreeProperties(
+                tmp.resolve("wt").toString(), clone.toString(), "e2e-trunk", 20);
+        PostMergeVerifier v = new PostMergeVerifier(
+                tasks, events, taskService, props, jdbc, "true", "", 5, Duration.ofSeconds(20), false);
+
+        UUID taskId = createTask().id();
+        PostMergeVerifier.Result result = v.verifyAfterMerge(taskId, true);
+
+        assertThat(result).isEqualTo(PostMergeVerifier.Result.PASSED);
+        // Proof it synced origin/e2e-trunk (not main): the upstream-only file is present.
+        assertThat(clone.resolve("UPSTREAM.md")).exists();
+    }
+
+    private static void runGit(Path cwd, String... args) throws Exception {
+        java.util.List<String> cmd = new java.util.ArrayList<>();
+        cmd.add("git");
+        cmd.addAll(java.util.Arrays.asList(args));
+        Process p = new ProcessBuilder(cmd).directory(cwd.toFile()).redirectErrorStream(true).start();
+        if (p.waitFor() != 0) {
+            throw new IllegalStateException("git " + String.join(" ", args) + " failed: "
+                    + new String(p.getInputStream().readAllBytes()));
+        }
+    }
+
     private Task createTask() {
         return taskService.createGraph(
                 List.of(new TaskDef("t", "T", null, "dev", null, null, null)),

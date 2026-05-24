@@ -78,7 +78,7 @@ public class PostMergeVerifier {
     }
 
 
-    /** Production entrypoint: sync origin/main, then run the build. */
+    /** Production entrypoint: sync the configured base branch, then run the build. */
     public Result verifyAfterMerge(UUID taskId) {
         return verifyAfterMerge(taskId, true);
     }
@@ -102,10 +102,14 @@ public class PostMergeVerifier {
         Path repoPath = Path.of(baseRepo).toAbsolutePath();
 
         if (syncFromOrigin) {
+            // Sync the branch PRs actually merge into (orange.worktrees.base-branch,
+            // e.g. orange-e2e-base) — NOT a hardcoded "main", which would check out
+            // the wrong branch (or fail if main doesn't exist) and verify stale code.
+            String baseBranch = worktreeProps.baseBranch();
             try {
-                run(repoPath, List.of("git", "fetch", "origin", "main"));
-                run(repoPath, List.of("git", "checkout", "main"));
-                run(repoPath, List.of("git", "reset", "--hard", "origin/main"));
+                run(repoPath, List.of("git", "fetch", "origin", baseBranch));
+                run(repoPath, List.of("git", "checkout", baseBranch));
+                run(repoPath, List.of("git", "reset", "--hard", "origin/" + baseBranch));
             } catch (Exception e) {
                 recordFailure(taskId, "git_sync_failed", e.getMessage());
                 return Result.FAILED;
