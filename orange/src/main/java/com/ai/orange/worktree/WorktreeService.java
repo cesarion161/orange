@@ -128,6 +128,14 @@ public class WorktreeService {
                 runGit(repo, List.of("worktree", "remove", "--force", target.toString()));
                 log.info("removed worktree taskId={}", taskId);
             } catch (IOException e) {
+                // A timeout means git is hung (e.g. a stuck index lock), not that
+                // the dir is an orphan — propagate rather than blindly deleting a
+                // possibly-live worktree (same fail-loud-on-timeout posture as
+                // runGitOrTimeoutOrMissing). Any other failure (exit 128 "is not a
+                // working tree", etc.) means git won't manage this dir, so we do.
+                if (e.getMessage() != null && e.getMessage().contains("timed out")) {
+                    throw e;
+                }
                 log.warn("git worktree remove failed for task {}; deleting dir directly: {}",
                         taskId, e.getMessage());
                 deleteRecursively(target);
