@@ -131,21 +131,27 @@ public class ClaimController {
                 .toList());
     }
 
-    /** Chat-driven planner submits a {@link com.ai.orange.planner.PlanJson} produced interactively. */
+    /**
+     * Chat-driven planner saves a {@link com.ai.orange.planner.PlanJson} it
+     * produced interactively. Plan-only: this writes the artifact and completes
+     * the planner task, but creates no tasks and dispatches nothing. Run the
+     * saved plan with {@code POST /dispatch} (by the returned {@code planId}).
+     */
     @PostMapping("/{token}/submit-plan")
     public ResponseEntity<PlanResponse> submitPlan(@PathVariable UUID token,
                                                     @Valid @RequestBody SubmitPlanRequest req) throws IOException {
         if (!token.equals(req.claimToken())) {
             return ResponseEntity.badRequest().build();
         }
-        // Submit the plan via the same path as PlannerService.plan, then
-        // complete the planner task with the resulting graph as artifacts.
-        PlanResult result = planner.submitPlan(req.plan(), req.architectureMd(), req.defaultPipeline());
+        PlanResult result = planner.savePlan(req.plan(), req.architectureMd());
         Map<String, Object> artifacts = new LinkedHashMap<>();
+        artifacts.put("plan_id", result.planId().toString());
         artifacts.put("plan_output_dir", result.outputDir().toString());
-        artifacts.put("created_task_ids", result.createdTasks().stream().map(Task::id).toList());
-        claims.complete(token, "planner submitted " + result.createdTasks().size() + " task(s)", artifacts);
-        int code = "success".equals(result.status()) ? 201 : 422;
+        if (result.planJson() != null) {
+            artifacts.put("plan_json", result.planJson().toString());
+        }
+        claims.complete(token, "planner produced plan " + result.planId(), artifacts);
+        int code = "success".equals(result.status()) ? 200 : 422;
         return ResponseEntity.status(code).body(PlanResponse.of(result));
     }
 

@@ -20,10 +20,15 @@ public class PlanController {
         this.planner = planner;
     }
 
+    /**
+     * Run the planner agent and return the resulting plan DAG for review. This
+     * is plan-only: it creates no tasks and dispatches nothing. Run the plan
+     * with {@code POST /dispatch} (inline or by the returned {@code planId}).
+     */
     @PostMapping
     public ResponseEntity<PlanResponse> plan(@Valid @RequestBody PlanRequest req) throws IOException, InterruptedException {
         PlanResult result = planner.plan(req.description());
-        int code = "success".equals(result.status()) ? 201 : 422;
+        int code = "success".equals(result.status()) ? 200 : 422;
         return ResponseEntity.status(code).body(PlanResponse.of(result));
     }
 }

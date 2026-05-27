@@ -68,12 +68,11 @@ Default: you are the planner. Don't shell out to the subprocess planner unless t
 5. orange_submit_plan(
        claim_token=<token>,
        plan=<plan.json content>,
-       architecture_md=<architecture.md content>,
-       default_pipeline=<derived from follow-ups>)
+       architecture_md=<architecture.md content>)
 6. Heartbeat in between #4 and #5 if drafting takes > 30s.
 ```
 
-The submit endpoint creates the downstream tasks atomically. The planner claim is auto-completed on successful submit.
+Submit is **plan-only**: it saves the plan and auto-completes the planner claim, but creates **no tasks** — nothing runs yet. The response carries a `planId`; you dispatch that later (step 5.5). Pipeline selection (`default_pipeline`, derived from the follow-ups) is supplied at dispatch, not here.
 
 **Plan-sizing rules** (from memory: project_planner_scope.md):
 - Cap at ~7 tasks for a vague goal. If the user wants more detail, ask which task to expand and rerun planning with that as the input.
@@ -82,16 +81,27 @@ The submit endpoint creates the downstream tasks atomically. The planner claim i
 
 ## Step 5 — User review of the plan
 
-After submit, the response includes `outputDir` — the absolute path containing `plan.json` and (optionally) `architecture.md`. Tell the user:
+After submit, the response carries the `planId`, the plan DAG, and `outputDir` — the absolute path containing `plan.json` and (optionally) `architecture.md`. **Nothing is running yet** — this is the review gate. Tell the user:
 
-> "Plan written to `<outputDir>`. Review `plan.json` and `architecture.md`. Reply:
-> - `approve` to start execution
+> "Plan `<planId>` written to `<outputDir>`. Review `plan.json` and `architecture.md`. Reply:
+> - `approve` to dispatch it (this starts the agents)
 > - tell me what to change (e.g. 'split task 3 into two', 'make task 5 a tester role') and I'll re-plan
 > - edit the file yourself and say `re-read it` — I'll re-ingest"
 
-On change request: write a new planner prompt that embeds the prior plan PLUS the user's delta, then go back to step 4. The planner is stateless — never try to amend an existing plan iteratively.
+On change request: write a new planner prompt that embeds the prior plan PLUS the user's delta, then go back to step 4. The planner is stateless — never try to amend an existing plan iteratively. Because nothing was dispatched, re-planning is free — no tasks to cancel.
 
-On file-edit: re-read `plan.json` from disk and call `orange_submit_plan` with the edited content. The old plan's tasks are already in the DB at this point, so you may need to cancel them first via `orange_cancel` per id before submitting a replacement.
+On file-edit: read the edited `plan.json` and dispatch it inline (step 5.5) rather than re-saving.
+
+## Step 5.5 — Dispatch (on approval)
+
+Dispatch is the independent step that actually starts work. Only do it once the user approves.
+
+```
+orange_dispatch(plan_id=<planId from step 4>,
+                default_pipeline=<derived from the step-3 follow-ups>)
+```
+
+Or dispatch an edited/re-imported plan inline: `orange_dispatch(plan=<plan.json content>, default_pipeline=…)`. Dispatch validates the DAG (acyclic, pipelines resolve), inserts the tasks, and marks the dependency-free ones `ready` — agents pick them up from there. The response lists the created tasks; proceed to step 6 to execute/narrate. A 422 means the plan was rejected (read `reason` — usually an unknown pipeline); a 404 means the `plan_id` has no saved plan.
 
 ## Step 6 — Execute
 
@@ -176,7 +186,9 @@ You don't drive any of this; just notice it on your next narration pass — e.g.
 | Heartbeat returns `alive=false` | Stop work on that task. Don't try to complete — the token is dead. Tell the user the task was reaped and decide whether to re-claim. |
 | Heartbeat returns `cancel_requested=true` | Stop work. Call `orange_release_claim` so the task goes back to ready without burning an attempt. |
 | `orange_complete_task` returns 410 | Same as above — the claim is gone. Don't try to redo the work; check `orange_task(id)` for the current status. |
-| Plan submit returns 422 | Read `reason` from the body. Most common: unknown pipeline name. Fix the plan and resubmit. |
+| Plan submit returns 422 | Structural problem (cycle, duplicate task key). Read `reason`, fix the plan, resubmit. |
+| Dispatch returns 422 | Read `reason` — usually an unknown pipeline name. Fix the plan and re-dispatch. |
+| Dispatch returns 404 | The `plan_id` has no saved plan.json. Re-plan, or dispatch the plan inline. |
 | Server unreachable mid-execution | Stop heartbeating, tell the user, offer to restart `./gradlew bootRun`. Active claims auto-expire on the reaper's next pass. |
 | User asked to cancel | `orange_cancel(task_id)` for each in-flight one. If you're holding a claim, your next heartbeat will see `cancel_requested=true`; release. |
 | Chat session restart | Call `orange_my_active_claims(worker_id)` — any claims still alive can be resumed without re-claiming. |
