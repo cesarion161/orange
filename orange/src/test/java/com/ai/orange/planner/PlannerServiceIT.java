@@ -11,8 +11,6 @@ import com.ai.orange.agent.AgentRunnerProcess;
 import com.ai.orange.agent.AgentRunnerProperties;
 import com.ai.orange.agent.protocol.Command;
 import com.ai.orange.agent.protocol.Event;
-import com.ai.orange.task.Task;
-import com.ai.orange.task.TaskStatus;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -36,9 +34,9 @@ import org.springframework.test.context.DynamicPropertySource;
 
 /**
  * Drives {@link PlannerService} end-to-end using a stub planner agent that
- * writes a canned 3-task DAG. Verifies tasks + edges land in Postgres, the
- * graph is acyclic (DagValidator inside createGraph), and the dependency-free
- * task is marked READY.
+ * writes a canned 3-task DAG. Verifies the planner is <b>plan-only</b>: it
+ * returns the DAG + artifacts for review and creates no tasks (dispatch is a
+ * separate step — see {@code DispatchServiceIT}).
  */
 @SpringBootTest
 @Import({TestcontainersConfiguration.class, PlannerServiceIT.StubPlannerLauncherConfig.class})
@@ -86,11 +84,20 @@ class PlannerServiceIT {
     }
 
     @Test
-    void plan_inserts_tasks_and_edges_with_root_marked_ready() throws Exception {
+    void plan_returns_dag_for_review_and_creates_no_tasks() throws Exception {
         PlannerService.PlanResult result = service.plan("Build a TODO web app with auth.");
 
         assertThat(result.status()).isEqualTo("success");
-        assertThat(result.createdTasks()).hasSize(3);
+
+        // The reviewable DAG comes back in the result — 3 tasks, 2 edges.
+        assertThat(result.plan()).isNotNull();
+        assertThat(result.plan().tasks()).hasSize(3);
+        assertThat(result.plan().edges()).hasSize(2);
+
+        var byTitle = result.plan().tasks().stream()
+                .collect(java.util.stream.Collectors.toMap(PlanJson.PlanTask::title, t -> t));
+        assertThat(byTitle).containsKeys("Build auth module", "Build UI", "Write integration tests");
+        assertThat(byTitle.get("Write integration tests").role()).isEqualTo("tester");
 
         // Architecture + plan files are reachable on disk.
         assertThat(result.architectureMd()).isNotNull();
@@ -98,19 +105,9 @@ class PlannerServiceIT {
         assertThat(result.planJson()).isNotNull();
         assertThat(Files.exists(result.planJson())).isTrue();
 
-        // Single root (auth) is READY; ui and tests are PENDING.
-        var byTitle = result.createdTasks().stream()
-                .collect(java.util.stream.Collectors.toMap(Task::title, t -> t));
-        assertThat(byTitle.get("Build auth module").status()).isEqualTo(TaskStatus.READY);
-        assertThat(byTitle.get("Build UI").status()).isEqualTo(TaskStatus.PENDING);
-        assertThat(byTitle.get("Write integration tests").status()).isEqualTo(TaskStatus.PENDING);
-
-        // Edges persisted.
-        int edgeCount = dsl.fetchCount(TASK_EDGES);
-        assertThat(edgeCount).isEqualTo(2);
-
-        // The tester task is the right role.
-        assertThat(byTitle.get("Write integration tests").role()).isEqualTo("tester");
+        // Plan-only: nothing was inserted — that's the dispatcher's job.
+        assertThat(dsl.fetchCount(TASKS)).isZero();
+        assertThat(dsl.fetchCount(TASK_EDGES)).isZero();
     }
 
     @Test

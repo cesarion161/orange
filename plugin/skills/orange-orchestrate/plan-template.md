@@ -1,6 +1,6 @@
 # Planner draft template
 
-When you (the chat orchestrator) are acting as the chat-as-planner, draft both artifacts in this shape before calling `orange_submit_plan`.
+When you (the chat orchestrator) are acting as the chat-as-planner, draft both artifacts in this shape before calling `orange_submit_plan`. Saving the plan is plan-only — it creates nothing; the plan runs later via `orange_dispatch`, which is where the `default_pipeline` is applied.
 
 ## architecture.md
 
@@ -85,7 +85,7 @@ Aim for design-review quality, not exhaustive prose. The user reads this to deci
 | Security-critical, auth, money, data integrity | `dev_review_qa` |
 | Tester-role tasks (verification of a previous dev task) | `dev_only` (the tester IS the verification — no need to re-test it) |
 
-The user's overall preference (the default_pipeline you derived from follow-ups) sets the default; pick per-task only when a specific task warrants a different gate.
+The user's overall preference (the default_pipeline you derived from follow-ups, passed at dispatch time) sets the default; pick per-task only when a specific task warrants a different gate.
 
 ## Picking `overrides`
 

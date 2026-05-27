@@ -6,9 +6,14 @@ Code via MCP stdio transport, exposes a handful of tools the model can call
 to plan/create/monitor/cancel tasks, and translates each call to an HTTP
 request.
 
+Planner and dispatcher are independent steps: orange_plan produces a plan DAG
+(creating nothing), and orange_dispatch runs a plan — from inline JSON or a
+saved planId. Review (or skip review) between the two.
+
 Two flavors of tools live here:
-  - "user-facing" tools (orange_plan, orange_create_task, orange_list_tasks,
-    orange_task, orange_tail, orange_cancel) for chat-as-user contexts;
+  - "user-facing" tools (orange_plan, orange_dispatch, orange_create_task,
+    orange_list_tasks, orange_task, orange_tail, orange_cancel) for
+    chat-as-user contexts;
   - "chat-as-executor" tools (orange_claim_next_task, orange_heartbeat,
     orange_complete_task, orange_fail_task, orange_release_claim,
     orange_submit_plan, orange_dep_artifacts, orange_my_active_claims) for
@@ -46,9 +51,11 @@ def _tools() -> list[Tool]:
             description=(
                 "Run the orange-ai planner agent on a free-text feature description. "
                 "The planner writes an architecture.md design doc and a plan.json adjacency "
-                "list of tasks, which orange-ai validates (acyclic check) and inserts into "
-                "Postgres. Returns the created tasks with their statuses. Use this when the "
-                "user asks to BUILD or IMPLEMENT a feature at the multi-task level."
+                "list of tasks, and returns that DAG (tasks + edges) for review. "
+                "PLAN-ONLY: it creates no tasks and dispatches nothing. To run the plan, "
+                "review the returned DAG, then call orange_dispatch with the returned planId "
+                "(or the plan inline). Use this when the user asks to BUILD or IMPLEMENT a "
+                "feature at the multi-task level."
             ),
             inputSchema={
                 "type": "object",
@@ -59,6 +66,46 @@ def _tools() -> list[Tool]:
                     },
                 },
                 "required": ["description"],
+            },
+        ),
+        Tool(
+            name="orange_dispatch",
+            description=(
+                "Run a plan: ingest a plan DAG and start implementation. The plan can come "
+                "from anywhere — supply EITHER an inline `plan` (e.g. one re-imported or "
+                "edited after review) OR a `plan_id` returned by orange_plan / "
+                "orange_submit_plan. orange-ai validates the DAG (acyclic, pipelines resolve), "
+                "inserts the tasks, and marks dependency-free tasks ready so agents pick them "
+                "up. Returns the created tasks with their statuses. This is the half that "
+                "actually starts work — call it only when the plan is approved."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "plan_id": {
+                        "type": "string",
+                        "description": "Dispatch a plan the planner already saved, by its planId.",
+                    },
+                    "plan": {
+                        "type": "object",
+                        "description": (
+                            "Inline plan.json to dispatch: "
+                            "{tasks: [{key,title,description,role,priority,pipeline?,overrides?}], "
+                            "edges: [{from,to}]}. Provide this OR plan_id, not both."
+                        ),
+                    },
+                    "architecture_md": {
+                        "type": "string",
+                        "description": "Optional architecture markdown, persisted alongside an inline plan.",
+                    },
+                    "default_pipeline": {
+                        "type": "string",
+                        "description": (
+                            "Pipeline applied to any task without an explicit one. "
+                            "One of: dev_only, dev_qa, dev_review_qa. Null → dev_only."
+                        ),
+                    },
+                },
             },
         ),
         Tool(
@@ -81,7 +128,7 @@ def _tools() -> list[Tool]:
                         "type": "string",
                         "description": (
                             "Pipeline name: dev_only | dev_qa | dev_review_qa. "
-                            f"Defaults to dev_only for one-off manual tasks."
+                            "Defaults to dev_only for one-off manual tasks."
                         ),
                     },
                     "priority": {"type": "integer"},
@@ -272,14 +319,14 @@ def _tools() -> list[Tool]:
         Tool(
             name="orange_submit_plan",
             description=(
-                "CHAT-AS-EXECUTOR (planner): Submit the {plan.json, architecture.md} pair "
-                "produced by an interactive planner chat. The orchestrator validates the DAG, "
-                "inserts the tasks atomically, marks dependency-free tasks ready, then "
-                "completes the planner claim with the resulting task ids as artifacts.\n\n"
+                "CHAT-AS-EXECUTOR (planner): Save the {plan.json, architecture.md} pair "
+                "produced by an interactive planner chat and complete the planner claim. "
+                "PLAN-ONLY: this validates the DAG and stores it, but creates no tasks and "
+                "dispatches nothing — pipeline selection is a dispatch concern. Returns the "
+                "saved plan DAG and a planId; run it later with orange_dispatch(plan_id=…).\n\n"
                 "Each task in `plan.tasks[]` MAY specify per-task `pipeline` "
                 "(dev_only | dev_qa | dev_review_qa) and `overrides` "
-                "({skip_review, skip_test, requires_auth}). Tasks without a pipeline use "
-                "`default_pipeline` (falls back to dev_only). Unknown pipelines → 422."
+                "({skip_review, skip_test, requires_auth}); these are honored at dispatch."
             ),
             inputSchema={
                 "type": "object",
@@ -296,13 +343,6 @@ def _tools() -> list[Tool]:
                     "architecture_md": {
                         "type": "string",
                         "description": "Optional architecture design-doc markdown body.",
-                    },
-                    "default_pipeline": {
-                        "type": "string",
-                        "description": (
-                            "Pipeline applied to any task that doesn't carry an explicit one. "
-                            "One of: dev_only, dev_qa, dev_review_qa. Null → dev_only."
-                        ),
                     },
                 },
                 "required": ["claim_token", "plan"],
@@ -449,6 +489,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     try:
         if name == "orange_plan":
             return await _plan(arguments)
+        if name == "orange_dispatch":
+            return await _dispatch(arguments)
         if name == "orange_create_task":
             return await _create_task(arguments)
         if name == "orange_list_tasks":
@@ -508,10 +550,34 @@ async def _plan(args: dict[str, Any]) -> list[TextContent]:
     body = {"description": description}
     async with httpx.AsyncClient(timeout=httpx.Timeout(600.0)) as client:
         r = await client.post(f"{BASE_URL}/plans", json=body)
+        if r.status_code == 422:
+            payload = r.json()
+            status = payload.get("status", "invalid_plan")
+            return _err(f"planner did not produce a usable plan (status={status})")
         r.raise_for_status()
         payload = r.json()
-    summary = _summarise_plan(payload)
-    return _ok(summary, payload)
+    return _ok(_summarise_plan(payload), payload)
+
+
+async def _dispatch(args: dict[str, Any]) -> list[TextContent]:
+    plan_id = (args.get("plan_id") or "").strip() or None
+    plan = args.get("plan")
+    if (plan_id is None) == (plan is None):
+        return _err("provide exactly one of 'plan_id' or 'plan'")
+    body: dict[str, Any] = {"defaultPipeline": args.get("default_pipeline")}
+    if plan_id:
+        body["planId"] = plan_id
+    else:
+        body["plan"] = plan
+        body["architectureMd"] = args.get("architecture_md")
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        r = await client.post(f"{BASE_URL}/dispatch", json=body)
+        if r.status_code in (404, 422):
+            payload = r.json()
+            return _err(f"dispatch rejected: {payload.get('reason', payload.get('status', 'unknown'))}")
+        r.raise_for_status()
+        payload = r.json()
+    return _ok(_summarise_dispatch(payload), payload)
 
 
 async def _create_task(args: dict[str, Any]) -> list[TextContent]:
@@ -701,7 +767,6 @@ async def _submit_plan(args: dict[str, Any]) -> list[TextContent]:
         "claimToken": token,
         "plan": args["plan"],
         "architectureMd": args.get("architecture_md"),
-        "defaultPipeline": args.get("default_pipeline"),
     }
     async with httpx.AsyncClient(timeout=60.0) as client:
         r = await client.post(f"{BASE_URL}/claims/{token}/submit-plan", json=body)
@@ -872,16 +937,40 @@ def _err(msg: str) -> list[TextContent]:
 
 
 def _summarise_plan(payload: dict[str, Any]) -> str:
+    """Render the reviewable DAG returned by /plans (plan-only — no tasks yet)."""
+    status = payload.get("status", "?")
+    if status != "success":
+        return f"planner finished with status={status} — see structured output for details"
+    plan = payload.get("plan") or {}
+    tasks = plan.get("tasks", []) or []
+    edges = plan.get("edges", []) or []
+    lines = [f"plan ready: {len(tasks)} task(s), {len(edges)} edge(s) — NOT dispatched yet"]
+    for t in tasks:
+        # `or` (not get-default) so an explicit null in the JSON still renders sanely.
+        key = t.get("key") or "?"
+        role = t.get("role") or "dev"
+        pipeline = t.get("pipeline") or "(default)"
+        title = t.get("title") or ""
+        lines.append(f"  {key:14}  role={role:8}  pipeline={pipeline:14}  {title}")
+    if edges:
+        lines.append("  edges: " + ", ".join(f"{e.get('from', '?')}→{e.get('to', '?')}" for e in edges))
+    lines.append(f"\nplanId:    {payload.get('planId')}")
+    lines.append(f"outputDir: {payload.get('outputDir')}")
+    lines.append(f"\nReview, then run it: orange_dispatch(plan_id=\"{payload.get('planId')}\")")
+    return "\n".join(lines)
+
+
+def _summarise_dispatch(payload: dict[str, Any]) -> str:
+    """Render the tasks created by /dispatch (implementation has started)."""
     status = payload.get("status", "?")
     tasks = payload.get("tasks", []) or []
     if status != "success":
-        return f"planner finished with status={status} — see structured output for details"
-    lines = [f"planner ok: {len(tasks)} task(s) created"]
+        return f"dispatch finished with status={status} — see structured output for details"
+    lines = [f"dispatched: {len(tasks)} task(s) created (planId {payload.get('planId')})"]
     for t in tasks:
         lines.append(
             f"  {t['status']:8}  role={t['role']:8}  pipeline={t['pipeline']:10}  {t['title']}"
         )
-    lines.append(f"\noutputDir: {payload.get('outputDir')}")
     return "\n".join(lines)
 
 
