@@ -126,6 +126,23 @@ class DispatchApiIT {
     }
 
     @Test
+    void dispatch_inline_cyclic_plan_returns_422() throws Exception {
+        // DagCycleException (a RuntimeException, not IllegalArgumentException) must be
+        // caught by the controller and mapped to 422 — exercise that handler.
+        Map<String, Object> plan = Map.of(
+                "tasks", List.of(
+                        Map.of("key", "a", "title", "A", "role", "dev", "pipeline", "dev_only"),
+                        Map.of("key", "b", "title", "B", "role", "dev", "pipeline", "dev_only")),
+                "edges", List.of(
+                        Map.of("from", "a", "to", "b"),
+                        Map.of("from", "b", "to", "a")));
+        HttpResponse<String> res = postJson("/dispatch", Map.of("plan", plan));
+        assertThat(res.statusCode()).isEqualTo(422);
+        assertThat(MAPPER.readTree(res.body()).get("status").asText()).isEqualTo("invalid_plan");
+        assertThat(dsl.fetchCount(TASKS)).isZero();
+    }
+
+    @Test
     void dispatch_by_unknown_plan_id_returns_404() throws Exception {
         HttpResponse<String> res = postJson("/dispatch", Map.of("planId", UUID.randomUUID().toString()));
         assertThat(res.statusCode()).isEqualTo(404);

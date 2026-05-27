@@ -15,8 +15,8 @@ public record PlanResponse(
         UUID planId,
         String status,
         String outputDir,
-        String planJson,
-        String architectureMd,
+        String planJsonPath,
+        String architectureMdPath,
         PlanGraph plan) {
 
     /** The DAG itself, mirrored from {@link PlanJson} for review/re-import. */

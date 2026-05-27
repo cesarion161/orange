@@ -562,7 +562,7 @@ async def _plan(args: dict[str, Any]) -> list[TextContent]:
 async def _dispatch(args: dict[str, Any]) -> list[TextContent]:
     plan_id = args.get("plan_id")
     plan = args.get("plan")
-    if bool(plan_id) == bool(plan):
+    if (plan_id is None) == (plan is None):
         return _err("provide exactly one of 'plan_id' or 'plan'")
     body: dict[str, Any] = {"defaultPipeline": args.get("default_pipeline")}
     if plan_id:
@@ -947,11 +947,12 @@ def _summarise_plan(payload: dict[str, Any]) -> str:
     lines = [f"plan ready: {len(tasks)} task(s), {len(edges)} edge(s) — NOT dispatched yet"]
     for t in tasks:
         pipeline = t.get("pipeline") or "(default)"
+        key = t.get("key", "?")
         lines.append(
-            f"  {t['key']:14}  role={t.get('role', 'dev'):8}  pipeline={pipeline:14}  {t.get('title', '')}"
+            f"  {key:14}  role={t.get('role', 'dev'):8}  pipeline={pipeline:14}  {t.get('title', '')}"
         )
     if edges:
-        lines.append("  edges: " + ", ".join(f"{e['from']}→{e['to']}" for e in edges))
+        lines.append("  edges: " + ", ".join(f"{e.get('from', '?')}→{e.get('to', '?')}" for e in edges))
     lines.append(f"\nplanId:    {payload.get('planId')}")
     lines.append(f"outputDir: {payload.get('outputDir')}")
     lines.append(f"\nReview, then run it: orange_dispatch(plan_id=\"{payload.get('planId')}\")")

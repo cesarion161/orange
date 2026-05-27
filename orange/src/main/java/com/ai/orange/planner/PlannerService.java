@@ -79,8 +79,16 @@ public class PlannerService {
 
         UUID planId = UUID.randomUUID();
         Path outputDir = Path.of(props.outputRoot()).toAbsolutePath().resolve(planId.toString());
-        Files.createDirectories(outputDir);
 
+        if (parsed.tasks() == null || parsed.tasks().isEmpty()) {
+            return new PlanResult(planId, outputDir, "empty_plan", parsed, null, null);
+        }
+
+        // Validate BEFORE writing anything so a malformed plan leaves no stale
+        // artifacts on disk (and the caller can complete/fail the claim cleanly).
+        planGraph.validateAcyclic(parsed);
+
+        Files.createDirectories(outputDir);
         Path planPath = outputDir.resolve("plan.json");
         Files.writeString(planPath, ProtocolCodec.mapper().writerWithDefaultPrettyPrinter().writeValueAsString(parsed));
         Path archPath = null;
@@ -89,11 +97,6 @@ public class PlannerService {
             Files.writeString(archPath, architectureMd);
         }
 
-        if (parsed.tasks() == null || parsed.tasks().isEmpty()) {
-            return new PlanResult(planId, outputDir, "empty_plan", parsed, archPath, planPath);
-        }
-
-        planGraph.validateAcyclic(parsed);
         log.info("chat-planner {} saved {} tasks (not dispatched)", planId, parsed.tasks().size());
         return new PlanResult(planId, outputDir, "success", parsed, archPath, planPath);
     }
