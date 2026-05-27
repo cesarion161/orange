@@ -560,7 +560,7 @@ async def _plan(args: dict[str, Any]) -> list[TextContent]:
 
 
 async def _dispatch(args: dict[str, Any]) -> list[TextContent]:
-    plan_id = args.get("plan_id")
+    plan_id = (args.get("plan_id") or "").strip() or None
     plan = args.get("plan")
     if (plan_id is None) == (plan is None):
         return _err("provide exactly one of 'plan_id' or 'plan'")
@@ -946,11 +946,12 @@ def _summarise_plan(payload: dict[str, Any]) -> str:
     edges = plan.get("edges", []) or []
     lines = [f"plan ready: {len(tasks)} task(s), {len(edges)} edge(s) — NOT dispatched yet"]
     for t in tasks:
+        # `or` (not get-default) so an explicit null in the JSON still renders sanely.
+        key = t.get("key") or "?"
+        role = t.get("role") or "dev"
         pipeline = t.get("pipeline") or "(default)"
-        key = t.get("key", "?")
-        lines.append(
-            f"  {key:14}  role={t.get('role', 'dev'):8}  pipeline={pipeline:14}  {t.get('title', '')}"
-        )
+        title = t.get("title") or ""
+        lines.append(f"  {key:14}  role={role:8}  pipeline={pipeline:14}  {title}")
     if edges:
         lines.append("  edges: " + ", ".join(f"{e.get('from', '?')}→{e.get('to', '?')}" for e in edges))
     lines.append(f"\nplanId:    {payload.get('planId')}")

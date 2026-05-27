@@ -46,8 +46,9 @@ public class PlanGraphService {
     /**
      * Structural validation the planner can run without knowing anything about
      * pipelines: keys are unique, edges reference real nodes, and the graph is
-     * acyclic. No DB access. Throws {@link IllegalArgumentException} (or
-     * {@code DagCycleException}) on a malformed plan.
+     * acyclic. No DB access. Throws {@link IllegalArgumentException} on any
+     * malformed plan — a detected cycle is normalised from {@code DagCycleException}
+     * to {@code IllegalArgumentException} so callers handle a single type.
      */
     public void validateAcyclic(PlanJson plan) {
         if (plan == null || plan.tasks() == null || plan.tasks().isEmpty()) {

@@ -39,26 +39,35 @@ public class DispatchService {
     }
 
     /**
-     * Dispatch a plan supplied inline. The plan is persisted under a fresh
-     * {@code planId} for auditability (mirroring the planner's on-disk layout)
-     * before the graph is inserted.
+     * Dispatch a plan supplied inline. Validation + insert happen first; the
+     * plan is only persisted under a fresh {@code planId} (mirroring the
+     * planner's on-disk layout) once ingest succeeds — so a rejected plan
+     * leaves no stale plan dir behind. Once the graph exists the artifact is
+     * best-effort audit, so a write failure doesn't undo the dispatch.
      */
-    public DispatchResult dispatch(PlanJson plan, String architectureMd, String defaultPipeline)
-            throws IOException {
+    public DispatchResult dispatch(PlanJson plan, String architectureMd, String defaultPipeline) {
         if (plan == null) throw new IllegalArgumentException("plan required");
 
         UUID planId = UUID.randomUUID();
-        Path outputDir = Path.of(plannerProps.outputRoot()).toAbsolutePath().resolve(planId.toString());
-        Files.createDirectories(outputDir);
-        Files.writeString(outputDir.resolve("plan.json"),
-                ProtocolCodec.mapper().writerWithDefaultPrettyPrinter().writeValueAsString(plan));
-        if (architectureMd != null && !architectureMd.isBlank()) {
-            Files.writeString(outputDir.resolve("architecture.md"), architectureMd);
-        }
-
         List<Task> created = planGraph.ingest(plan, defaultPipeline);
+        persistArtifacts(planId, plan, architectureMd);
         log.info("dispatched inline plan {}: {} tasks created", planId, created.size());
         return new DispatchResult(planId, "success", created);
+    }
+
+    /** Best-effort: the tasks are already created, so an artifact write failure only loses the audit copy. */
+    private void persistArtifacts(UUID planId, PlanJson plan, String architectureMd) {
+        Path outputDir = Path.of(plannerProps.outputRoot()).toAbsolutePath().resolve(planId.toString());
+        try {
+            Files.createDirectories(outputDir);
+            Files.writeString(outputDir.resolve("plan.json"),
+                    ProtocolCodec.mapper().writerWithDefaultPrettyPrinter().writeValueAsString(plan));
+            if (architectureMd != null && !architectureMd.isBlank()) {
+                Files.writeString(outputDir.resolve("architecture.md"), architectureMd);
+            }
+        } catch (IOException e) {
+            log.warn("dispatched plan {} but failed to persist artifacts: {}", planId, e.getMessage());
+        }
     }
 
     /**
@@ -67,7 +76,7 @@ public class DispatchService {
      *
      * @throws PlanNotFoundException if no {@code plan.json} exists for that id.
      */
-    public DispatchResult dispatchByPlanId(UUID planId, String defaultPipeline) throws IOException {
+    public DispatchResult dispatchByPlanId(UUID planId, String defaultPipeline) {
         if (planId == null) throw new IllegalArgumentException("planId required");
 
         Path planPath = Path.of(plannerProps.outputRoot()).toAbsolutePath()

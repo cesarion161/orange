@@ -144,6 +144,11 @@ public class ClaimController {
             return ResponseEntity.badRequest().build();
         }
         PlanResult result = planner.savePlan(req.plan(), req.architectureMd());
+        if (!"success".equals(result.status())) {
+            // Plan rejected (e.g. empty_plan) — leave the claim open so the chat
+            // can fix the plan and re-submit with the same token.
+            return ResponseEntity.status(422).body(PlanResponse.of(result));
+        }
         Map<String, Object> artifacts = new LinkedHashMap<>();
         artifacts.put("plan_id", result.planId().toString());
         artifacts.put("plan_output_dir", result.outputDir().toString());
@@ -151,8 +156,7 @@ public class ClaimController {
             artifacts.put("plan_json", result.planJson().toString());
         }
         claims.complete(token, "planner produced plan " + result.planId(), artifacts);
-        int code = "success".equals(result.status()) ? 200 : 422;
-        return ResponseEntity.status(code).body(PlanResponse.of(result));
+        return ResponseEntity.status(200).body(PlanResponse.of(result));
     }
 
     /**

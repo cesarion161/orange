@@ -5,7 +5,6 @@ import com.ai.orange.dispatch.DispatchService.DispatchResult;
 import com.ai.orange.dispatch.PlanNotFoundException;
 import com.ai.orange.task.exception.DagCycleException;
 import jakarta.validation.Valid;
-import java.io.IOException;
 import java.util.Map;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -30,7 +29,7 @@ public class DispatchController {
     }
 
     @PostMapping
-    public ResponseEntity<DispatchResponse> dispatch(@Valid @RequestBody DispatchRequest req) throws IOException {
+    public ResponseEntity<DispatchResponse> dispatch(@Valid @RequestBody DispatchRequest req) {
         boolean hasPlan = req.plan() != null;
         boolean hasId = req.planId() != null;
         if (hasPlan == hasId) {
