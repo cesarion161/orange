@@ -31,7 +31,10 @@ cargo run --release   # optimised
 
 ## Controls
 
-> _Game controls will be documented here as gameplay is implemented._
+| Key | Action |
+|-----|--------|
+| ↑ / ↓ / ← / → | Steer the snake (180° reversals are ignored) |
+| R or Enter | Restart after game over |
 
 ## Project layout
 
@@ -40,5 +43,6 @@ snake/
 ├── Cargo.toml        # macroquad dependency
 ├── README.md         # this file
 └── src/
-    └── main.rs       # entry point — opens a window and renders each frame
+    ├── main.rs       # entry point — state types, reset(), game loop
+    └── input.rs      # handle_input() — arrow-key steering + GameOver restart
 ```
