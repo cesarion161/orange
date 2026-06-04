@@ -1,5 +1,7 @@
 use macroquad::prelude::*;
 
+pub mod types;
+
 #[macroquad::main("Snake")]
 async fn main() {
     loop {
