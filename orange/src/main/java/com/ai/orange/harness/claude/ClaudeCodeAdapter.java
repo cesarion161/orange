@@ -1,5 +1,6 @@
 package com.ai.orange.harness.claude;
 
+import com.ai.orange.harness.Credentials;
 import com.ai.orange.harness.HarnessAdapter;
 import com.ai.orange.harness.HarnessProperties;
 import com.ai.orange.harness.ProcessRunHandle;
@@ -12,6 +13,7 @@ import java.nio.file.Path;
 import java.util.Map;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -55,6 +57,16 @@ public class ClaudeCodeAdapter implements HarnessAdapter {
         pb.environment().clear();
         pb.environment().putAll(ClaudeCodeCommand.env(spec, hostEnv.get(), props.claudeCode().passEnv(), configDir));
 
-        return ProcessRunHandle.start(pb, spec.prompt(), runDir, parser::parse, sink);
+        return ProcessRunHandle.start(pb, spec.prompt(), runDir, parser::parse, sink, redactor(spec.credentials()));
+    }
+
+    /** Replaces the run's own credential wherever it appears in the harness's output. */
+    static UnaryOperator<String> redactor(Credentials credentials) {
+        String secret = switch (credentials) {
+            case Credentials.Subscription s -> s.oauthToken();
+            case Credentials.Gateway g -> g.virtualKey();
+        };
+        if (secret == null || secret.isBlank()) return UnaryOperator.identity();
+        return line -> line.contains(secret) ? line.replace(secret, "***") : line;
     }
 }

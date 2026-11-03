@@ -78,6 +78,20 @@ public class FakeClaude {
                 finishOk(model, session, "Tests fail.");
             }
             case "review-fail" -> finishOk(model, session, "Found a missing null check in Board.java.\nVERDICT: FAIL");
+            case "leak-env" -> {
+                // An agent that runs `env` while debugging: its credentials show up in a tool
+                // result, in its own text, in the final result and on stderr.
+                String token = System.getenv().getOrDefault("CLAUDE_CODE_OAUTH_TOKEN", "");
+                String key = System.getenv().getOrDefault("ANTHROPIC_AUTH_TOKEN", "");
+                String dump = "CLAUDE_CODE_OAUTH_TOKEN=" + token + "\nANTHROPIC_AUTH_TOKEN=" + key;
+                assistant("msg_1", model, "Let me check the environment: " + token + " " + key, 100, 20);
+                emit("{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"toolu_1\","
+                        + "\"type\":\"tool_result\",\"content\":" + q(dump) + "}]},\"session_id\":" + q(session) + "}");
+                System.err.println("debug: token=" + token + " key=" + key);
+                System.err.flush();
+                assistant("msg_2", model, "Found it: " + token + key, 1500, 40);
+                result(false, "success", "Done, the token is " + token + key, "0.01", session);
+            }
             case "plan" -> {
                 Files.writeString(cwd.resolve("architecture.md"),
                         "# TODO app\n\nApproach: split work into auth → ui → tests.\n");

@@ -71,6 +71,8 @@ public class AgentRunService {
     private final AgentRunRepository agentRuns;
     private final TaskEventRepository taskEvents;
     private final TaskRepository tasks;
+    /** The run currently working on each task, so a cancel can reach its process. */
+    private final Map<UUID, RunHandle> active = new ConcurrentHashMap<>();
 
     public AgentRunService(RoutingTable routing, RoutingProperties routingProps, HarnessRegistry harnesses,
                            GatewayClient gateway, GatewayProperties gatewayProps, BillingProperties billing,
@@ -138,6 +140,18 @@ public class AgentRunService {
         }
     }
 
+    /**
+     * Kills the run currently working on {@code taskId}, if there is one. The run then ends with
+     * status and reason {@code cancelled}. Returns false when no run is active for the task.
+     */
+    public boolean cancel(UUID taskId) {
+        RunHandle handle = active.get(taskId);
+        if (handle == null) return false;
+        log.info("cancelling the active run of task {}", taskId);
+        handle.kill("cancelled");
+        return true;
+    }
+
     private AgentRunResult execute(AgentRunRequest req, RouteDecision route, UUID runId, UUID agentRunId,
                                    Credentials credentials, VirtualKey key) {
         RunSpec spec = new RunSpec(runId, req.prompt(), req.agent().systemPrompt(), route.model(),
@@ -154,7 +168,13 @@ public class AgentRunService {
         }
         watch.attach(handle);
 
-        RunExit exit = await(handle, req);
+        RunExit exit;
+        if (req.taskId() != null) active.put(req.taskId(), handle);
+        try {
+            exit = await(handle, req);
+        } finally {
+            if (req.taskId() != null) active.remove(req.taskId(), handle);
+        }
         RunEvent.Result result = exit.result();
         String reason = failureReason(exit, watch.lastAssistant);
 
@@ -227,6 +247,12 @@ public class AgentRunService {
             long tokensIn = result == null ? 0 : result.inputTokens() + result.cacheReadTokens() + result.cacheWriteTokens();
             long tokensOut = result == null ? 0 : result.outputTokens();
             agentRuns.finish(agentRunId, rowStatus, cost, tokensIn, tokensOut);
+            if (reason != null) {
+                // Routing escalates on failed attempts; the reason lets it ignore failures that
+                // were not the model's doing (plan limit, missing token, gateway down, cancel).
+                agentRuns.mergeMetadata(agentRunId,
+                        JSONB.valueOf(JSON.createObjectNode().put("failure_reason", reason).toString()));
+            }
         }
         if (req.taskId() != null) {
             ObjectNode payload = JSON.createObjectNode()

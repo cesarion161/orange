@@ -120,6 +120,60 @@ class AgentRunServiceIT {
     }
 
     @Test
+    void agentEchoedTokenNeverPersists() throws Exception {
+        Task task = AgentRunTestSupport.newTask(taskService);
+        AgentRunResult result = run(task, "[[fake:leak-env]]", Duration.ofSeconds(60));
+
+        assertThat(result.status()).isEqualTo("success");
+        assertThat(AgentRunTestSupport.eventTypes(taskEvents, task.id())).contains("tool_result", "assistant_message");
+        assertThat(AgentRunTestSupport.eventsText(taskEvents, task.id())).doesNotContain("test-plan-token");
+        assertThat(result.lastAssistantText()).doesNotContain("test-plan-token").contains("***");
+        assertThat(result.result().text()).doesNotContain("test-plan-token");
+    }
+
+    @Test
+    void cancelKillsTheRunningProcess() throws Exception {
+        Task task = AgentRunTestSupport.newTask(taskService);
+        java.util.concurrent.CompletableFuture<AgentRunResult> running = java.util.concurrent.CompletableFuture
+                .supplyAsync(() -> {
+                    try {
+                        return run(task, "[[fake:hang]]", Duration.ofSeconds(120));
+                    } catch (Exception e) {
+                        throw new IllegalStateException(e);
+                    }
+                });
+
+        long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+        while (!service.cancel(task.id())) {
+            assertThat(System.nanoTime()).as("run never became cancellable").isLessThan(deadline);
+            Thread.sleep(100);
+        }
+
+        AgentRunResult result = running.get(30, java.util.concurrent.TimeUnit.SECONDS);
+        assertThat(result.status()).isEqualTo("cancelled");
+        assertThat(result.failureReason()).isEqualTo("cancelled");
+        assertThat(agentRuns.findById(result.agentRunId()).orElseThrow().status()).isEqualTo(AgentRunStatus.CANCELLED);
+        assertThat(service.cancel(task.id())).as("nothing left to cancel").isFalse();
+    }
+
+    @Test
+    void planLimitFailuresDoNotEscalateTheTier() throws Exception {
+        Task task = AgentRunTestSupport.newTask(taskService);
+        AgentRunResult first = run(task, "[[fake:plan-limit]]", Duration.ofSeconds(60));
+        run(task, "[[fake:plan-limit]]", Duration.ofSeconds(60));
+        AgentRunResult third = run(task, "Write the output file.", Duration.ofSeconds(60));
+
+        // Running out of plan allowance is not the model failing: no escalation to Opus.
+        var meta = AgentRunTestSupport.json(agentRuns.findById(third.agentRunId()).orElseThrow().metadata());
+        assertThat(meta.path("tier").asText()).isEqualTo("medium");
+        assertThat(meta.path("model").asText()).isEqualTo("claude-sonnet-5-5");
+
+        var failed = AgentRunTestSupport.json(agentRuns.findById(first.agentRunId()).orElseThrow().metadata());
+        assertThat(failed.path("failure_reason").asText()).isEqualTo("plan_limit");
+        assertThat(failed.path("model").asText()).as("route kept when the reason is added").isEqualTo("claude-sonnet-5-5");
+    }
+
+    @Test
     void plannerRunsWithoutATaskRow() throws Exception {
         Agent planner = agents.findEnabledByRole("planner").getFirst();
         Path cwd = Files.createTempDirectory("planner-cwd-");

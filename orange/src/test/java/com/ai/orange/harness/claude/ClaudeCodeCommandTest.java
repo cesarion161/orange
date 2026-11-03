@@ -34,11 +34,12 @@ class ClaudeCodeCommandTest {
                 Path.of("/runs/x/mcp.json"), new Credentials.Subscription("tok"));
         List<String> argv = ClaudeCodeCommand.argv(s, List.of("claude"));
 
-        assertThat(argv.subList(0, 15)).containsExactly(
+        assertThat(argv.subList(0, 16)).containsExactly(
                 "claude", "-p", "--output-format", "stream-json", "--verbose",
                 "--model", "claude-sonnet-5-5", "--effort", "xhigh", "--session-id", RUN.toString(),
+                "--no-session-persistence",
                 "--setting-sources", "project,local", "--strict-mcp-config", "--permission-mode");
-        assertThat(argv.get(15)).isEqualTo("acceptEdits");
+        assertThat(argv.get(16)).isEqualTo("acceptEdits");
         assertThat(argv).containsSequence("--append-system-prompt", "You are a dev.");
         // One element per tool: "Bash(git *)" contains a space and must survive intact.
         assertThat(argv).containsSequence("--allowedTools", "Read", "Bash(git *)");

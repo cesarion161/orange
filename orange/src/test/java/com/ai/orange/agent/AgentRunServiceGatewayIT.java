@@ -102,6 +102,15 @@ class AgentRunServiceGatewayIT {
     }
 
     @Test
+    void agentEchoedVirtualKeyNeverPersists() throws Exception {
+        Task task = AgentRunTestSupport.newTask(taskService);
+        AgentRunResult result = run(task, "[[fake:leak-env]]");
+        assertThat(result.status()).isEqualTo("success");
+        assertThat(AgentRunTestSupport.eventsText(taskEvents, task.id())).doesNotContain("sk-secret-virtual-key");
+        assertThat(result.lastAssistantText()).doesNotContain("sk-secret-virtual-key");
+    }
+
+    @Test
     void gatewayCostComesFromLiteLlm() throws Exception {
         AgentRunResult result = run(AgentRunTestSupport.newTask(taskService), "Write the output file.");
         assertThat(result.status()).isEqualTo("success");

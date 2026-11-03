@@ -197,10 +197,9 @@ def _tools() -> list[Tool]:
         Tool(
             name="orange_cancel",
             description=(
-                "Cancel a running task. Terminates its Temporal workflow, marks the task "
-                "as cancelled. The running Claude Code process is killed with the activity; "
-                "the worktree may need a manual sweep if cleanup activities were "
-                "skipped by termination."
+                "Cancel a running task. Terminates its Temporal workflow, kills the task's "
+                "running Claude Code process, and marks the task as cancelled. The worktree "
+                "may need a manual sweep if cleanup activities were skipped by termination."
             ),
             inputSchema={
                 "type": "object",

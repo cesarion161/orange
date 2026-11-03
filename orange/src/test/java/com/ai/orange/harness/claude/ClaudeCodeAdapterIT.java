@@ -157,6 +157,28 @@ class ClaudeCodeAdapterIT {
     }
 
     @Test
+    void credentialsTheAgentEchoesAreRedactedEverywhere() throws Exception {
+        UUID runId = UUID.randomUUID();
+        RunExit exit = adapter.start(spec(runId, "[[fake:leak-env]]"), events::add).exit().get(60, TimeUnit.SECONDS);
+
+        assertThat(exit.exitCode()).isZero();
+        assertThat(events).isNotEmpty();
+        assertThat(events.toString()).doesNotContain("test-plan-token").contains("***");
+        assertThat(exit.result().text()).doesNotContain("test-plan-token");
+        assertThat(Files.readString(runRoot.resolve(runId + "/stream.jsonl"))).doesNotContain("test-plan-token");
+        assertThat(Files.readString(runRoot.resolve(runId + "/stderr.log"))).doesNotContain("test-plan-token");
+    }
+
+    @Test
+    void sessionTranscriptsAreNotPersisted() throws Exception {
+        UUID runId = UUID.randomUUID();
+        adapter.start(spec(runId, "Write the output file."), events::add).exit().get(60, TimeUnit.SECONDS);
+        String args = Files.readString(runRoot.resolve(runId + "/claude-config/fake-args.json"));
+        // Claude Code's own transcript would be one more unredacted copy of everything on disk.
+        assertThat(args).contains("\"--no-session-persistence\"");
+    }
+
+    @Test
     void sinkExceptionsDoNotBreakTheRun() throws Exception {
         RunExit exit = adapter.start(spec(UUID.randomUUID(), "Write the output file."), e -> {
             throw new IllegalStateException("sink blew up");

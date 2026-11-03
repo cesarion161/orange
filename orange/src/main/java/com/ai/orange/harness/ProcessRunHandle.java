@@ -16,6 +16,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.UnaryOperator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -43,32 +44,34 @@ public final class ProcessRunHandle implements RunHandle {
      * Starts {@code pb} and supervises it.
      *
      * @param stdin  written to the child's stdin, which is then closed
-     * @param runDir receives {@code stream.jsonl} (raw stdout) and {@code stderr.log}
+     * @param runDir receives {@code stream.jsonl} (stdout) and {@code stderr.log}
      * @param parser turns one stdout line into events
+     * @param redact applied to every stdout and stderr line before it is written to disk or parsed,
+     *               so credentials the agent echoes (e.g. by running {@code env}) never leave the process
      */
     public static ProcessRunHandle start(ProcessBuilder pb, String stdin, Path runDir,
                                          Function<String, List<RunEvent>> parser,
-                                         Consumer<RunEvent> sink) throws IOException {
+                                         Consumer<RunEvent> sink, UnaryOperator<String> redact) throws IOException {
         Files.createDirectories(runDir);
         Process process = pb.start();
         ProcessRunHandle handle = new ProcessRunHandle(process);
-        handle.supervise(stdin, runDir, parser, sink);
+        handle.supervise(stdin, runDir, parser, sink, redact);
         return handle;
     }
 
     private void supervise(String stdin, Path runDir, Function<String, List<RunEvent>> parser,
-                           Consumer<RunEvent> sink) {
+                           Consumer<RunEvent> sink, UnaryOperator<String> redact) {
         Thread.ofVirtual().name("run-stdin-" + process.pid()).start(() -> writeStdin(stdin));
 
         Thread stdout = Thread.ofVirtual().name("run-stdout-" + process.pid()).start(() ->
-                pump(process.getInputStream(), runDir.resolve("stream.jsonl"), line -> {
+                pump(process.getInputStream(), runDir.resolve("stream.jsonl"), redact, line -> {
                     for (RunEvent event : parser.apply(line)) {
                         if (event instanceof RunEvent.Result r) lastResult.set(r);
                         deliver(sink, event);
                     }
                 }));
         Thread stderr = Thread.ofVirtual().name("run-stderr-" + process.pid()).start(() ->
-                pump(process.getErrorStream(), runDir.resolve("stderr.log"),
+                pump(process.getErrorStream(), runDir.resolve("stderr.log"), redact,
                         line -> deliver(sink, new RunEvent.Stderr(line))));
 
         Thread.ofVirtual().name("run-wait-" + process.pid()).start(() -> {
@@ -93,12 +96,13 @@ public final class ProcessRunHandle implements RunHandle {
         }
     }
 
-    private static void pump(InputStream in, Path copy, Consumer<String> onLine) {
+    private static void pump(InputStream in, Path copy, UnaryOperator<String> redact, Consumer<String> onLine) {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
              BufferedWriter writer = Files.newBufferedWriter(copy, StandardCharsets.UTF_8,
                      StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
+            String raw;
+            while ((raw = reader.readLine()) != null) {
+                String line = redact.apply(raw);
                 writer.write(line);
                 writer.newLine();
                 writer.flush();

@@ -46,6 +46,9 @@ public final class ClaudeCodeCommand {
         a.add(s.effort().cli());
         a.add("--session-id");
         a.add(s.runId().toString());
+        // orange keeps its own (redacted) copy of the stream; Claude Code's transcript would be
+        // a second, unredacted one on disk.
+        a.add("--no-session-persistence");
         // Only the repo's own settings apply; the user's ~/.claude settings, hooks and plugins don't.
         a.add("--setting-sources");
         a.add("project,local");
