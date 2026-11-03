@@ -133,6 +133,12 @@ orange:
       command: [claude]
       # The only host variables a run inherits. Credentials are dropped even if listed here.
       pass-env: [PATH, LANG, LC_ALL, TERM, TMPDIR, HOME, USER]
+  gateway:
+    # LiteLLM proxy for tiers with auth: gateway (start with: docker compose --profile gateway up -d litellm).
+    base-url: ${LITELLM_BASE_URL:http://localhost:4000}
+    master-key: ${LITELLM_MASTER_KEY:}
+    # Added to a run's timeout to get its virtual key's expiry.
+    key-ttl-margin: 30m
 
 gg:
   jte:

@@ -1,0 +1,56 @@
+# LiteLLM proxy config for orange's gateway tiers (routing tiers with `auth: gateway`).
+# Subscription runs (the default) never go through LiteLLM.
+#
+# Model names are the real Anthropic model IDs, so Claude Code keeps enabling model-specific
+# features such as --effort. Routing tiers live in orange's application.yaml, not here.
+#
+# Prices are explicit so a run's spend never depends on LiteLLM's built-in price map.
+# USD per token, list prices as of 2026-10; cache writes priced at 1.25x input.
+model_list:
+  - model_name: claude-fable-5-1
+    litellm_params:
+      model: anthropic/claude-fable-5-1
+      api_key: os.environ/ANTHROPIC_API_KEY
+    model_info:
+      input_cost_per_token: 0.00001
+      output_cost_per_token: 0.00005
+      cache_read_input_token_cost: 0.00000025
+      cache_creation_input_token_cost: 0.0000125
+
+  - model_name: claude-opus-5-5
+    litellm_params:
+      model: anthropic/claude-opus-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+    model_info:
+      input_cost_per_token: 0.000004
+      output_cost_per_token: 0.00002
+      cache_read_input_token_cost: 0.0000002
+      cache_creation_input_token_cost: 0.000005
+
+  - model_name: claude-sonnet-5-5
+    litellm_params:
+      model: anthropic/claude-sonnet-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+    model_info:
+      input_cost_per_token: 0.000002
+      output_cost_per_token: 0.00001
+      cache_read_input_token_cost: 0.0000002
+      cache_creation_input_token_cost: 0.0000025
+
+  - model_name: claude-haiku-5-5
+    litellm_params:
+      model: anthropic/claude-haiku-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+    model_info:
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000005
+      cache_read_input_token_cost: 0.00000001
+      cache_creation_input_token_cost: 0.000000125
+
+# A second provider's models and cross-provider fallbacks go here once a key exists, e.g.
+# router_settings:
+#   fallbacks: [{"claude-opus-5-5": ["other-provider-large"]}]
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
