@@ -41,6 +41,12 @@ public class AgentRunRepository {
         return (max == null ? 0 : max) + 1;
     }
 
+    /** Failed attempts on a task so far; routing escalates on this. */
+    public int countFailed(UUID taskId) {
+        return dsl.fetchCount(AGENT_RUNS,
+                AGENT_RUNS.TASK_ID.eq(taskId).and(AGENT_RUNS.STATUS.eq(AgentRunStatus.FAILED.dbValue())));
+    }
+
     public boolean finish(UUID id, AgentRunStatus status, BigDecimal costUsd, long tokensIn, long tokensOut) {
         return dsl.update(AGENT_RUNS)
                 .set(AGENT_RUNS.STATUS, status.dbValue())
