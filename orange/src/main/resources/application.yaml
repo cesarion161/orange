@@ -126,6 +126,13 @@ orange:
       tier-up-after-failures: 2
       needs-human-after-failures: 3
     small-model: claude-haiku-5-5
+  harness:
+    # Per-run files (stream log, isolated Claude config). Must stay outside every git worktree.
+    run-root: ${ORANGE_RUN_ROOT:${user.home}/.orange/runs}
+    claude-code:
+      command: [claude]
+      # The only host variables a run inherits. Credentials are dropped even if listed here.
+      pass-env: [PATH, LANG, LC_ALL, TERM, TMPDIR, HOME, USER]
 
 gg:
   jte:
