@@ -79,13 +79,15 @@ public class FakeClaude {
             }
             case "review-fail" -> finishOk(model, session, "Found a missing null check in Board.java.\nVERDICT: FAIL");
             case "plan" -> {
-                Files.writeString(cwd.resolve("architecture.md"), "# Fake plan\n\nTwo tasks, one edge.\n");
+                Files.writeString(cwd.resolve("architecture.md"),
+                        "# TODO app\n\nApproach: split work into auth → ui → tests.\n");
                 Files.writeString(cwd.resolve("plan.json"), """
                         {"tasks":[
-                          {"key":"a","title":"First task","description":"Do the first thing","role":"dev","priority":100,"pipeline":"dev_only"},
-                          {"key":"b","title":"Second task","description":"Do the second thing","role":"dev","priority":100,"pipeline":"dev_only"}
+                          {"key":"auth","title":"Build auth module","description":"JWT-based session handling.","role":"dev","priority":100},
+                          {"key":"ui","title":"Build UI","description":"List view + detail view.","role":"dev","priority":100},
+                          {"key":"tests","title":"Write integration tests","description":"Cover auth and UI happy paths.","role":"tester","priority":100}
                         ],
-                        "edges":[{"from":"a","to":"b"}]}
+                        "edges":[{"from":"auth","to":"ui"},{"from":"ui","to":"tests"}]}
                         """);
                 finishOk(model, session, "Plan written.");
             }

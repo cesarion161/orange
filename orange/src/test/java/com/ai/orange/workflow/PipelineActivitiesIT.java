@@ -7,24 +7,16 @@ import static com.ai.orange.db.jooq.Tables.TASK_EVENTS;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.ai.orange.TestcontainersConfiguration;
-import com.ai.orange.agent.AgentRunnerLauncher;
-import com.ai.orange.agent.AgentRunnerProcess;
-import com.ai.orange.agent.AgentRunnerProperties;
-import com.ai.orange.agent.protocol.Command;
-import com.ai.orange.agent.protocol.Event;
+import com.ai.orange.harness.FakeClaude;
 import com.ai.orange.task.EdgeKey;
 import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskDef;
 import com.ai.orange.task.TaskService;
 import com.ai.orange.task.TaskStatus;
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
-import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
-import java.util.function.Consumer;
 import org.jooq.DSLContext;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -32,10 +24,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIf;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
-import org.springframework.context.annotation.Primary;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
@@ -43,19 +32,20 @@ import org.springframework.test.context.DynamicPropertySource;
  * End-to-end happy-path test for {@link PipelineActivitiesImpl}. Drives the
  * activity sequence (claim → prepareWorktree → runStage → markPrOpen →
  * cleanupWorktree) directly against a real Postgres + a real temp git repo +
- * a stub Python agent-runner. Bypasses Temporal in this test since the
- * workflow is just sequencing — its activities are where the logic lives.
+ * the fake Claude Code (src/test/resources/fake-claude). Bypasses Temporal in
+ * this test since the workflow is just sequencing — its activities are where
+ * the logic lives.
  */
 @SpringBootTest
-@Import({TestcontainersConfiguration.class, PipelineActivitiesIT.StubLauncherConfig.class})
-@EnabledIf("isPython3AndGitAvailable")
+@Import(TestcontainersConfiguration.class)
+@EnabledIf("isGitAvailable")
 class PipelineActivitiesIT {
 
     private static final String DEFAULT_AGENT_ROLE = "dev";
 
     static Path baseRepo;
     static Path worktreesRoot;
-    static Path stubScript;
+    static Path runRoot;
 
     @Autowired PipelineActivitiesImpl activities;
     @Autowired TaskService taskService;
@@ -76,14 +66,7 @@ class PipelineActivitiesIT {
         Files.writeString(baseRepo.resolve("README.md"), "phase 4\n");
         run(baseRepo, "git", "add", ".");
         run(baseRepo, "git", "commit", "-q", "-m", "initial");
-
-        // Copy the stub from the test classpath to a stable file.
-        stubScript = Files.createTempFile("stub_runner_simple-", ".py");
-        try (var in = PipelineActivitiesIT.class.getResourceAsStream("/stub_runner_simple.py")) {
-            if (in == null) throw new IllegalStateException("stub_runner_simple.py not on classpath");
-            Files.copy(in, stubScript, StandardCopyOption.REPLACE_EXISTING);
-        }
-        stubScript.toFile().deleteOnExit();
+        runRoot = tmp.resolve("runs");
     }
 
     @DynamicPropertySource
@@ -91,13 +74,12 @@ class PipelineActivitiesIT {
         r.add("orange.worktrees.root", () -> worktreesRoot.toString());
         r.add("orange.worktrees.base-repo", () -> baseRepo.toString());
         r.add("orange.worktrees.max-count", () -> "20");
-        r.add("orange.workflow.auto-start", () -> "false");
+        FakeClaude.register(r, runRoot);
     }
 
-    static boolean isPython3AndGitAvailable() {
+    static boolean isGitAvailable() {
         try {
-            return new ProcessBuilder("python3", "--version").start().waitFor() == 0
-                    && new ProcessBuilder("git", "--version").start().waitFor() == 0;
+            return new ProcessBuilder("git", "--version").start().waitFor() == 0;
         } catch (Exception e) {
             return false;
         }
@@ -156,7 +138,7 @@ class PipelineActivitiesIT {
     @Test
     void reviewer_runStage_captures_final_message_as_the_review() throws Exception {
         // runStage with role "reviewer" must capture the agent's final message
-        // as the review (so a VERDICT line can gate). The stub emits no VERDICT,
+        // as the review (so a VERDICT line can gate). The fake emits no VERDICT,
         // so the review is advisory (verdict null → succeeded).
         TaskDef def = new TaskDef("rev-1", "Review me", null, DEFAULT_AGENT_ROLE, "dev_review_qa", null, null);
         UUID taskId = taskService.createGraph(List.of(def), List.<EdgeKey>of()).get(0).id();
@@ -166,9 +148,9 @@ class PipelineActivitiesIT {
         StageOutcome outcome = activities.runStage(taskId, "reviewer", worktreePath, null, null);
 
         assertThat(outcome.agentStatus()).isEqualTo("success");
-        // The stub's assistant_message was captured as the review report.
-        assertThat(outcome.report()).contains("doing the work");
-        // No VERDICT line in the stub output → advisory, non-blocking.
+        // The fake's last assistant message was captured as the review report.
+        assertThat(outcome.report()).isEqualTo("Done.");
+        // No VERDICT line in the fake's output → advisory, non-blocking.
         assertThat(outcome.verdict()).isNull();
         assertThat(outcome.succeeded()).isTrue();
 
@@ -189,29 +171,6 @@ class PipelineActivitiesIT {
         if (p.waitFor() != 0) {
             String out = new String(p.getInputStream().readAllBytes());
             throw new IllegalStateException(String.join(" ", cmd) + " failed: " + out);
-        }
-    }
-
-    /**
-     * Replaces the production AgentRunnerLauncher with one that runs the stub
-     * Python script (which never touches Claude or the network).
-     */
-    @TestConfiguration
-    static class StubLauncherConfig {
-        @Bean
-        @Primary
-        AgentRunnerLauncher stubAgentRunnerLauncher() {
-            AgentRunnerProperties props = new AgentRunnerProperties(
-                    "python3", "ignored", Duration.ofSeconds(10), Duration.ofSeconds(5));
-            return new AgentRunnerLauncher(props) {
-                @Override
-                public AgentRunnerProcess launch(Command.Start start, Consumer<Event> cb) throws IOException {
-                    return AgentRunnerProcess.launch(
-                            List.of("python3", "-u", stubScript.toString()),
-                            Duration.ofSeconds(5),
-                            start, cb);
-                }
-            };
         }
     }
 }

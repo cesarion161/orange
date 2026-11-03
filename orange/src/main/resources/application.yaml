@@ -37,11 +37,6 @@ management:
       application: ${spring.application.name}
 
 orange:
-  agent-runner:
-    python: ${AGENT_RUNNER_PYTHON:../agent-runner/.venv/bin/python}
-    module: agent_runner
-    startup-timeout: 30s
-    cancel-grace: 10s
   worktrees:
     root: ${WORKTREES_ROOT:./.worktrees}
     base-repo: ${WORKTREES_BASE_REPO:}

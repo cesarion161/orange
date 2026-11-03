@@ -1,6 +1,6 @@
 package com.ai.orange.devenv;
 
-import com.ai.orange.agent.protocol.ProtocolCodec;
+import com.ai.orange.json.Json;
 import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskEventRepository;
 import com.ai.orange.task.TaskRepository;
@@ -182,7 +182,7 @@ public class DevEnvAutoReleaser {
      *  name containing a quote or backslash doesn't corrupt the row. */
     private static JSONB asJsonb(Map<String, Object> payload) {
         try {
-            return JSONB.valueOf(ProtocolCodec.mapper().writeValueAsString(payload));
+            return JSONB.valueOf(Json.mapper().writeValueAsString(payload));
         } catch (JsonProcessingException e) {
             // Single-level map of well-known strings — should be unreachable,
             // but fall back to an empty object so the release still records.

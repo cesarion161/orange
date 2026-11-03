@@ -24,6 +24,21 @@ public final class FakeClaude {
         return List.of(java, source().toString());
     }
 
+    /**
+     * Points a Spring test context at the fake: {@code runRoot} for run files, the fake's command,
+     * a dummy subscription token, and no workflow auto-start.
+     */
+    public static void register(org.springframework.test.context.DynamicPropertyRegistry r, Path runRoot) {
+        r.add("orange.workflow.auto-start", () -> "false");
+        r.add("orange.harness.run-root", runRoot::toString);
+        r.add("orange.billing.subscription-token", () -> "test-plan-token");
+        List<String> command = command();
+        for (int i = 0; i < command.size(); i++) {
+            String value = command.get(i);
+            r.add("orange.harness.claude-code.command[" + i + "]", () -> value);
+        }
+    }
+
     private static Path source() {
         if (source == null) {
             synchronized (FakeClaude.class) {

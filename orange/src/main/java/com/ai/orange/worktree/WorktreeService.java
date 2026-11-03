@@ -27,9 +27,10 @@ import org.springframework.stereotype.Service;
  * actual trunk on GitHub, and we don't want add/add conflicts from agents
  * recreating files that were merged in via PRs.
  *
- * The {@code agent-runner} sandbox ({@code chdir_guard} + {@code worktree_guard}
- * in {@code hooks.py}) enforces the path boundary at the agent level — this
- * service is just the file-system + git side.
+ * Agents run with the worktree as their working directory. Claude Code confines
+ * its file-editing tools to that directory, but in process mode its Bash tool is
+ * not confined (spec §16: process mode is for local development; container mode
+ * is the isolation boundary). This service is just the file-system + git side.
  */
 @Service
 public class WorktreeService {

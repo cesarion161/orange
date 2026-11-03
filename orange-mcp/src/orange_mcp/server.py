@@ -18,7 +18,7 @@ Two flavors of tools live here:
     orange_complete_task, orange_fail_task, orange_release_claim,
     orange_submit_plan, orange_dep_artifacts, orange_my_active_claims) for
     chat-as-worker contexts where the chat session itself drives a task
-    through the FSM instead of the subprocess agent-runner.
+    through the FSM instead of a headless Claude Code run.
 
 Configuration via env vars:
   ORANGE_BASE_URL          base URL of the orange-ai REST API (default localhost:8080)
@@ -198,8 +198,8 @@ def _tools() -> list[Tool]:
             name="orange_cancel",
             description=(
                 "Cancel a running task. Terminates its Temporal workflow, marks the task "
-                "as cancelled. The agent-runner subprocess closes via its own AutoCloseable "
-                "wiring; the worktree may need a manual sweep if cleanup activities were "
+                "as cancelled. The running Claude Code process is killed with the activity; "
+                "the worktree may need a manual sweep if cleanup activities were "
                 "skipped by termination."
             ),
             inputSchema={

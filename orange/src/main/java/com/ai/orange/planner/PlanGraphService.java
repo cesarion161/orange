@@ -1,6 +1,6 @@
 package com.ai.orange.planner;
 
-import com.ai.orange.agent.protocol.ProtocolCodec;
+import com.ai.orange.json.Json;
 import com.ai.orange.task.DagValidator;
 import com.ai.orange.task.EdgeKey;
 import com.ai.orange.task.Task;
@@ -130,7 +130,7 @@ public class PlanGraphService {
     private static JSONB overridesToMetadata(Map<String, Object> overrides) {
         if (overrides == null || overrides.isEmpty()) return null;
         try {
-            String json = ProtocolCodec.mapper().writeValueAsString(Map.of("overrides", overrides));
+            String json = Json.mapper().writeValueAsString(Map.of("overrides", overrides));
             return JSONB.valueOf(json);
         } catch (Exception e) {
             // Overrides are advisory — never block plan ingestion over a serialization quirk.

@@ -29,13 +29,7 @@ final class AgentRunTestSupport {
     }
 
     static void fakeHarness(DynamicPropertyRegistry r, Path runRoot) {
-        r.add("orange.workflow.auto-start", () -> "false");
-        r.add("orange.harness.run-root", runRoot::toString);
-        List<String> command = FakeClaude.command();
-        for (int i = 0; i < command.size(); i++) {
-            String value = command.get(i);
-            r.add("orange.harness.claude-code.command[" + i + "]", () -> value);
-        }
+        FakeClaude.register(r, runRoot);
     }
 
     static Task newTask(TaskService taskService) {
