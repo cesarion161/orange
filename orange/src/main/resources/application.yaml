@@ -139,6 +139,17 @@ orange:
     master-key: ${LITELLM_MASTER_KEY:}
     # Added to a run's timeout to get its virtual key's expiry.
     key-ttl-margin: 30m
+  billing:
+    # Max-plan token for subscription runs (create with: claude setup-token). Only the claude binary gets it.
+    subscription-token: ${CLAUDE_CODE_OAUTH_TOKEN:}
+    # Never spill a subscription run onto the API-billed gateway (user decision: no API spend).
+    overflow-to-gateway: false
+    # USD per million tokens (list prices as of 2026-10), used to estimate and cap subscription runs.
+    prices:
+      claude-fable-5-1:  { input: 10.00, output: 50.00, cache-read: 0.25, cache-write: 12.50 }
+      claude-opus-5-5:   { input: 4.00,  output: 20.00, cache-read: 0.20, cache-write: 5.00 }
+      claude-sonnet-5-5: { input: 2.00,  output: 10.00, cache-read: 0.20, cache-write: 2.50 }
+      claude-haiku-5-5:  { input: 0.10,  output: 0.50,  cache-read: 0.01, cache-write: 0.125 }
 
 gg:
   jte:
