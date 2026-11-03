@@ -6,7 +6,9 @@ buildscript {
         // embedded-postgres ships native Postgres binaries — no Docker required
         // for builds. (Tests still use Testcontainers; this is build-time only.)
         classpath("io.zonky.test:embedded-postgres:2.1.0")
-        classpath(platform("io.zonky.test.postgres:embedded-postgres-binaries-bom:18.0.0"))
+        // 18.6.0, not 18.0.0: the 18.0.0 darwin-arm64v8 artifact ships x86_64 binaries,
+        // which fail with "Bad CPU type" on Apple Silicon without Rosetta. 18.6.0 is universal.
+        classpath(platform("io.zonky.test.postgres:embedded-postgres-binaries-bom:18.6.0"))
         classpath("io.zonky.test.postgres:embedded-postgres-binaries-darwin-amd64")
         classpath("io.zonky.test.postgres:embedded-postgres-binaries-darwin-arm64v8")
         classpath("io.zonky.test.postgres:embedded-postgres-binaries-linux-amd64")
@@ -19,7 +21,7 @@ buildscript {
 
 plugins {
     java
-    id("org.springframework.boot") version "4.0.6"
+    id("org.springframework.boot") version "4.0.9"
     id("io.spring.dependency-management") version "1.1.7"
     id("gg.jte.gradle") version "3.2.4"
     id("nu.studer.jooq") version "10.0"
@@ -31,7 +33,7 @@ description = "orange"
 
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(26)
+        languageVersion = JavaLanguageVersion.of(27)
     }
 }
 
@@ -39,7 +41,6 @@ repositories {
     mavenCentral()
 }
 
-extra["springAiVersion"] = "2.0.0-M5"
 extra["temporalVersion"] = "1.30.1"
 
 dependencies {
@@ -53,7 +54,6 @@ dependencies {
     implementation("gg.jte:jte-spring-boot-starter-4:3.2.4")
     implementation("io.github.wimdeblauwe:htmx-spring-boot:5.1.0")
     implementation("org.flywaydb:flyway-database-postgresql")
-    implementation("org.springframework.ai:spring-ai-starter-model-anthropic")
     implementation("io.temporal:temporal-spring-boot-starter:${property("temporalVersion")}")
     implementation("org.kohsuke:github-api:1.330")
     compileOnly("org.projectlombok:lombok")
@@ -93,11 +93,6 @@ configurations.named("jooqGenerator") {
     }
 }
 
-dependencyManagement {
-    imports {
-        mavenBom("org.springframework.ai:spring-ai-bom:${property("springAiVersion")}")
-    }
-}
 
 jte {
     generate()
@@ -134,7 +129,6 @@ tasks.named<org.springframework.boot.gradle.tasks.run.BootRun>("bootRun") {
 }
 
 tasks.withType<Test> {
-    useJUnitPlatform()
     // Docker Desktop on macOS publishes its socket under the user dir.
     // Testcontainers checks /var/run/docker.sock by default, so point it explicitly.
     val userSocket = file("${System.getProperty("user.home")}/.docker/run/docker.sock")
@@ -223,4 +217,19 @@ tasks.named("generateJooq") {
     doLast {
         codegenPg.close()
     }
+}
+
+// Default test run: everything except tests tagged "live" (real Claude Code or a
+// running LiteLLM). Run those explicitly with `./gradlew liveTest`.
+tasks.named<Test>("test") {
+    useJUnitPlatform { excludeTags("live") }
+}
+
+tasks.register<Test>("liveTest") {
+    description = "Runs tests tagged 'live' (real Claude Code subscription / running LiteLLM)."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    useJUnitPlatform { includeTags("live") }
+    shouldRunAfter(tasks.named("test"))
 }

@@ -15,9 +15,6 @@ spring:
       maximum-pool-size: 30
   flyway:
     locations: classpath:db/migration
-  ai:
-    anthropic:
-      api-key: ${ANTHROPIC_API_KEY:}
   temporal:
     connection:
       target: ${TEMPORAL_TARGET:local}
