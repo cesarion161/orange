@@ -97,6 +97,35 @@ orange:
     #     tester: 3
     #     dev: 10
     per-role: {}
+  routing:
+    # Spec §10. Tiers cheapest → most capable; escalation moves one step right.
+    tier-order: [small, medium, large]
+    tiers:
+      # auth: subscription = Claude Code → Anthropic with the Max-plan token (CLAUDE_CODE_OAUTH_TOKEN);
+      #       gateway      = LiteLLM virtual key per run (API billing).
+      # budget-usd: per-run cap — an estimate for subscription runs, the key's max_budget for gateway runs.
+      large:  { model: claude-opus-5-5,   harness: claude-code, auth: subscription, budget-usd: 8 }
+      medium: { model: claude-sonnet-5-5, harness: claude-code, auth: subscription, budget-usd: 4 }
+      small:  { model: claude-haiku-5-5,  harness: claude-code, auth: subscription, budget-usd: 1 }
+    rules:  # first match wins; no difficulty = any
+      - { role: planner,     tier: large,  effort: xhigh }
+      - { role: reviewer,    tier: large,  effort: high }
+      - { role: ci_fixer,    tier: medium, effort: medium }
+      - { role: chore,       tier: small,  effort: low }
+      - { role: implementer, difficulty: L, tier: large,  effort: high }
+      - { role: implementer, difficulty: M, tier: medium, effort: high }
+      - { role: implementer, difficulty: S, tier: medium, effort: medium }
+      # v1 pipeline roles, removed with the Temporal pipeline in PR 2.
+      - { role: tester,      tier: medium, effort: medium }
+      - { role: triage,      tier: medium, effort: medium }
+    risk:
+      min-tier: large
+      min-effort: high
+      paths: ["**/auth/**", "**/migrations/**", "**/db/migration/**", "**/payments/**", "infra/**", ".github/workflows/**"]
+    escalation:
+      tier-up-after-failures: 2
+      needs-human-after-failures: 3
+    small-model: claude-haiku-5-5
 
 gg:
   jte:
