@@ -232,4 +232,7 @@ tasks.register<Test>("liveTest") {
     classpath = sourceSets["test"].runtimeClasspath
     useJUnitPlatform { includeTags("live") }
     shouldRunAfter(tasks.named("test"))
+    // Live tests read CLAUDE_CODE_OAUTH_TOKEN / LITELLM_MASTER_KEY from orange/.env,
+    // so the secrets never have to appear on a command line.
+    parseDotEnv().forEach { (k, v) -> environment(k, v) }
 }
