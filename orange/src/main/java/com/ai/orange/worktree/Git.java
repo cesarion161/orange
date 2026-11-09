@@ -8,14 +8,22 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 /**
  * The one place orange runs git: in a directory, with a timeout, capturing stdout and stderr
- * separately. git inherits the coordinator's environment, so pushes use the host's credentials.
+ * separately, with no repository hooks. git inherits the coordinator's environment minus orange's
+ * own secrets, so pushes use the host's git credentials.
  */
 public final class Git {
+
+    /** orange's own credentials, kept out of every git process. */
+    static final Set<String> ORANGE_SECRETS = Set.of("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN", "LITELLM_MASTER_KEY", "GITHUB_WEBHOOK_SECRET", "ORANGE_GITHUB_TOKEN");
 
     /** For quick local commands (status, rev-parse, update-ref). */
     public static final Duration QUICK = Duration.ofSeconds(60);
@@ -59,18 +67,38 @@ public final class Git {
         return run(dir, QUICK, "status", "--porcelain").lines().filter(l -> !l.isBlank()).toList();
     }
 
+    /**
+     * git's environment: the coordinator's own, minus orange's own secrets. git needs none of them,
+     * and a hook (or an alias, or a credential helper) must never see them. The host's git
+     * credentials ({@code SSH_AUTH_SOCK}, {@code GH_TOKEN}, a credential helper's own config) stay.
+     */
+    static Map<String, String> environment(Map<String, String> host) {
+        Map<String, String> env = new HashMap<>(host);
+        ORANGE_SECRETS.forEach(env::remove);
+        return env;
+    }
+
     /** stdout, possibly cut at the cap the caller asked for. */
     public record Output(String text, boolean truncated) {}
 
     private record Result(int exitCode, String stdout, String stderr, boolean truncated) {}
 
     private static Result exec(Path dir, Duration timeout, int maxChars, String... args) {
-        List<String> cmd = new ArrayList<>(args.length + 1);
+        List<String> cmd = new ArrayList<>(args.length + 3);
         cmd.add("git");
+        // No repository hooks: a relative core.hooksPath resolves inside a task's worktree, which an
+        // agent writes, and orange's rebases, pushes and checkouts must not run agent-written code.
+        cmd.add("-c");
+        cmd.add("core.hooksPath=/dev/null");
         cmd.addAll(List.of(args));
         Process p;
         try {
-            p = new ProcessBuilder(cmd).directory(dir.toFile()).start();
+            ProcessBuilder pb = new ProcessBuilder(cmd).directory(dir.toFile());
+            Map<String, String> env = pb.environment();
+            Map<String, String> scrubbed = environment(env);
+            env.clear();
+            env.putAll(scrubbed);
+            p = pb.start();
         } catch (IOException e) {
             throw new UncheckedIOException("could not start git in " + dir, e);
         }

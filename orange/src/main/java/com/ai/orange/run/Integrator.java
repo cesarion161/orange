@@ -53,6 +53,7 @@ public class Integrator implements RunExecutor {
             log.warn("integrate run {} is no longer this worker's to run; skipping it", run.id());
             return lifecycle.fromRow(run.id());
         }
+        if (lifecycle.taskEnded(run)) return lifecycle.finishCancelled(run);
         String head = EvidenceRunner.inputHead(run);
         lifecycle.started(run, Json.mapper().createObjectNode().put("head_sha", head));
         RunOutcome.Integration outcome;
@@ -61,6 +62,8 @@ public class Integrator implements RunExecutor {
         } catch (LeaseLost e) {
             log.warn("integrate run {} lost its lease; stopping", run.id());
             return lifecycle.fromRow(run.id());
+        } catch (TaskEnded e) {
+            return lifecycle.finishCancelled(run);
         } catch (Exception e) {
             if (e instanceof InterruptedException) Thread.currentThread().interrupt();
             log.error("integrate run {} failed: {}", run.id(), e.getMessage());
@@ -103,6 +106,8 @@ public class Integrator implements RunExecutor {
             return new RunOutcome.Integration("rebased", rebased, null, null, List.of(), null);
         }
         renew(run, deadline);
+        // The last moment to stop: a task cancelled while this run waited or rebased must not land.
+        if (lifecycle.taskEnded(run)) throw new TaskEnded();
 
         if (push) {
             try {
@@ -220,6 +225,12 @@ public class Integrator implements RunExecutor {
 
     private static final class LeaseLost extends RuntimeException {
         LeaseLost() {
+            super(null, null, false, false);
+        }
+    }
+
+    private static final class TaskEnded extends RuntimeException {
+        TaskEnded() {
             super(null, null, false, false);
         }
     }

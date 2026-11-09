@@ -106,8 +106,9 @@ public class TaskReactor {
     TaskSnapshot snapshot(Task t) {
         boolean active = runs.findActiveByTask(t.id()).isPresent();
         boolean paused = pause.current().isPresent();
-        boolean workspace = t.status() != TaskStatus.READY
-                || Files.exists(worktrees.resolve(t.id())) || worktrees.hasCapacity();
+        // Implement and fix runs need the task's worktree: it exists, or there is a slot for it.
+        boolean needsWorktree = t.status() == TaskStatus.READY || t.status() == TaskStatus.RUNNING;
+        boolean workspace = !needsWorktree || Files.exists(worktrees.resolve(t.id())) || worktrees.hasCapacity();
         LastRun last = runs.findLastFinished(t.id())
                 .map(r -> new LastRun(r.kind(), r.status(), r.outcome(), r.input()))
                 .orElse(null);

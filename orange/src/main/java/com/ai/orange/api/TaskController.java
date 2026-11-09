@@ -2,7 +2,7 @@ package com.ai.orange.api;
 
 import com.ai.orange.evidence.EvidenceRepository;
 import com.ai.orange.run.RunRepository;
-import com.ai.orange.run.WorkerRunner;
+import com.ai.orange.run.TaskCancellation;
 import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskDef;
 import com.ai.orange.task.TaskEvent;
@@ -30,20 +30,20 @@ public class TaskController {
     private final TaskService service;
     private final TaskRepository taskRepo;
     private final TaskEventRepository eventRepo;
-    private final WorkerRunner runner;
+    private final TaskCancellation cancellation;
     private final RunRepository runs;
     private final EvidenceRepository evidence;
 
     public TaskController(TaskService service,
                           TaskRepository taskRepo,
                           TaskEventRepository eventRepo,
-                          WorkerRunner runner,
+                          TaskCancellation cancellation,
                           RunRepository runs,
                           EvidenceRepository evidence) {
         this.service = service;
         this.taskRepo = taskRepo;
         this.eventRepo = eventRepo;
-        this.runner = runner;
+        this.cancellation = cancellation;
         this.runs = runs;
         this.evidence = evidence;
     }
@@ -155,22 +155,12 @@ public class TaskController {
 
     @PostMapping("/{id}/cancel")
     public ResponseEntity<TaskResponse> cancel(@PathVariable UUID id) {
-        Task task = service.findById(id).orElse(null);
-        if (task == null) return ResponseEntity.notFound().build();
-        if (task.status().isTerminal()) {
-            return ResponseEntity.status(409).body(TaskResponse.of(task));
+        // Cancelled first (under the task's lock, with its queued runs), then a running agent is killed.
+        Task before = cancellation.cancel(id).orElse(null);
+        if (before == null) return ResponseEntity.notFound().build();
+        if (before.status().isTerminal()) {
+            return ResponseEntity.status(409).body(TaskResponse.of(before));
         }
-
-        // Queued runs never start; a running agent is killed and its run ends cancelled.
-        runs.cancelQueued(id);
-        runner.cancel(id);
-
-        // A run finishing at this moment may move the task first; cancel from wherever it is now.
-        for (int attempt = 0; attempt < 5 && !task.status().isTerminal(); attempt++) {
-            if (taskRepo.transitionStatus(id, task.status(), TaskStatus.CANCELLED)) break;
-            task = service.findById(id).orElseThrow();
-        }
-        Task updated = service.findById(id).orElseThrow();
-        return ResponseEntity.ok(TaskResponse.of(updated));
+        return ResponseEntity.ok(TaskResponse.of(service.findById(id).orElseThrow()));
     }
 }

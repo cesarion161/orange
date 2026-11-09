@@ -2,6 +2,7 @@ package com.ai.orange.run;
 
 import com.ai.orange.json.Json;
 import com.ai.orange.task.TaskEventRepository;
+import com.ai.orange.task.TaskRepository;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.math.BigDecimal;
 import java.util.UUID;
@@ -21,16 +22,33 @@ public class RunLifecycle {
     private static final Logger log = LoggerFactory.getLogger(RunLifecycle.class);
 
     private final RunRepository runs;
+    private final TaskRepository tasks;
     private final TaskEventRepository taskEvents;
     private final PostRunSteps postRunSteps;
     private final RunsProperties props;
 
-    public RunLifecycle(RunRepository runs, TaskEventRepository taskEvents, PostRunSteps postRunSteps,
-                        RunsProperties props) {
+    public RunLifecycle(RunRepository runs, TaskRepository tasks, TaskEventRepository taskEvents,
+                        PostRunSteps postRunSteps, RunsProperties props) {
         this.runs = runs;
+        this.tasks = tasks;
         this.taskEvents = taskEvents;
         this.postRunSteps = postRunSteps;
         this.props = props;
+    }
+
+    /**
+     * Whether the run's task has ended (cancelled, failed or integrated, or deleted) — then the run
+     * must not do its work. Task-less runs (the planner) never have an ended task.
+     */
+    public boolean taskEnded(Run run) {
+        if (run.taskId() == null) return false;
+        return tasks.findById(run.taskId()).map(t -> t.status().isTerminal()).orElse(true);
+    }
+
+    /** Ends a run whose task ended before the run did its work: {@code cancelled}, nothing else. */
+    public RunResult finishCancelled(Run run) {
+        log.info("{} run {}: task {} has ended; not running it", run.kind().dbValue(), run.id(), run.taskId());
+        return finish(run, RunResult.failed(run.id(), "cancelled"));
     }
 
     /** True when renewed, false when the lease is gone (finished or reaped), null when the database failed. */

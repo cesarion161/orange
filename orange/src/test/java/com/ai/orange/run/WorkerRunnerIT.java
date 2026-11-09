@@ -274,6 +274,48 @@ class WorkerRunnerIT {
     }
 
     @Test
+    void aRunForACancelledTaskNeverStartsAnAgent() {
+        Task task = runningTask(taskService, tasks, "Print hello.");
+        Run run = start(runs, props, task.id(), RunKind.IMPLEMENT, "implementer", "{}");
+        tasks.transitionStatus(task.id(), TaskStatus.RUNNING, TaskStatus.CANCELLED);
+
+        RunResult result = runner.execute(run);
+
+        assertThat(result.status()).isEqualTo(RunStatus.CANCELLED);
+        assertThat(result.reason()).isEqualTo("cancelled");
+        assertThat(runs.findById(run.id()).orElseThrow().status()).isEqualTo(RunStatus.CANCELLED);
+        assertThat(RUN_ROOT.resolve(run.id().toString())).as("Claude Code was never started").doesNotExist();
+    }
+
+    @Test
+    @org.springframework.test.annotation.DirtiesContext
+    void shutdownKillsRunningAgents() throws Exception {
+        Task task = runningTask(taskService, tasks, "[[fake:hang]]");
+        CompletableFuture<RunResult> running = CompletableFuture.supplyAsync(() -> implement(task));
+        long deadline = System.nanoTime() + java.time.Duration.ofSeconds(30).toNanos();
+        while (runner.activeRunIds().isEmpty()) {
+            assertThat(System.nanoTime()).as("run never started").isLessThan(deadline);
+            Thread.sleep(100);
+        }
+        UUID runId = runner.activeRunIds().iterator().next();
+        Path childPid = RUN_ROOT.resolve(runId + "/claude-config/child.pid");
+        while (!Files.exists(childPid)) {
+            assertThat(System.nanoTime()).as("the agent never started its child").isLessThan(deadline);
+            Thread.sleep(100);
+        }
+        long child = Long.parseLong(Files.readString(childPid).strip());
+
+        runner.shutdown();
+
+        RunResult result = running.get(30, TimeUnit.SECONDS);
+        assertThat(result.reason()).as("stopping orange is not the model's fault").isEqualTo("coordinator_restart");
+        assertThat(runs.findById(runId).orElseThrow().status()).isEqualTo(RunStatus.FAILED);
+        assertThat(ProcessHandle.of(child).map(ProcessHandle::isAlive).orElse(false)).as("the agent's own child died too")
+                .isFalse();
+        assertThat(tasks.findById(task.id()).orElseThrow().failures()).isZero();
+    }
+
+    @Test
     void runsThatTheReaperTookAreLeftAlone() {
         Task task = runningTask(taskService, tasks, "Print hello.");
         Run run = start(runs, props, task.id(), RunKind.IMPLEMENT, "implementer", "{}");

@@ -28,7 +28,8 @@ import org.springframework.stereotype.Component;
  *   <li>verify: gaps send the task back to {@code running} and count;</li>
  *   <li>diff_review: the verdict is stored as evidence; {@code pass} verifies the task, gaps send
  *       it back and count;</li>
- *   <li>integrate: integrated, rebased (re-verify), conflict (back for a fix), or a person;</li>
+ *   <li>integrate: integrated, rebased (re-verify), conflict (back for a fix; a repeated conflict
+ *       counts), or a person;</li>
  *   <li>any run: model failures count, a {@code blocked} report asks a person, infra failures
  *       pause the scheduler.</li>
  * </ul>
@@ -44,14 +45,16 @@ public class PostRunSteps {
     private final SchedulerPause pause;
     private final WorktreeService worktrees;
     private final EvidenceRepository evidence;
+    private final RunRepository runs;
 
     public PostRunSteps(TaskRepository tasks, TaskEventRepository taskEvents, SchedulerPause pause,
-                        WorktreeService worktrees, EvidenceRepository evidence) {
+                        WorktreeService worktrees, EvidenceRepository evidence, RunRepository runs) {
         this.tasks = tasks;
         this.taskEvents = taskEvents;
         this.pause = pause;
         this.worktrees = worktrees;
         this.evidence = evidence;
+        this.runs = runs;
     }
 
     /** Applies the run's effects and returns its final result. */
@@ -171,8 +174,17 @@ public class PostRunSteps {
                 }
             }
             case "conflict" -> {
+                // The first conflict is the base's doing and costs the task nothing. Another one means
+                // the fix run did not resolve it, and counts: otherwise a fix that changes nothing would
+                // bring the same head back verified, conflict again, and loop without end.
+                boolean repeated = runs.findByTask(run.taskId()).stream()
+                        .filter(other -> other.kind() == RunKind.INTEGRATE && !other.id().equals(run.id()))
+                        .anyMatch(other -> RunOutcome.parse(other.outcome())
+                                .filter(o -> o instanceof RunOutcome.Integration i && "conflict".equals(i.status()))
+                                .isPresent());
                 if (move(run, TaskStatus.VERIFIED, TaskStatus.RUNNING)) {
-                    ObjectNode payload = node(run);
+                    if (repeated) tasks.incrementFailures(run.taskId());
+                    ObjectNode payload = node(run).put("repeated", repeated);
                     ArrayNode files = payload.putArray("files");
                     outcome.files().forEach(files::add);
                     event(run, "integration_conflict", payload);

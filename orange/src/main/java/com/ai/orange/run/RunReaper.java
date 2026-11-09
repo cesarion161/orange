@@ -20,7 +20,7 @@ import org.springframework.stereotype.Component;
 public class RunReaper {
 
     private static final Logger log = LoggerFactory.getLogger(RunReaper.class);
-    /** A live process is a run's harness only if it started this close to the run's started_at. */
+    /** A live process is an agent run's harness only if it started this close to the run's started_at. */
     static final Duration STARTED_BEFORE = Duration.ofSeconds(5);
     static final Duration STARTED_AFTER = Duration.ofSeconds(60);
 
@@ -63,9 +63,14 @@ public class RunReaper {
             return;
         }
         Instant runStart = r.startedAt().toInstant();
-        if (started.get().isBefore(runStart.minus(STARTED_BEFORE)) || started.get().isAfter(runStart.plus(STARTED_AFTER))) {
-            log.info("run {}: pid {} started at {}, not with the run ({}); not killing it", r.id(), r.pid(),
-                    started.get(), runStart);
+        // An agent's harness starts with its run. A verify run starts its commands one after another,
+        // so its latest command may have started any time while the run held its lease.
+        Instant latest = r.kind() == RunKind.VERIFY
+                ? (r.leaseExpiresAt() != null ? r.leaseExpiresAt().toInstant() : Instant.now())
+                : runStart.plus(STARTED_AFTER);
+        if (started.get().isBefore(runStart.minus(STARTED_BEFORE)) || started.get().isAfter(latest)) {
+            log.info("run {}: pid {} started at {}, not within the run ({} .. {}); not killing it", r.id(), r.pid(),
+                    started.get(), runStart, latest);
             return;
         }
         log.warn("run {}: killing its orphaned harness, pid {}", r.id(), r.pid());

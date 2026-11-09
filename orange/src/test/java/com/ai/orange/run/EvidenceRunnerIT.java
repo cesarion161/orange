@@ -183,6 +183,50 @@ class EvidenceRunnerIT {
     }
 
     @Test
+    void aCancelledTaskIsNotVerified() {
+        Task task = task();
+        Run run = start(runs, props, task.id(), RunKind.VERIFY, "orange", headInput(task.headSha()));
+        tasks.transitionStatus(task.id(), TaskStatus.VERIFYING, TaskStatus.CANCELLED);
+
+        RunResult result = runner(command("tests", "true")).execute(run);
+
+        assertThat(result.status()).isEqualTo(RunStatus.CANCELLED);
+        assertThat(evidence.findByTask(task.id())).isEmpty();
+    }
+
+    @Test
+    void shutdownKillsRunningCommands() throws Exception {
+        Task task = task();
+        EvidenceRunner runner = runner(new EvidenceProperties.Command("tests", "sleep 600", Duration.ofMinutes(10)));
+        java.util.concurrent.CompletableFuture<RunResult> verifying =
+                java.util.concurrent.CompletableFuture.supplyAsync(() -> verify(runner, task));
+        long deadline = System.nanoTime() + Duration.ofSeconds(20).toNanos();
+        while (runner.liveCommands() == 0) {
+            assertThat(System.nanoTime()).as("the command never started").isLessThan(deadline);
+            Thread.sleep(50);
+        }
+        long started = System.nanoTime();
+
+        runner.shutdown();
+
+        RunResult result = verifying.get(20, java.util.concurrent.TimeUnit.SECONDS);
+        assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(10));
+        assertThat(result.reason()).isEqualTo("coordinator_restart");
+        assertThat(tasks.findById(task.id()).orElseThrow().failures()).isZero();
+    }
+
+    @Test
+    void theRunningCommandsPidIsRecorded() throws Exception {
+        Task task = task();
+        Run run = start(runs, props, task.id(), RunKind.VERIFY, "orange", headInput(task.headSha()));
+
+        runner(command("tests", "true")).execute(run);
+
+        assertThat(runs.findById(run.id()).orElseThrow().pid()).as("so a restart can kill an orphaned command")
+                .isNotNull();
+    }
+
+    @Test
     void commandsSeeOnlyTheAllowlistedEnvironment() {
         Task task = task();
         Map<String, String> host = new HashMap<>(System.getenv());

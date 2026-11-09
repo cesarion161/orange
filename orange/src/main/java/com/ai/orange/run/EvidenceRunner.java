@@ -7,6 +7,7 @@ import com.ai.orange.harness.claude.ClaudeCodeCommand;
 import com.ai.orange.json.Json;
 import com.ai.orange.worktree.Git;
 import com.ai.orange.worktree.WorktreeService;
+import jakarta.annotation.PreDestroy;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.Reader;
@@ -20,6 +21,7 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
@@ -51,6 +53,8 @@ public class EvidenceRunner implements RunExecutor {
     private final RunsProperties runsProps;
     private final RunLifecycle lifecycle;
     private final Supplier<Map<String, String>> hostEnv;
+    private final Set<Process> live = ConcurrentHashMap.newKeySet();
+    private volatile boolean stopping;
 
     @Autowired
     public EvidenceRunner(RunRepository runs, EvidenceRepository evidence, WorktreeService worktrees,
@@ -77,12 +81,40 @@ public class EvidenceRunner implements RunExecutor {
         return EnumSet.of(RunKind.VERIFY);
     }
 
+    /** Evidence commands running right now. */
+    public int liveCommands() {
+        return live.size();
+    }
+
+    /**
+     * Stopping orange stops its evidence commands: each is killed (process tree included) and its
+     * verify run ends {@code coordinator_restart}, recording no evidence for the killed command.
+     */
+    @PreDestroy
+    public void shutdown() {
+        stopping = true;
+        if (live.isEmpty()) return;
+        log.warn("stopping: killing {} running evidence command(s)", live.size());
+        live.forEach(EvidenceRunner::kill);
+        long deadline = System.nanoTime() + WorkerRunner.SHUTDOWN_GRACE.toNanos();
+        while (!live.isEmpty() && System.nanoTime() < deadline) {
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+    }
+
     @Override
     public RunResult execute(Run run) {
         if (Boolean.FALSE.equals(lifecycle.renewLease(run))) {
             log.warn("verify run {} is no longer this worker's to run; skipping it", run.id());
             return lifecycle.fromRow(run.id());
         }
+        if (lifecycle.taskEnded(run)) return lifecycle.finishCancelled(run);
+        if (stopping) return lifecycle.finish(run, RunResult.failed(run.id(), "coordinator_restart"));
         String head = inputHead(run);
         lifecycle.started(run, Json.mapper().createObjectNode().put("head_sha", head));
         try {
@@ -151,12 +183,20 @@ public class EvidenceRunner implements RunExecutor {
         ProcessBuilder pb = new ProcessBuilder("sh", "-c", command).directory(wt.toFile()).redirectErrorStream(true);
         pb.environment().clear();
         pb.environment().putAll(ClaudeCodeCommand.passThrough(hostEnv.get(), harnessProps.claudeCode().passEnv()));
+        if (stopping) throw new Interrupted();
         Process p;
         try {
             p = pb.start();
             p.getOutputStream().close();
         } catch (IOException e) {
             return new CommandResult(-1, "could not start sh: " + e.getMessage());
+        }
+        live.add(p);
+        try {
+            // So the reaper of the next coordinator can kill it if this one dies mid-command.
+            runs.recordPid(run.id(), p.pid());
+        } catch (RuntimeException e) {
+            log.warn("verify run {}: could not record the command's pid: {}", run.id(), e.getMessage());
         }
         Tail tail = new Tail(props.outputTailChars());
         Thread reader = Thread.ofVirtual().start(() -> tail.readAll(p.getInputStream()));
@@ -178,6 +218,8 @@ public class EvidenceRunner implements RunExecutor {
                     }
                 }
                 if (p.waitFor(Math.max(Math.min(deadline, nextBeat) - now, 1_000_000), TimeUnit.NANOSECONDS)) {
+                    // Killed by a shutdown: that is no verdict on the work.
+                    if (stopping) throw new Interrupted();
                     reader.join(DRAIN_MILLIS);
                     return new CommandResult(p.exitValue(), tail.text());
                 }
@@ -186,6 +228,8 @@ public class EvidenceRunner implements RunExecutor {
             kill(p);
             Thread.currentThread().interrupt();
             throw new Interrupted();
+        } finally {
+            live.remove(p);
         }
     }
 

@@ -196,6 +196,61 @@ class IntegratorIT {
     }
 
     @Test
+    void aRepeatedConflictCounts() throws Exception {
+        Task task = verified(newTask(), "README.md", "# mine\n");
+        commitOnOrigin("README.md", "# theirs\n");
+        assertThat(((RunOutcome.Integration) integrate(task).outcome()).status()).isEqualTo("conflict");
+        assertThat(tasks.findById(task.id()).orElseThrow().failures()).as("the base moving is not the model's fault").isZero();
+
+        // A fix run that resolved nothing: the same head comes back verified.
+        tasks.transitionStatus(task.id(), TaskStatus.RUNNING, TaskStatus.VERIFYING);
+        tasks.transitionStatus(task.id(), TaskStatus.VERIFYING, TaskStatus.VERIFIED);
+        assertThat(((RunOutcome.Integration) integrate(task).outcome()).status()).isEqualTo("conflict");
+
+        assertThat(tasks.findById(task.id()).orElseThrow().failures()).as("the fix did not resolve it").isEqualTo(1);
+    }
+
+    @Test
+    void aCancelledTaskIsNeverPushed() throws Exception {
+        Task task = verified(newTask(), "a.txt", "a\n");
+        String before = originMain();
+        Run run = start(runs, props, task.id(), RunKind.INTEGRATE, "orange", headInput(task.headSha()));
+        tasks.transitionStatus(task.id(), TaskStatus.VERIFIED, TaskStatus.CANCELLED);
+
+        RunResult result = integrator.execute(run);
+
+        assertThat(result.status()).isEqualTo(RunStatus.CANCELLED);
+        assertThat(originMain()).as("nothing was pushed").isEqualTo(before);
+        assertThat(tasks.findById(task.id()).orElseThrow().status()).isEqualTo(TaskStatus.CANCELLED);
+    }
+
+    @Test
+    void repoHooksDoNotRunDuringIntegration() throws Exception {
+        // A husky-style relative hooksPath resolves inside the task's worktree, i.e. agent-written content.
+        git(base, "config", "core.hooksPath", "hooks");
+        Path marker = tmp.resolve("hook-ran");
+        Task task = newTask();
+        tasks.transitionStatus(task.id(), TaskStatus.READY, TaskStatus.RUNNING);
+        Path wt = worktrees.ensure(task.id());
+        Files.createDirectories(wt.resolve("hooks"));
+        for (String hook : List.of("pre-push", "post-rewrite", "pre-rebase", "post-merge", "reference-transaction")) {
+            Path h = wt.resolve("hooks").resolve(hook);
+            Files.writeString(h, "#!/bin/sh\ntouch '" + marker + "'\n");
+            h.toFile().setExecutable(true);
+        }
+        git(wt, "add", "-A");
+        git(wt, "-c", "user.email=t@e", "-c", "user.name=T", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "hooks");
+        tasks.recordHead(task.id(), "orange/" + task.id(), git(wt, "rev-parse", "HEAD"));
+        tasks.transitionStatus(task.id(), TaskStatus.RUNNING, TaskStatus.VERIFYING);
+        tasks.transitionStatus(task.id(), TaskStatus.VERIFYING, TaskStatus.VERIFIED);
+
+        RunResult result = integrate(tasks.findById(task.id()).orElseThrow());
+
+        assertThat(((RunOutcome.Integration) result.outcome()).status()).isEqualTo("integrated");
+        assertThat(marker).as("orange's own git calls run no repository hooks").doesNotExist();
+    }
+
+    @Test
     void twoVerifiedTasksBothLand() throws Exception {
         Task first = verified(newTask(), "first.txt", "1\n");
         Task second = verified(newTask(), "second.txt", "2\n");

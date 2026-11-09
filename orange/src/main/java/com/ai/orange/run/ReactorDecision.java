@@ -18,8 +18,9 @@ import org.jooq.JSONB;
  *   <li>the scheduler is paused → nothing;</li>
  *   <li>too many failures while running, verifying or verified → a person;</li>
  *   <li>ready, with a worktree slot → implement;</li>
- *   <li>running → a fix after verify gaps, an integration conflict or a failed fix; otherwise
- *       implement (with review gaps as feedback, or a failed attempt's own feedback);</li>
+ *   <li>running, with a worktree slot → a fix after verify gaps, an integration conflict or a
+ *       failed fix; otherwise implement (with review gaps as feedback, or a failed attempt's own
+ *       feedback);</li>
  *   <li>verifying or verified, and the worktree moved under orange → a person;</li>
  *   <li>verifying → verify, then diff review, then verified;</li>
  *   <li>verified → integrate;</li>
@@ -75,7 +76,8 @@ public final class ReactorDecision {
         RunOutcome last = s.lastRun() == null ? null : RunOutcome.parse(s.lastRun().outcome()).orElse(null);
         return switch (s.status()) {
             case READY -> s.workspaceAvailable() ? new Action.QueueImplement(null) : new Action.None();
-            case RUNNING -> running(s.lastRun(), last);
+            // A coding run needs the task's worktree; with every slot taken it waits, it does not retry.
+            case RUNNING -> s.workspaceAvailable() ? running(s.lastRun(), last) : new Action.None();
             case VERIFYING -> {
                 if (worktreeMoved(last)) yield new Action.NeedsHuman("worktree_moved");
                 if (s.headSha() == null || s.headSha().isBlank()) yield new Action.None();

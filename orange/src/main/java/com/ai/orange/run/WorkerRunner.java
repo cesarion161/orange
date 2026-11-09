@@ -24,6 +24,8 @@ import com.ai.orange.routing.RouteDecision;
 import com.ai.orange.routing.RouteRequest;
 import com.ai.orange.routing.RoutingProperties;
 import com.ai.orange.routing.RoutingTable;
+import com.ai.orange.worktree.WorktreeCapacityException;
+import jakarta.annotation.PreDestroy;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -69,6 +71,8 @@ public class WorkerRunner implements RunExecutor {
             RunKind.DIFF_REVIEW);
     /** How long to wait for the process to exit after a kill. */
     private static final Duration KILL_GRACE = Duration.ofSeconds(30);
+    /** How long a shutdown waits for killed runs to be recorded. */
+    static final Duration SHUTDOWN_GRACE = Duration.ofSeconds(20);
     /** Stderr and unparsed lines are only logged, and only this much of each. */
     private static final int LOG_LINE_MAX = 200;
     private static final String DEFAULT_DIFFICULTY = "M";
@@ -92,6 +96,9 @@ public class WorkerRunner implements RunExecutor {
 
     /** The runs this process is supervising, by run id, so a cancel can reach their processes. */
     private final Map<UUID, Active> active = new ConcurrentHashMap<>();
+    /** Runs between their start here and their row being finished; a shutdown waits for these. */
+    private final Set<UUID> inFlight = ConcurrentHashMap.newKeySet();
+    private volatile boolean stopping;
 
     private record Active(UUID taskId, RunHandle handle) {}
 
@@ -133,22 +140,32 @@ public class WorkerRunner implements RunExecutor {
             log.warn("run {} is no longer this worker's to run (finished or reaped); skipping it", run.id());
             return lifecycle.fromRow(run.id());
         }
-        PreparedRun prep;
+        inFlight.add(run.id());
         try {
-            prep = preparer.prepare(run);
-        } catch (Exception e) {
-            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
-            log.error("run {}: could not prepare the workspace: {}", run.id(), e.toString());
-            return conclude(run, RunResult.failed(run.id(), "workspace_failed"), null);
-        }
-        try {
-            return run(run, prep, props.timeout(run.kind()));
-        } finally {
+            if (stopping) return conclude(run, RunResult.failed(run.id(), "coordinator_restart"), null);
+            if (lifecycle.taskEnded(run)) return lifecycle.finishCancelled(run);
+            PreparedRun prep;
             try {
-                prep.cleanup().run();
-            } catch (RuntimeException e) {
-                log.warn("run {}: cleanup failed: {}", run.id(), e.toString());
+                prep = preparer.prepare(run);
+            } catch (WorktreeCapacityException e) {
+                log.info("run {}: {}; the task waits for a worktree slot", run.id(), e.getMessage());
+                return conclude(run, RunResult.failed(run.id(), "no_worktree_slot"), null);
+            } catch (Exception e) {
+                if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+                log.error("run {}: could not prepare the workspace: {}", run.id(), e.toString());
+                return conclude(run, RunResult.failed(run.id(), "workspace_failed"), null);
             }
+            try {
+                return run(run, prep, props.timeout(run.kind()));
+            } finally {
+                try {
+                    prep.cleanup().run();
+                } catch (RuntimeException e) {
+                    log.warn("run {}: cleanup failed: {}", run.id(), e.toString());
+                }
+            }
+        } finally {
+            inFlight.remove(run.id());
         }
     }
 
@@ -158,7 +175,13 @@ public class WorkerRunner implements RunExecutor {
      */
     public RunResult runDirect(RunKind kind, String role, Path cwd, String prompt, Duration timeout) {
         Run run = runs.insertRunning(kind, role, null, props.workerId(), props.leaseTtl(), JSONB.valueOf("{}"));
-        return run(run, new PreparedRun(cwd, prompt, role, null, false, 0, null), timeout);
+        inFlight.add(run.id());
+        try {
+            if (stopping) return conclude(run, RunResult.failed(run.id(), "coordinator_restart"), null);
+            return run(run, new PreparedRun(cwd, prompt, role, null, false, 0, null), timeout);
+        } finally {
+            inFlight.remove(run.id());
+        }
     }
 
     /**
@@ -180,6 +203,31 @@ public class WorkerRunner implements RunExecutor {
     /** The runs whose processes this coordinator is supervising right now. */
     public Set<UUID> activeRunIds() {
         return Set.copyOf(active.keySet());
+    }
+
+    /**
+     * Stopping orange stops its agents: every running one is killed (process tree included) and its
+     * run ends {@code coordinator_restart}, which does not count against its task; new runs are
+     * refused. Waits up to {@link #SHUTDOWN_GRACE} for the runs to be recorded, so the database is
+     * still there when they are. A run it could not record is failed by the reaper on the next start.
+     */
+    @PreDestroy
+    public void shutdown() {
+        stopping = true;
+        if (inFlight.isEmpty()) return;
+        log.warn("stopping: killing {} running agent(s)", active.size());
+        active.values().forEach(a -> a.handle().kill("coordinator_restart"));
+        long deadline = System.nanoTime() + SHUTDOWN_GRACE.toNanos();
+        while (!inFlight.isEmpty() && System.nanoTime() < deadline) {
+            active.values().forEach(a -> a.handle().kill("coordinator_restart"));
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+        if (!inFlight.isEmpty()) log.warn("stopping: {} run(s) not recorded; the next start fails them", inFlight.size());
     }
 
     // ─────────────────────────── one run ───────────────────────────
@@ -267,6 +315,9 @@ public class WorkerRunner implements RunExecutor {
     }
 
     private RunResult supervise(Run run, RouteDecision route, RunSpec spec, VirtualKey key, Duration timeout) {
+        // Last look before an agent starts: a cancel during preparation finds no process to kill.
+        if (stopping) return conclude(run, RunResult.failed(run.id(), "coordinator_restart"), null);
+        if (lifecycle.taskEnded(run)) return lifecycle.finishCancelled(run);
         RunWatch watch = new RunWatch(run, route);
         RunHandle handle;
         try {

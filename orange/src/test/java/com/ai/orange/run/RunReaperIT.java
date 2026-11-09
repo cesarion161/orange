@@ -117,6 +117,26 @@ class RunReaperIT {
     }
 
     @Test
+    void anOrphanedEvidenceCommandIsKilled() throws Exception {
+        Task task = runningTask(taskService, tasks, "x");
+        Run run = runs.insertRunning(RunKind.VERIFY, "orange", task.id(), "previous-instance", Duration.ofMinutes(5),
+                JSONB.valueOf("{}"));
+        // A verify run's commands start one after another, long after the run itself started.
+        dsl.update(RUNS).set(RUNS.STARTED_AT, OffsetDateTime.now().minusMinutes(3)).where(RUNS.ID.eq(run.id())).execute();
+        Process command = new ProcessBuilder("sleep", "600").start();
+        try {
+            runs.recordPid(run.id(), command.pid());
+
+            reaper.failOrphans();
+
+            assertThat(command.waitFor(10, TimeUnit.SECONDS)).as("the orphaned evidence command was killed").isTrue();
+            assertThat(runs.findById(run.id()).orElseThrow().error()).isEqualTo("coordinator_restart");
+        } finally {
+            command.destroyForcibly();
+        }
+    }
+
+    @Test
     void ownRunsAreNotOrphans() {
         Task task = runningTask(taskService, tasks, "x");
         Run run = runs.insertRunning(RunKind.IMPLEMENT, "implementer", task.id(), props.workerId(),

@@ -175,6 +175,14 @@ class ReactorDecisionTest {
     }
 
     @Test
+    void aRunningTaskWithoutAWorktreeSlotWaits() {
+        assertThat(task(TaskStatus.RUNNING).noWorkspace().decide()).isEqualTo(new Action.None());
+        LastRun gaps = run(RunKind.VERIFY, RunStatus.SUCCEEDED, new RunOutcome.Verification(false, false,
+                List.of(new EvidenceGap("tests", "t", 1, "x"))), "{}");
+        assertThat(task(TaskStatus.RUNNING).noWorkspace().last(gaps).decide()).isEqualTo(new Action.None());
+    }
+
+    @Test
     void aRunningTaskWithNothingToGoOnGetsAPlainImplementRun() {
         assertThat(task(TaskStatus.RUNNING).decide()).isEqualTo(new Action.QueueImplement(null));
         assertThat(task(TaskStatus.RUNNING).last(run(RunKind.IMPLEMENT, RunStatus.FAILED, null, "{}")).decide())

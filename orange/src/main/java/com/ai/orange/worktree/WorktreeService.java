@@ -103,7 +103,7 @@ public class WorktreeService {
     private void requireCapacity(Path root, UUID taskId) throws IOException {
         long existing = countExisting(root);
         if (existing >= props.maxCount()) {
-            throw new IllegalStateException(
+            throw new WorktreeCapacityException(
                     "worktree cap reached (" + existing + "/" + props.maxCount() + "); cannot create " + taskId);
         }
     }
