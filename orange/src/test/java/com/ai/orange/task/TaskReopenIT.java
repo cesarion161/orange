@@ -16,9 +16,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 
 /**
- * Triage-side helpers on {@link TaskService}: reopen a FAILED/TEST_DONE task
- * back to READY (FSM extension), refuse to reopen CANCELLED (stays terminal),
- * and create a triage workload that lands on the ready queue.
+ * Operator retry on {@link TaskService#reopenTask}: a FAILED or NEEDS_HUMAN task goes back to
+ * READY with its failure count reset; CANCELLED stays terminal.
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
@@ -37,29 +36,39 @@ class TaskReopenIT {
 
     @Test
     void failed_task_can_be_reopened_to_ready_with_reason_stamped() {
-        UUID id = service.createGraph(
-                List.of(new TaskDef("a", "A", null, "dev", null, null, null)),
-                List.of()).get(0).id();
-        repo.transitionStatus(id, TaskStatus.READY, TaskStatus.IN_PROGRESS);
-        repo.transitionStatus(id, TaskStatus.IN_PROGRESS, TaskStatus.FAILED);
+        UUID id = newTask();
+        repo.transitionStatus(id, TaskStatus.READY, TaskStatus.RUNNING);
+        repo.transitionStatus(id, TaskStatus.RUNNING, TaskStatus.FAILED);
 
-        boolean ok = service.reopenTask(id, "regression on main after merge", "triage-bot");
+        boolean ok = service.reopenTask(id, "regression on main after merge", "operator");
         assertThat(ok).isTrue();
 
         Task reloaded = repo.findById(id).orElseThrow();
         assertThat(reloaded.status()).isEqualTo(TaskStatus.READY);
         assertThat(reloaded.metadata().data())
-                .contains("reopen_reason").contains("regression on main").contains("triage-bot");
+                .contains("reopen_reason").contains("regression on main").contains("operator");
         int reopened = dsl.fetchCount(TASK_EVENTS,
                 TASK_EVENTS.TASK_ID.eq(id).and(TASK_EVENTS.EVENT_TYPE.eq("task_reopened")));
         assertThat(reopened).isEqualTo(1);
     }
 
     @Test
+    void needsHumanReopensWithFailuresReset() {
+        UUID id = newTask();
+        repo.transitionStatus(id, TaskStatus.READY, TaskStatus.RUNNING);
+        repo.transitionStatus(id, TaskStatus.RUNNING, TaskStatus.NEEDS_HUMAN);
+        dsl.update(TASKS).set(TASKS.FAILURES, 3).where(TASKS.ID.eq(id)).execute();
+
+        assertThat(service.reopenTask(id, "try a smaller scope", "operator")).isTrue();
+
+        Task reloaded = repo.findById(id).orElseThrow();
+        assertThat(reloaded.status()).isEqualTo(TaskStatus.READY);
+        assertThat(reloaded.failures()).isZero();
+    }
+
+    @Test
     void cancelled_task_cannot_be_reopened() {
-        UUID id = service.createGraph(
-                List.of(new TaskDef("a", "A", null, "dev", null, null, null)),
-                List.of()).get(0).id();
+        UUID id = newTask();
         repo.transitionStatus(id, TaskStatus.READY, TaskStatus.CANCELLED);
 
         boolean ok = service.reopenTask(id, "user changed mind", "operator");
@@ -67,18 +76,9 @@ class TaskReopenIT {
         assertThat(repo.findById(id).orElseThrow().status()).isEqualTo(TaskStatus.CANCELLED);
     }
 
-    @Test
-    void createTriageTask_lands_on_ready_with_metadata() {
-        UUID failed = service.createGraph(
-                List.of(new TaskDef("f", "Failed thing", null, "dev", null, null, null)),
+    private UUID newTask() {
+        return service.createGraph(
+                List.of(new TaskDef("a", "A", null, "implementer", null, null)),
                 List.of()).get(0).id();
-
-        Task triage = service.createTriageTask("regression", List.of(failed),
-                "Build broke after merging task " + failed);
-        assertThat(triage.role()).isEqualTo("triage");
-        assertThat(triage.status()).isEqualTo(TaskStatus.READY);  // dep-free → ready
-        assertThat(triage.priority()).isEqualTo(10);
-        assertThat(triage.metadata().data())
-                .contains("triage_kind").contains("regression").contains("related_task_ids");
     }
 }

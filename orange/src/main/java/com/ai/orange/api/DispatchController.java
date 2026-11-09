@@ -36,8 +36,8 @@ public class DispatchController {
             throw new IllegalArgumentException("exactly one of 'plan' or 'planId' is required");
         }
         DispatchResult result = hasPlan
-                ? dispatch.dispatch(req.plan(), req.architectureMd(), req.defaultPipeline())
-                : dispatch.dispatchByPlanId(req.planId(), req.defaultPipeline());
+                ? dispatch.dispatch(req.plan(), req.architectureMd())
+                : dispatch.dispatchByPlanId(req.planId());
         return ResponseEntity.status(201).body(DispatchResponse.of(result));
     }
 
@@ -51,7 +51,7 @@ public class DispatchController {
     }
 
     /**
-     * Invalid plan (bad input, unknown pipeline, cycle) → 422 so the MCP shim
+     * Invalid plan (bad input, cycle) → 422 so the MCP shim
      * can surface the reason verbatim. Mirrors the handler in ClaimController.
      */
     @ExceptionHandler({IllegalArgumentException.class, DagCycleException.class})

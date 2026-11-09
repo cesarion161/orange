@@ -1,12 +1,16 @@
 package com.ai.orange.api;
 
-import static com.ai.orange.db.jooq.Tables.AGENT_RUNS;
+import static com.ai.orange.db.jooq.Tables.RUNS;
 import static com.ai.orange.db.jooq.Tables.TASKS;
 import static com.ai.orange.db.jooq.Tables.TASK_EDGES;
 import static com.ai.orange.db.jooq.Tables.TASK_EVENTS;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.ai.orange.TestcontainersConfiguration;
+import com.ai.orange.run.Run;
+import com.ai.orange.run.RunKind;
+import com.ai.orange.run.RunRepository;
+import com.ai.orange.run.RunStatus;
 import com.ai.orange.task.EdgeKey;
 import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskDef;
@@ -31,8 +35,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 
 /**
  * Covers the Phase 8 additions to the task REST surface: list with filter,
@@ -50,17 +52,13 @@ class TaskApiIT {
 
     @Autowired TaskService taskService;
     @Autowired TaskRepository taskRepo;
+    @Autowired RunRepository runs;
     @Autowired TaskEventRepository eventRepo;
     @Autowired DSLContext dsl;
 
-    @DynamicPropertySource
-    static void disableAutoStart(DynamicPropertyRegistry r) {
-        r.add("orange.workflow.auto-start", () -> "false");
-    }
-
     @BeforeEach
     void clean() {
-        dsl.deleteFrom(AGENT_RUNS).execute();
+        dsl.deleteFrom(RUNS).execute();
         dsl.deleteFrom(TASK_EVENTS).execute();
         dsl.deleteFrom(TASK_EDGES).execute();
         dsl.deleteFrom(TASKS).execute();
@@ -73,7 +71,7 @@ class TaskApiIT {
         Task b = createTask("bravo");
         Thread.sleep(20);
         createTask("charlie");
-        taskRepo.transitionStatus(b.id(), TaskStatus.READY, TaskStatus.IN_PROGRESS);
+        taskRepo.transitionStatus(b.id(), TaskStatus.READY, TaskStatus.RUNNING);
 
         HttpResponse<String> all = get("/tasks?limit=10");
         assertThat(all.statusCode()).isEqualTo(200);
@@ -127,11 +125,40 @@ class TaskApiIT {
     @Test
     void cancel_on_already_terminal_task_returns_409() throws Exception {
         Task t = createTask("already-done");
-        taskRepo.transitionStatus(t.id(), TaskStatus.READY, TaskStatus.IN_PROGRESS);
-        taskRepo.transitionStatus(t.id(), TaskStatus.IN_PROGRESS, TaskStatus.FAILED);
+        taskRepo.transitionStatus(t.id(), TaskStatus.READY, TaskStatus.RUNNING);
+        taskRepo.transitionStatus(t.id(), TaskStatus.RUNNING, TaskStatus.FAILED);
 
         HttpResponse<String> res = post("/tasks/" + t.id() + "/cancel");
         assertThat(res.statusCode()).isEqualTo(409);
+    }
+
+    @Test
+    void cancelCancelsQueuedRuns() throws Exception {
+        Task t = createTask("queued-work");
+        taskRepo.transitionStatus(t.id(), TaskStatus.READY, TaskStatus.RUNNING);
+        Run queued = runs.queue(t.id(), RunKind.IMPLEMENT, "implementer", 100, JSONB.valueOf("{}")).orElseThrow();
+
+        HttpResponse<String> res = post("/tasks/" + t.id() + "/cancel");
+
+        assertThat(res.statusCode()).isEqualTo(200);
+        Run after = runs.findById(queued.id()).orElseThrow();
+        assertThat(after.status()).isEqualTo(RunStatus.CANCELLED);
+        assertThat(after.error()).isEqualTo("cancelled");
+        assertThat(taskRepo.findById(t.id()).orElseThrow().status()).isEqualTo(TaskStatus.CANCELLED);
+    }
+
+    @Test
+    void cancelOfIntegratedTaskIs409() throws Exception {
+        Task t = createTask("landed");
+        taskRepo.transitionStatus(t.id(), TaskStatus.READY, TaskStatus.RUNNING);
+        taskRepo.transitionStatus(t.id(), TaskStatus.RUNNING, TaskStatus.VERIFYING);
+        taskRepo.transitionStatus(t.id(), TaskStatus.VERIFYING, TaskStatus.VERIFIED);
+        taskRepo.transitionStatus(t.id(), TaskStatus.VERIFIED, TaskStatus.INTEGRATED);
+
+        HttpResponse<String> res = post("/tasks/" + t.id() + "/cancel");
+
+        assertThat(res.statusCode()).isEqualTo(409);
+        assertThat(taskRepo.findById(t.id()).orElseThrow().status()).isEqualTo(TaskStatus.INTEGRATED);
     }
 
     @Test
@@ -155,7 +182,7 @@ class TaskApiIT {
 
     private Task createTask(String title) {
         TaskDef def = new TaskDef("api-it-" + UUID.randomUUID(), title, null,
-                "dev", "dev_only", null, null);
+                "implementer", null, null);
         return taskService.createGraph(List.of(def), List.<EdgeKey>of()).get(0);
     }
 }

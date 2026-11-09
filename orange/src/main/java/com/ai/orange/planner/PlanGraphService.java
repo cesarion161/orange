@@ -7,7 +7,6 @@ import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskDef;
 import com.ai.orange.task.TaskService;
 import com.ai.orange.task.exception.DagCycleException;
-import com.ai.orange.workflow.PipelineRegistry;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -21,34 +20,23 @@ import org.springframework.stereotype.Service;
  *
  * <p>This is the seam between planner and dispatcher: the planner only ever
  * asks {@link #validateAcyclic} (is this a well-formed DAG?), while the
- * dispatcher calls {@link #ingest} to actually insert the graph and let the
- * downstream {@code task_ready} → {@code WorkflowStarter} machinery run it.
- * Pipeline-name resolution is a dispatch-time concern and lives here, not in
- * the planner — so a plan never has to know which pipelines are registered.
+ * dispatcher calls {@link #ingest} to actually insert the graph.
  */
 @Service
 public class PlanGraphService {
 
-    static final String DEFAULT_PIPELINE = "dev_only";
-
     private final TaskService taskService;
-    private final PipelineRegistry pipelines;
     private final DagValidator dagValidator;
 
-    public PlanGraphService(TaskService taskService,
-                            PipelineRegistry pipelines,
-                            DagValidator dagValidator) {
+    public PlanGraphService(TaskService taskService, DagValidator dagValidator) {
         this.taskService = taskService;
-        this.pipelines = pipelines;
         this.dagValidator = dagValidator;
     }
 
     /**
-     * Structural validation the planner can run without knowing anything about
-     * pipelines: keys are unique, edges reference real nodes, and the graph is
-     * acyclic. No DB access. Throws {@link IllegalArgumentException} on any
-     * malformed plan — a detected cycle is normalised from {@code DagCycleException}
-     * to {@code IllegalArgumentException} so callers handle a single type.
+     * Structural validation: keys are unique, edges reference real nodes, and the graph is
+     * acyclic. No DB access. Throws {@link IllegalArgumentException} on any malformed plan — a
+     * detected cycle is normalised from {@code DagCycleException} so callers handle a single type.
      */
     public void validateAcyclic(PlanJson plan) {
         if (plan == null || plan.tasks() == null || plan.tasks().isEmpty()) {
@@ -70,54 +58,29 @@ public class PlanGraphService {
     }
 
     /**
-     * Validate (incl. pipeline resolution) and insert the graph in one
-     * transaction via {@link TaskService#createGraph}. Root tasks are flipped
-     * to {@code ready}, which fires {@code pg_notify('task_ready')} and lets the
-     * orchestrator start them. Returns the created tasks.
+     * Validate and insert the graph in one transaction via {@link TaskService#createGraph}.
+     * Root tasks are flipped to {@code ready}. Returns the created tasks.
      */
-    public List<Task> ingest(PlanJson plan, String defaultPipeline) {
+    public List<Task> ingest(PlanJson plan) {
         if (plan == null || plan.tasks() == null || plan.tasks().isEmpty()) {
             throw new IllegalArgumentException("plan has no tasks");
         }
-        List<TaskDef> defs = toDefs(plan.tasks(), defaultPipeline);
-        List<EdgeKey> edges = toEdges(plan.edges());
-        return taskService.createGraph(defs, edges);
+        return taskService.createGraph(toDefs(plan.tasks()), toEdges(plan.edges()));
     }
 
     // ─────────────────────────── helpers ────────────────────────────────
 
-    /**
-     * Convert each {@link PlanJson.PlanTask} into a {@link TaskDef}. Resolves
-     * each task's pipeline (task value → caller default → service default),
-     * validates against {@link PipelineRegistry}, and stamps {@code overrides}
-     * onto {@code metadata} so the executor side can read them later.
-     *
-     * @throws IllegalArgumentException if any task references an unknown pipeline.
-     */
-    private List<TaskDef> toDefs(List<PlanJson.PlanTask> tasks, String callerDefault) {
-        String fallback = (callerDefault == null || callerDefault.isBlank())
-                ? DEFAULT_PIPELINE : callerDefault;
-        if (!pipelines.contains(fallback)) {
-            throw new IllegalArgumentException(
-                    "default pipeline '" + fallback + "' is not registered");
-        }
+    /** Converts each plan task into a {@link TaskDef}, stamping {@code overrides} onto metadata. */
+    private static List<TaskDef> toDefs(List<PlanJson.PlanTask> tasks) {
         List<TaskDef> defs = new ArrayList<>(tasks.size());
         for (PlanJson.PlanTask t : tasks) {
-            String pipeline = (t.pipeline() == null || t.pipeline().isBlank())
-                    ? fallback : t.pipeline();
-            if (!pipelines.contains(pipeline)) {
-                throw new IllegalArgumentException(
-                        "task '" + t.key() + "' references unknown pipeline '" + pipeline + "'");
-            }
-            JSONB metadata = overridesToMetadata(t.overrides());
             defs.add(new TaskDef(
                     t.key(),
                     t.title(),
                     t.description(),
-                    (t.role() == null || t.role().isBlank()) ? "dev" : t.role(),
-                    pipeline,
+                    t.role(), // TaskDef normalises it to implementer or chore
                     t.priority(),
-                    metadata));
+                    overridesToMetadata(t.overrides())));
         }
         return defs;
     }

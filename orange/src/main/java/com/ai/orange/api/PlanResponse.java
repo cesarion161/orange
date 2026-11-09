@@ -6,7 +6,7 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Result of {@code POST /plans} (and the chat-planner save): the reviewable
+ * Result of {@code POST /plans}: the reviewable
  * plan DAG plus where its artifacts live on disk. Carries <b>no created
  * tasks</b> — the planner produces a plan, the dispatcher ({@code POST
  * /dispatch}) runs it.
@@ -27,7 +27,6 @@ public record PlanResponse(
             String title,
             String description,
             String role,
-            String pipeline,
             Integer priority) {}
 
     public record PlanEdgeView(String from, String to) {}
@@ -47,7 +46,7 @@ public record PlanResponse(
         List<PlanTaskView> tasks = plan.tasks() == null ? List.of()
                 : plan.tasks().stream()
                         .map(t -> new PlanTaskView(
-                                t.key(), t.title(), t.description(), t.role(), t.pipeline(), t.priority()))
+                                t.key(), t.title(), t.description(), t.role(), t.priority()))
                         .toList();
         List<PlanEdgeView> edges = plan.edges() == null ? List.of()
                 : plan.edges().stream()

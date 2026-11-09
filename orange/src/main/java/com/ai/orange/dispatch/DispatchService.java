@@ -18,8 +18,7 @@ import org.springframework.stereotype.Service;
  * Ingests a {@link PlanJson} DAG from anywhere — an inline body or a plan a
  * planner already saved to disk by {@code planId} — and runs it. Validation
  * and the actual graph insert live in {@link PlanGraphService}; once the root
- * tasks flip to {@code ready}, the existing {@code task_ready} →
- * {@code WorkflowStarter} machinery picks them up.
+ * tasks flip to {@code ready}, the coordinator starts their implement runs.
  *
  * <p>The dispatcher is intentionally independent of the planner: it neither
  * knows nor cares whether the plan came from orange's planner agent, a chat
@@ -45,11 +44,11 @@ public class DispatchService {
      * leaves no stale plan dir behind. Once the graph exists the artifact is
      * best-effort audit, so a write failure doesn't undo the dispatch.
      */
-    public DispatchResult dispatch(PlanJson plan, String architectureMd, String defaultPipeline) {
+    public DispatchResult dispatch(PlanJson plan, String architectureMd) {
         if (plan == null) throw new IllegalArgumentException("plan required");
 
         UUID planId = UUID.randomUUID();
-        List<Task> created = planGraph.ingest(plan, defaultPipeline);
+        List<Task> created = planGraph.ingest(plan);
         persistArtifacts(planId, plan, architectureMd);
         log.info("dispatched inline plan {}: {} tasks created", planId, created.size());
         return new DispatchResult(planId, "success", created);
@@ -76,7 +75,7 @@ public class DispatchService {
      *
      * @throws PlanNotFoundException if no {@code plan.json} exists for that id.
      */
-    public DispatchResult dispatchByPlanId(UUID planId, String defaultPipeline) {
+    public DispatchResult dispatchByPlanId(UUID planId) {
         if (planId == null) throw new IllegalArgumentException("planId required");
 
         Path planPath = Path.of(plannerProps.outputRoot()).toAbsolutePath()
@@ -92,7 +91,7 @@ public class DispatchService {
             throw new IllegalArgumentException("saved plan.json for " + planId + " is unparseable: " + e.getMessage());
         }
 
-        List<Task> created = planGraph.ingest(plan, defaultPipeline);
+        List<Task> created = planGraph.ingest(plan);
         log.info("dispatched saved plan {}: {} tasks created", planId, created.size());
         return new DispatchResult(planId, "success", created);
     }

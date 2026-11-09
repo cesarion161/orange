@@ -26,10 +26,9 @@ public final class FakeClaude {
 
     /**
      * Points a Spring test context at the fake: {@code runRoot} for run files, the fake's command,
-     * a dummy subscription token, and no workflow auto-start.
+     * and a dummy subscription token.
      */
     public static void register(org.springframework.test.context.DynamicPropertyRegistry r, Path runRoot) {
-        r.add("orange.workflow.auto-start", () -> "false");
         r.add("orange.harness.run-root", runRoot::toString);
         r.add("orange.billing.subscription-token", () -> "test-plan-token");
         List<String> command = command();

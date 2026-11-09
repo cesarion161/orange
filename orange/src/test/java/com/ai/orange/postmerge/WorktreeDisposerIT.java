@@ -77,7 +77,6 @@ class WorktreeDisposerIT {
 
     @DynamicPropertySource
     static void wire(DynamicPropertyRegistry r) {
-        r.add("orange.workflow.auto-start", () -> "false");
         r.add("orange.worktrees.base-repo", () -> baseRepo.toString());
         r.add("orange.worktrees.root", () -> worktreesRoot.toString());
         // Long initial delay so the @Scheduled run doesn't race the test.
@@ -95,16 +94,16 @@ class WorktreeDisposerIT {
     @Test
     void terminal_task_with_live_worktree_is_disposed() throws Exception {
         Task task = taskService.createGraph(
-                List.of(new TaskDef("t", "T", null, "dev", null, null, null)),
+                List.of(new TaskDef("t", "T", null, "implementer", null, null)),
                 List.of()).get(0);
 
         Path wt = worktrees.create(task.id());
         assertThat(Files.exists(wt)).isTrue();
 
         // Move the task to a terminal status without going through the workflow.
-        tasks.transitionStatus(task.id(), TaskStatus.READY, TaskStatus.IN_PROGRESS);
-        // FAILED is reachable from IN_PROGRESS per the FSM.
-        tasks.transitionStatus(task.id(), TaskStatus.IN_PROGRESS, TaskStatus.FAILED);
+        tasks.transitionStatus(task.id(), TaskStatus.READY, TaskStatus.RUNNING);
+        // FAILED is reachable from RUNNING per the FSM.
+        tasks.transitionStatus(task.id(), TaskStatus.RUNNING, TaskStatus.FAILED);
 
         disposer.sweep();
 
@@ -121,7 +120,7 @@ class WorktreeDisposerIT {
     @Test
     void non_terminal_task_is_left_alone() throws Exception {
         Task task = taskService.createGraph(
-                List.of(new TaskDef("t", "T", null, "dev", null, null, null)),
+                List.of(new TaskDef("t", "T", null, "implementer", null, null)),
                 List.of()).get(0);
         Path wt = worktrees.create(task.id());
 

@@ -44,4 +44,28 @@ class LiteLlmGatewayLiveIT {
             client.delete(key.key());
         }
     }
+
+    /** The spend sync's two calls on v1.106.6: /key/list filtered by key_alias, /key/delete by key_aliases. */
+    @Test
+    void aliasLookupAndDeleteWork() {
+        String alias = "live-it-" + UUID.randomUUID();
+        String other = "live-it-other-" + UUID.randomUUID();
+        VirtualKey key = client.mint(alias, List.of("claude-haiku-5-5"), new BigDecimal("0.01"), Duration.ofMinutes(5),
+                Map.of("source", "LiteLlmGatewayLiveIT"));
+        VirtualKey otherKey = client.mint(other, List.of("claude-haiku-5-5"), new BigDecimal("0.01"),
+                Duration.ofMinutes(5), Map.of("source", "LiteLlmGatewayLiveIT"));
+        try {
+            assertThat(client.spendByAlias(alias)).hasValueSatisfying(s -> assertThat(s).isEqualByComparingTo("0"));
+            client.block(key.key());
+            assertThat(client.spendByAlias(alias)).as("a blocked key still reports its spend").isPresent();
+
+            client.deleteByAlias(alias);
+
+            assertThat(client.spendByAlias(alias)).isEmpty();
+            assertThat(client.spendByAlias(other)).as("only the named alias was deleted").isPresent();
+            client.deleteByAlias(alias); // already gone: no error
+        } finally {
+            client.delete(otherKey.key());
+        }
+    }
 }

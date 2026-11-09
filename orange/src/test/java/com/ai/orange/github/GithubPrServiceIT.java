@@ -11,8 +11,6 @@ import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskDef;
 import com.ai.orange.task.TaskRepository;
 import com.ai.orange.task.TaskService;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -30,8 +28,6 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 
 /**
  * Drives {@link GithubPrService} end-to-end against a stubbed
@@ -53,11 +49,6 @@ class GithubPrServiceIT {
     @Autowired TaskRepository taskRepo;
     @Autowired DSLContext dsl;
 
-    @DynamicPropertySource
-    static void disableAutoStart(DynamicPropertyRegistry r) {
-        r.add("orange.workflow.auto-start", () -> "false");
-    }
-
     static boolean isGitAvailable() {
         try {
             return new ProcessBuilder("git", "--version").start().waitFor() == 0;
@@ -74,14 +65,14 @@ class GithubPrServiceIT {
     }
 
     @Test
-    void push_conflict_enqueues_a_triage_task_then_rethrows() throws Exception {
+    void push_conflict_rethrows_without_creating_tasks() throws Exception {
         Path bareRemote = temp.resolve("conflict-remote.git");
         Path worktreeA = temp.resolve("wtA");
         Path worktreeB = temp.resolve("wtB");
         run(temp, "git", "init", "--bare", "-b", "main", bareRemote.toString());
 
         TaskDef def = new TaskDef("conflict-it-" + UUID.randomUUID(),
-                "PR with conflicting push", null, "dev", "dev_only", null, null);
+                "PR with conflicting push", null, "implementer", null, null);
         Task task = taskService.createGraph(List.of(def), List.<EdgeKey>of()).get(0);
         String branch = "orange/" + task.id();
 
@@ -105,8 +96,8 @@ class GithubPrServiceIT {
                 prService.openPrForTask(task.id(), worktreeB))
                 .isInstanceOf(GithubPrService.PushConflictException.class);
 
-        int triageCount = dsl.fetchCount(TASKS, TASKS.ROLE.eq("triage"));
-        assertThat(triageCount).isEqualTo(1);
+        // No triage side task any more: the caller decides what a rejected push means.
+        assertThat(dsl.fetchCount(TASKS)).isEqualTo(1);
     }
 
     private void setupWorktree(Path wt, Path bareRemote) throws Exception {
@@ -124,7 +115,7 @@ class GithubPrServiceIT {
     }
 
     @Test
-    void openPrForTask_pushes_branch_and_stamps_metadata() throws Exception {
+    void openPrForTask_pushes_branch_and_records_the_pr() throws Exception {
         Path bareRemote = temp.resolve("remote.git");
         Path worktree = temp.resolve("wt");
         run(temp, "git", "init", "--bare", "-b", "main", bareRemote.toString());
@@ -140,7 +131,7 @@ class GithubPrServiceIT {
         // Branch must be named the same as WorktreeService produces: orange/<taskId>.
         TaskDef def = new TaskDef("pr-it-" + UUID.randomUUID(),
                 "Open a PR", "Body of the PR description.",
-                "dev", "dev_only", null, null);
+                "implementer", null, null);
         Task task = taskService.createGraph(List.of(def), List.<EdgeKey>of()).get(0);
 
         run(worktree, "git", "checkout", "-q", "-b", "orange/" + task.id());
@@ -159,13 +150,12 @@ class GithubPrServiceIT {
         String branches = capture(bareRemote, "git", "branch", "--list", "orange/" + task.id());
         assertThat(branches).contains("orange/" + task.id());
 
-        // Metadata got stamped with PR fields.
+        // The PR is recorded on the task row.
         Task reloaded = taskRepo.findById(task.id()).orElseThrow();
-        ObjectMapper mapper = new ObjectMapper();
-        JsonNode meta = mapper.readTree(reloaded.metadata().data());
-        assertThat(meta.get("pr_number").asInt()).isEqualTo(99);
-        assertThat(meta.get("pr_url").asText()).contains("/pull/99");
-        assertThat(meta.get("pr_repo").asText()).isEqualTo("orange/test");
+        assertThat(reloaded.prNumber()).isEqualTo(99);
+        assertThat(reloaded.prUrl()).contains("/pull/99");
+        assertThat(reloaded.repo()).isEqualTo("orange/test");
+        assertThat(reloaded.branch()).isEqualTo("orange/" + task.id());
 
         // findByPullRequest now finds it.
         assertThat(taskRepo.findByPullRequest("orange/test", 99))

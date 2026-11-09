@@ -36,6 +36,13 @@ public sealed interface RunEvent {
                   long outputTokens, long cacheReadTokens, long cacheWriteTokens, int numTurns,
                   String sessionId) implements RunEvent {}
 
+    /**
+     * The harness is retrying an API call ({@code system/api_retry}). A burst of these is how a
+     * rate limit or an outage shows up while a run is still alive.
+     */
+    record ApiRetry(int attempt, int maxRetries, long retryDelayMs, Integer errorStatus, String error)
+            implements RunEvent {}
+
     /** A line the harness wrote to stderr. */
     record Stderr(String line) implements RunEvent {}
 

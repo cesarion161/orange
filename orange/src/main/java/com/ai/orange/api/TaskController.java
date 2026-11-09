@@ -1,24 +1,19 @@
 package com.ai.orange.api;
 
-import com.ai.orange.agent.AgentRunService;
-import com.ai.orange.task.ClaimService;
+import com.ai.orange.evidence.EvidenceRepository;
+import com.ai.orange.run.RunRepository;
+import com.ai.orange.run.TaskCancellation;
 import com.ai.orange.task.Task;
-import com.ai.orange.task.TaskClaimRepository;
 import com.ai.orange.task.TaskDef;
 import com.ai.orange.task.TaskEvent;
 import com.ai.orange.task.TaskEventRepository;
 import com.ai.orange.task.TaskRepository;
 import com.ai.orange.task.TaskService;
 import com.ai.orange.task.TaskStatus;
-import io.temporal.client.WorkflowClient;
-import io.temporal.client.WorkflowNotFoundException;
-import io.temporal.client.WorkflowStub;
 import jakarta.validation.Valid;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -32,30 +27,41 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/tasks")
 public class TaskController {
 
-    private static final Logger log = LoggerFactory.getLogger(TaskController.class);
-
     private final TaskService service;
     private final TaskRepository taskRepo;
     private final TaskEventRepository eventRepo;
-    private final ClaimService claimService;
-    private final TaskClaimRepository claimRepo;
-    private final WorkflowClient workflowClient;
-    private final AgentRunService agentRuns;
+    private final TaskCancellation cancellation;
+    private final RunRepository runs;
+    private final EvidenceRepository evidence;
 
     public TaskController(TaskService service,
                           TaskRepository taskRepo,
                           TaskEventRepository eventRepo,
-                          ClaimService claimService,
-                          TaskClaimRepository claimRepo,
-                          WorkflowClient workflowClient,
-                          AgentRunService agentRuns) {
+                          TaskCancellation cancellation,
+                          RunRepository runs,
+                          EvidenceRepository evidence) {
         this.service = service;
         this.taskRepo = taskRepo;
         this.eventRepo = eventRepo;
-        this.claimService = claimService;
-        this.claimRepo = claimRepo;
-        this.workflowClient = workflowClient;
-        this.agentRuns = agentRuns;
+        this.cancellation = cancellation;
+        this.runs = runs;
+        this.evidence = evidence;
+    }
+
+    /** The task's runs, newest first. */
+    @GetMapping("/{id}/runs")
+    public ResponseEntity<List<RunResponse>> runs(@PathVariable UUID id) {
+        if (service.findById(id).isEmpty()) return ResponseEntity.notFound().build();
+        List<RunResponse> rows = new java.util.ArrayList<>(runs.findByTask(id).stream().map(RunResponse::of).toList());
+        java.util.Collections.reverse(rows);
+        return ResponseEntity.ok(rows);
+    }
+
+    /** Everything orange checked on the task's heads, newest first. */
+    @GetMapping("/{id}/evidence")
+    public ResponseEntity<List<EvidenceResponse>> evidence(@PathVariable UUID id) {
+        if (service.findById(id).isEmpty()) return ResponseEntity.notFound().build();
+        return ResponseEntity.ok(evidence.findByTask(id).stream().map(EvidenceResponse::of).toList());
     }
 
     @PostMapping
@@ -64,8 +70,7 @@ public class TaskController {
                 "manual-" + UUID.randomUUID(),
                 req.title(),
                 req.description(),
-                req.role() == null ? "dev" : req.role(),
-                req.pipeline(),
+                req.role(), // TaskDef normalises it to implementer or chore
                 req.priority(),
                 null);
         List<Task> created = service.createGraph(List.of(def), List.of());
@@ -109,20 +114,9 @@ public class TaskController {
     }
 
     /**
-     * Read the parent tasks' captured artifacts. The chat-as-executor MCP
-     * surface calls this so a worker can peek at upstream results before
-     * deciding how to attack its task.
-     */
-    @GetMapping("/{id}/dep-artifacts")
-    public ResponseEntity<Map<UUID, Map<String, Object>>> depArtifacts(@PathVariable UUID id) {
-        if (service.findById(id).isEmpty()) return ResponseEntity.notFound().build();
-        return ResponseEntity.ok(claimService.dependencyArtifacts(id));
-    }
-
-    /**
      * Reopen a FAILED or TEST_DONE task by transitioning it back to READY with
-     * a reason attached as augmentation metadata. The triage agent calls this
-     * via {@code orange_reopen_task}; operators can also hit it directly.
+     * a reason attached as augmentation metadata. Operators call this directly
+     * or through {@code orange_reopen_task}.
      */
     @PostMapping("/{id}/reopen")
     public ResponseEntity<Map<String, Object>> reopen(@PathVariable UUID id,
@@ -161,35 +155,12 @@ public class TaskController {
 
     @PostMapping("/{id}/cancel")
     public ResponseEntity<TaskResponse> cancel(@PathVariable UUID id) {
-        Task task = service.findById(id).orElse(null);
-        if (task == null) return ResponseEntity.notFound().build();
-        if (task.status().isTerminal()) {
-            return ResponseEntity.status(409).body(TaskResponse.of(task));
+        // Cancelled first (under the task's lock, with its queued runs), then a running agent is killed.
+        Task before = cancellation.cancel(id).orElse(null);
+        if (before == null) return ResponseEntity.notFound().build();
+        if (before.status().isTerminal()) {
+            return ResponseEntity.status(409).body(TaskResponse.of(before));
         }
-
-        // Best-effort terminate of the Temporal workflow. If the workflow
-        // isn't running (or never existed), we still flip the task to
-        // CANCELLED below.
-        try {
-            WorkflowStub stub = workflowClient.newUntypedWorkflowStub("task-" + id);
-            stub.terminate("user-cancellation");
-        } catch (WorkflowNotFoundException nf) {
-            log.info("no workflow to terminate for task {}", id);
-        } catch (Exception e) {
-            log.warn("workflow termination for task {} threw: {}", id, e.getMessage());
-        }
-
-        // Terminating the workflow does not interrupt an in-flight activity, so kill the
-        // task's running Claude Code process directly.
-        agentRuns.cancel(id);
-
-        // Chat-driven workers don't have a workflow to terminate — they poll
-        // the claim's cancel_requested flag on heartbeat. Flip it so they
-        // notice promptly and call release.
-        claimRepo.requestCancel(id);
-
-        taskRepo.transitionStatus(id, task.status(), TaskStatus.CANCELLED);
-        Task updated = service.findById(id).orElseThrow();
-        return ResponseEntity.ok(TaskResponse.of(updated));
+        return ResponseEntity.ok(TaskResponse.of(service.findById(id).orElseThrow()));
     }
 }

@@ -92,13 +92,12 @@ public class TaskService {
     }
 
     /**
-     * Reopen a terminal task (FAILED or TEST_DONE) by transitioning it back to
-     * READY and attaching a {@code reopen_reason} block to its metadata so the
-     * next dev attempt can read it as augmentation. The FSM forbids reopening
-     * CANCELLED tasks — that was an explicit operator decision.
+     * Operator retry of a FAILED or NEEDS_HUMAN task: back to READY with its failure count
+     * reset (so the next run starts on the base tier again), keeping its branch and PR, and a
+     * {@code reopen_reason} block in metadata for the next attempt's prompt. CANCELLED stays
+     * terminal — that was an explicit user decision.
      *
-     * <p>Used by the triage agent via {@code POST /tasks/{id}/reopen} and by
-     * operator-driven flows.
+     * <p>Called through {@code POST /tasks/{id}/reopen}.
      *
      * @return {@code true} if the task was actually transitioned. {@code false}
      *     if the task was in a non-reopenable state.
@@ -107,11 +106,11 @@ public class TaskService {
     public boolean reopenTask(UUID taskId, String reason, String actor) {
         Task t = tasks.findById(taskId).orElse(null);
         if (t == null) return false;
-        if (t.status() != TaskStatus.FAILED && t.status() != TaskStatus.TEST_DONE) {
+        if (t.status() != TaskStatus.FAILED && t.status() != TaskStatus.NEEDS_HUMAN) {
             log.info("reopenTask refused for {}: status={} not reopenable", taskId, t.status());
             return false;
         }
-        boolean ok = tasks.transitionStatus(taskId, t.status(), TaskStatus.READY);
+        boolean ok = tasks.reopen(taskId, t.status());
         if (!ok) return false;
 
         Map<String, Object> meta = parseMetadata(t.metadata());
@@ -131,8 +130,8 @@ public class TaskService {
     }
 
     /**
-     * Copy an existing task as a fresh ready task. Same title/description/role/
-     * pipeline; metadata gets a {@code replayed_from} pointer back to the
+     * Copy an existing task as a fresh ready task. Same title/description/role;
+     * metadata gets a {@code replayed_from} pointer back to the
      * original so the agent can see the lineage and the operator can audit it.
      * No dependencies are copied — replay is a clean re-attempt, not a graph
      * branch.
@@ -150,38 +149,12 @@ public class TaskService {
                 src.title(),
                 src.description(),
                 src.role(),
-                src.pipeline(),
                 src.priority(),
                 asJsonb(meta));
         Task created = createGraph(List.of(def), List.of()).get(0);
         events.append(created.id(), actor == null ? "system" : actor, "task_replayed",
                 asJsonb(Map.of("source_task_id", sourceTaskId.toString())));
         return created;
-    }
-
-    /**
-     * Create a single-task triage workload. Used by the post-merge verifier
-     * when a regression is suspected — the new task lands on the {@code ready}
-     * queue and a triage agent picks it up via the normal claim flow.
-     *
-     * @param kind         "regression" or "conflict"
-     * @param relatedTaskIds tasks whose failure context the triage should examine
-     * @param description  free-text body of the prompt the triage agent receives
-     */
-    @Transactional
-    public Task createTriageTask(String kind, List<UUID> relatedTaskIds, String description) {
-        Map<String, Object> meta = new HashMap<>();
-        meta.put("triage_kind", kind);
-        meta.put("related_task_ids", relatedTaskIds.stream().map(UUID::toString).toList());
-        TaskDef def = new TaskDef(
-                "triage-" + UUID.randomUUID(),
-                "Triage: " + kind,
-                description,
-                "triage",
-                "dev_only",     // triage doesn't need its own review/test gate
-                10,             // higher priority so it jumps the queue
-                asJsonb(meta));
-        return createGraph(List.of(def), List.of()).get(0);
     }
 
     private Map<String, Object> parseMetadata(JSONB meta) {

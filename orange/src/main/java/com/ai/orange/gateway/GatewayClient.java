@@ -12,10 +12,13 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Supplier;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
@@ -34,7 +37,15 @@ public class GatewayClient {
 
     @Autowired
     public GatewayClient(GatewayProperties props) {
-        this(props, RestClient.builder());
+        this(props, RestClient.builder().requestFactory(requestFactory(props)));
+    }
+
+    /** Connect and read timeouts, so a LiteLLM that hangs fails the call instead of holding a run. */
+    static SimpleClientHttpRequestFactory requestFactory(GatewayProperties props) {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(props.connectTimeout());
+        factory.setReadTimeout(props.readTimeout());
+        return factory;
     }
 
     public GatewayClient(GatewayProperties props, RestClient.Builder builder) {
@@ -102,6 +113,43 @@ public class GatewayClient {
                 .body(body.toString())
                 .retrieve()
                 .body(String.class));
+    }
+
+    /**
+     * The spend LiteLLM has booked on the key named {@code alias} (blocked keys included); empty
+     * when no key has that alias any more.
+     */
+    public Optional<BigDecimal> spendByAlias(String alias) {
+        String master = requireMasterKey();
+        JsonNode response = call("list keys by alias", () -> http.get()
+                .uri(b -> b.path("/key/list").queryParam("key_alias", alias)
+                        .queryParam("return_full_object", "true").build())
+                .header("Authorization", "Bearer " + master)
+                .retrieve()
+                .body(String.class));
+        JsonNode keys = response.path("keys");
+        if (!keys.isArray() || keys.isEmpty()) return Optional.empty();
+        JsonNode spend = keys.get(0).path("spend");
+        return Optional.of(spend.isNumber() ? spend.decimalValue() : BigDecimal.ZERO);
+    }
+
+    /** Deletes the key named {@code alias}. A key that is already gone is not an error. */
+    public void deleteByAlias(String alias) {
+        String master = requireMasterKey();
+        ObjectNode body = JSON.createObjectNode();
+        body.putArray("key_aliases").add(alias);
+        try {
+            http.post().uri("/key/delete")
+                    .header("Authorization", "Bearer " + master)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(body.toString())
+                    .retrieve()
+                    .body(String.class);
+        } catch (HttpClientErrorException.NotFound e) {
+            // LiteLLM answers 404 "No keys found" when nothing has that alias.
+        } catch (RestClientException e) {
+            throw new GatewayException("LiteLLM delete key by alias failed: " + e.getClass().getSimpleName(), null);
+        }
     }
 
     /** True when the proxy answers its liveness probe. Never throws. */

@@ -10,14 +10,20 @@ public record TaskResponse(
         String title,
         String description,
         String role,
-        String pipeline,
         TaskStatus status,
         int priority,
-        OffsetDateTime createdAt) {
+        int failures,
+        String repo,
+        String branch,
+        Integer prNumber,
+        String prUrl,
+        String headSha,
+        OffsetDateTime createdAt,
+        OffsetDateTime updatedAt) {
 
     public static TaskResponse of(Task t) {
         return new TaskResponse(
-                t.id(), t.title(), t.description(), t.role(),
-                t.pipeline(), t.status(), t.priority(), t.createdAt());
+                t.id(), t.title(), t.description(), t.role(), t.status(), t.priority(), t.failures(),
+                t.repo(), t.branch(), t.prNumber(), t.prUrl(), t.headSha(), t.createdAt(), t.updatedAt());
     }
 }

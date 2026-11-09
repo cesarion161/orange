@@ -138,4 +138,9 @@ public final class ProcessRunHandle implements RunHandle {
     public boolean isAlive() {
         return process.isAlive();
     }
+
+    @Override
+    public long pid() {
+        return process.pid();
+    }
 }

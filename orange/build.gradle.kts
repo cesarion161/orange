@@ -23,7 +23,6 @@ plugins {
     java
     id("org.springframework.boot") version "4.0.9"
     id("io.spring.dependency-management") version "1.1.7"
-    id("gg.jte.gradle") version "3.2.4"
     id("nu.studer.jooq") version "10.0"
 }
 
@@ -41,7 +40,6 @@ repositories {
     mavenCentral()
 }
 
-extra["temporalVersion"] = "1.30.1"
 
 dependencies {
     implementation("org.springframework.boot:spring-boot-starter-actuator")
@@ -51,11 +49,12 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-security")
     implementation("org.springframework.boot:spring-boot-starter-validation")
     implementation("org.springframework.boot:spring-boot-starter-web")
-    implementation("gg.jte:jte-spring-boot-starter-4:3.2.4")
-    implementation("io.github.wimdeblauwe:htmx-spring-boot:5.1.0")
     implementation("org.flywaydb:flyway-database-postgresql")
-    implementation("io.temporal:temporal-spring-boot-starter:${property("temporalVersion")}")
     implementation("org.kohsuke:github-api:1.330")
+    // Worker MCP endpoint (/mcp/worker): the SDK's stateless servlet transport, with Jackson 2
+    // bindings to match the rest of the code base.
+    implementation("io.modelcontextprotocol.sdk:mcp-core:2.1.0")
+    implementation("io.modelcontextprotocol.sdk:mcp-json-jackson2:2.1.0")
     compileOnly("org.projectlombok:lombok")
     developmentOnly("org.springframework.boot:spring-boot-devtools")
     developmentOnly("org.springframework.boot:spring-boot-docker-compose")
@@ -74,7 +73,6 @@ dependencies {
     testImplementation("org.springframework.security:spring-security-test")
     testImplementation("org.testcontainers:testcontainers-junit-jupiter")
     testImplementation("org.testcontainers:testcontainers-postgresql")
-    testImplementation("io.temporal:temporal-testing:${property("temporalVersion")}")
     testCompileOnly("org.projectlombok:lombok")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     testAnnotationProcessor("org.projectlombok:lombok")
@@ -93,11 +91,6 @@ configurations.named("jooqGenerator") {
     }
 }
 
-
-jte {
-    generate()
-    binaryStaticContent = true
-}
 
 // Load .env into the bootRun task and tests so secrets stay out of source/control
 // while still being picked up by `./gradlew bootRun` and `./gradlew test`.

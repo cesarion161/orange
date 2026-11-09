@@ -24,8 +24,8 @@ class PlanResponseTest {
     void of_exposes_reviewable_dag_and_artifact_paths() throws Exception {
         PlanJson plan = new PlanJson(
                 List.of(
-                        new PlanJson.PlanTask("a", "Title A", "desc A", "dev", 100, "dev_only", null),
-                        new PlanJson.PlanTask("b", "Title B", null, "tester", null, null, null)),
+                        new PlanJson.PlanTask("a", "Title A", "desc A", "dev", 100, null),
+                        new PlanJson.PlanTask("b", "Title B", null, "chore", null, null)),
                 List.of(new PlanJson.PlanEdge("a", "b")));
         UUID planId = UUID.randomUUID();
         PlannerService.PlanResult result = new PlannerService.PlanResult(
@@ -40,7 +40,7 @@ class PlanResponseTest {
         // The DAG the MCP renders for review.
         assertThat(json.get("plan").get("tasks")).hasSize(2);
         assertThat(json.get("plan").get("tasks").get(0).get("key").asText()).isEqualTo("a");
-        assertThat(json.get("plan").get("tasks").get(1).get("role").asText()).isEqualTo("tester");
+        assertThat(json.get("plan").get("tasks").get(1).get("role").asText()).isEqualTo("chore");
         assertThat(json.get("plan").get("edges")).hasSize(1);
         assertThat(json.get("plan").get("edges").get(0).get("from").asText()).isEqualTo("a");
         assertThat(json.get("plan").get("edges").get(0).get("to").asText()).isEqualTo("b");

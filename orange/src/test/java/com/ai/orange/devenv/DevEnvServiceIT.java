@@ -19,8 +19,6 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 
 /**
  * Verifies the {@link DevEnvService} concurrency contract:
@@ -38,11 +36,6 @@ class DevEnvServiceIT {
     @Autowired DevEnvService service;
     @Autowired DevEnvRepository repo;
     @Autowired DSLContext dsl;
-
-    @DynamicPropertySource
-    static void disableAutoStart(DynamicPropertyRegistry r) {
-        r.add("orange.workflow.auto-start", () -> "false");
-    }
 
     @BeforeEach
     void resetPool() {

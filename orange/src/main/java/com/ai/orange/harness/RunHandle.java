@@ -12,4 +12,7 @@ public interface RunHandle {
     void kill(String reason);
 
     boolean isAlive();
+
+    /** The operating-system process id of the harness process. */
+    long pid();
 }

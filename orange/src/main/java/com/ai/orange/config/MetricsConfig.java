@@ -2,6 +2,10 @@ package com.ai.orange.config;
 
 import com.ai.orange.devenv.DevEnvRepository;
 import com.ai.orange.devenv.DevEnvStatus;
+import com.ai.orange.run.RunKind;
+import com.ai.orange.run.RunRepository;
+import com.ai.orange.run.RunStatus;
+import com.ai.orange.run.SchedulerPause;
 import com.ai.orange.task.TaskRepository;
 import com.ai.orange.task.TaskStatus;
 import io.micrometer.core.instrument.Gauge;
@@ -10,8 +14,8 @@ import jakarta.annotation.PostConstruct;
 import org.springframework.stereotype.Component;
 
 /**
- * Custom Prometheus gauges exposed via {@code /actuator/prometheus}: queue
- * depths, dev_env occupancy, in-flight workers by role. Each gauge is a
+ * Custom Prometheus gauges exposed via {@code /actuator/prometheus}: tasks per
+ * status, runs per kind and status, the scheduler pause, and dev_env occupancy. Each gauge is a
  * {@link Gauge} backed by a {@code Supplier<Number>} so the value is computed
  * lazily on scrape — no scheduled refresh thread, no stale cache.
  *
@@ -24,38 +28,45 @@ public class MetricsConfig {
     private final MeterRegistry registry;
     private final TaskRepository tasks;
     private final DevEnvRepository devEnvs;
+    private final RunRepository runs;
+    private final SchedulerPause pause;
 
     public MetricsConfig(MeterRegistry registry,
                          TaskRepository tasks,
-                         DevEnvRepository devEnvs) {
+                         DevEnvRepository devEnvs,
+                         RunRepository runs,
+                         SchedulerPause pause) {
         this.registry = registry;
         this.tasks = tasks;
         this.devEnvs = devEnvs;
+        this.runs = runs;
+        this.pause = pause;
     }
 
     @PostConstruct
     void register() {
-        // Queue depths — one gauge per status the operator cares about.
-        Gauge.builder("orange.tasks.ready", tasks, t -> t.findRecent(TaskStatus.READY, 1000).size())
-                .description("Tasks in READY status awaiting a worker")
-                .register(registry);
-        Gauge.builder("orange.tasks.in_progress",
-                        tasks, t -> t.findInProgress(null).size())
-                .description("Tasks currently being worked on")
-                .register(registry);
-        Gauge.builder("orange.tasks.pr_open", tasks, t -> t.findRecent(TaskStatus.PR_OPEN, 1000).size())
-                .description("Tasks with an open PR awaiting merge")
-                .register(registry);
-
-        // In-progress count per role — labelled so the operator can spot
-        // tester-saturated vs dev-saturated states.
-        for (String role : new String[]{"dev", "tester", "reviewer", "planner", "triage"}) {
-            Gauge.builder("orange.tasks.in_progress.by_role",
-                            tasks, t -> t.countInProgress(role))
-                    .tag("role", role)
-                    .description("Tasks in_progress for a specific role")
+        // Queue depths — one gauge per non-terminal status, tagged by status.
+        for (TaskStatus status : new TaskStatus[]{TaskStatus.READY, TaskStatus.RUNNING,
+                TaskStatus.VERIFYING, TaskStatus.VERIFIED, TaskStatus.NEEDS_HUMAN}) {
+            Gauge.builder("orange.tasks", tasks, t -> t.countByStatus(status))
+                    .tag("status", status.dbValue())
+                    .description("Tasks currently in this status")
                     .register(registry);
         }
+
+        // Runs queued and running, per kind.
+        for (RunKind kind : RunKind.values()) {
+            for (RunStatus status : new RunStatus[]{RunStatus.QUEUED, RunStatus.RUNNING}) {
+                Gauge.builder("orange.runs", runs, r -> r.countByStatus(kind, status))
+                        .tag("kind", kind.dbValue())
+                        .tag("status", status.dbValue())
+                        .description("Runs currently in this status")
+                        .register(registry);
+            }
+        }
+        Gauge.builder("orange.scheduler.paused", pause, p -> p.current().isPresent() ? 1 : 0)
+                .description("1 while the scheduler is paused")
+                .register(registry);
 
         // Dev-env occupancy.
         Gauge.builder("orange.dev_envs.total", devEnvs, d -> d.findAll().size())

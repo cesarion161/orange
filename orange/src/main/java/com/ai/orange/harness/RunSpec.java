@@ -19,6 +19,8 @@ import java.util.UUID;
  * @param disallowedTools    tools the run may never use
  * @param permissionMode     harness permission mode, e.g. {@code acceptEdits}; may be null
  * @param mcpConfig          MCP server config file for this run; may be null
+ * @param redact             secrets besides the credentials to mask in everything the run
+ *                           writes to disk or turns into events, e.g. the run's MCP token
  */
 public record RunSpec(
         UUID runId,
@@ -34,4 +36,19 @@ public record RunSpec(
         String permissionMode,
         Path mcpConfig,
         Credentials credentials,
-        Duration timeout) {}
+        Duration timeout,
+        List<String> redact) {
+
+    public RunSpec {
+        redact = redact == null ? List.of() : List.copyOf(redact);
+    }
+
+    /** A run with nothing to redact beyond its credentials. */
+    public RunSpec(UUID runId, String prompt, String appendSystemPrompt, String model, String smallModel,
+                   Effort effort, Path cwd, List<String> tools, List<String> allowedTools,
+                   List<String> disallowedTools, String permissionMode, Path mcpConfig, Credentials credentials,
+                   Duration timeout) {
+        this(runId, prompt, appendSystemPrompt, model, smallModel, effort, cwd, tools, allowedTools, disallowedTools,
+                permissionMode, mcpConfig, credentials, timeout, List.of());
+    }
+}

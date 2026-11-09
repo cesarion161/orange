@@ -6,6 +6,5 @@ public record TaskCreateRequest(
         @NotBlank String title,
         String description,
         String role,
-        String pipeline,
         Integer priority) {
 }

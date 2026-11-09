@@ -10,8 +10,6 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Import;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.ResponseEntity;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.web.client.RestTemplate;
 
 /**
@@ -28,11 +26,6 @@ class ReadyControllerIT {
     final RestTemplate http = new RestTemplate();
     final ParameterizedTypeReference<Map<String, Object>> MAP =
             new ParameterizedTypeReference<>() {};
-
-    @DynamicPropertySource
-    static void noAutoStart(DynamicPropertyRegistry r) {
-        r.add("orange.workflow.auto-start", () -> "false");
-    }
 
     @Test
     void api_ready_returns_200_with_expected_body() {

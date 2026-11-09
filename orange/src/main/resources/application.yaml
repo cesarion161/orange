@@ -15,17 +15,6 @@ spring:
       maximum-pool-size: 30
   flyway:
     locations: classpath:db/migration
-  temporal:
-    connection:
-      target: ${TEMPORAL_TARGET:local}
-    namespace: ${TEMPORAL_NAMESPACE:default}
-    workers-auto-discovery:
-      packages:
-        - com.ai.orange.workflow
-    workers:
-      - task-queue: orange-pipelines
-        capacity:
-          max-concurrent-activity-executors: ${ORANGE_AGENTS_MAX_CONCURRENT:5}
 
 management:
   endpoints:
@@ -38,7 +27,8 @@ management:
 
 orange:
   worktrees:
-    root: ${WORKTREES_ROOT:./.worktrees}
+    # Outside every repository (v2 decision 15): one directory per task, named by its id.
+    root: ${WORKTREES_ROOT:${user.home}/.orange/worktrees}
     base-repo: ${WORKTREES_BASE_REPO:}
     # Branch every new worktree is branched off. Should match
     # orange.github.base-branch so worktrees and PRs share a trunk; if the
@@ -48,50 +38,18 @@ orange:
     max-count: ${WORKTREES_MAX_COUNT:20}
     disposer-delay: ${ORANGE_WORKTREE_DISPOSER_DELAY:5m}
     disposer-initial-delay: ${ORANGE_WORKTREE_DISPOSER_INITIAL_DELAY:1m}
-  post-merge:
-    # Command run in `orange.worktrees.base-repo` after each PR merge to
-    # verify the new tip of `main` still builds. Blank = skip the gate.
-    # Example: "./gradlew build"
-    build-command: ${ORANGE_POST_MERGE_BUILD_COMMAND:}
-    # Run the full regression suite every N successful builds. Blank command
-    # disables periodic regression entirely (and the every-counter is moot).
-    # Example: "./gradlew check -PfullSuite"
-    regression-command: ${ORANGE_POST_MERGE_REGRESSION_COMMAND:}
-    regression-every: ${ORANGE_POST_MERGE_REGRESSION_EVERY:5}
-    timeout: ${ORANGE_POST_MERGE_TIMEOUT:10m}
   github:
     webhook-secret: ${GITHUB_WEBHOOK_SECRET:}
     webhook-path: /webhooks/github
-  claims:
-    # How long a chat-driven worker has between heartbeats before the reaper
-    # claws the task back. Heartbeats refresh this to (now + lease-ttl).
-    lease-ttl: ${ORANGE_CLAIMS_LEASE_TTL:2m}
-    # Per-task attempt cap. Once a claim has been failed (or expired) this
-    # many times the next reap/fail flips the task to FAILED instead of
-    # bouncing it back to READY.
-    max-attempts: ${ORANGE_CLAIMS_MAX_ATTEMPTS:3}
-    reaper-delay: ${ORANGE_CLAIMS_REAPER_DELAY:30s}
-    reaper-initial-delay: ${ORANGE_CLAIMS_REAPER_INITIAL_DELAY:30s}
   envs:
-    # How long acquireDevEnv blocks on the dev_envs pool before failing the
-    # stage. Stays well under the Temporal activity timeout (35m).
-    acquire-timeout: ${ORANGE_ENV_ACQUIRE_TIMEOUT:30m}
-    # Compose template the orchestrator runs per leased env. Blank = skip
-    # (tester sees only port URLs in the prompt and brings up its own stack).
+    # Dev-env leasing is dormant until UI QA runs (v2 plan, PR 8).
+    # Compose template the orchestrator runs per leased env. Blank = skip.
     # Compose file should interpolate ORANGE_PORT_WEB / ORANGE_PORT_API /
     # ORANGE_PORT_DB / ORANGE_DATA_DIR / ORANGE_FIXTURE_SET /
     # ORANGE_AUTH_BYPASS_TOKEN env vars.
     compose-file: ${ORANGE_ENV_COMPOSE_FILE:}
     compose-start-timeout: ${ORANGE_ENV_COMPOSE_START_TIMEOUT:5m}
     compose-down-timeout: ${ORANGE_ENV_COMPOSE_DOWN_TIMEOUT:1m}
-  concurrency:
-    # Per-role parallelism caps for chat-as-executor claims. A missing key
-    # means unlimited. Approximate (no transactional lock around the count),
-    # which is fine as a throttle. Example:
-    #   per-role:
-    #     tester: 3
-    #     dev: 10
-    per-role: {}
   routing:
     # Spec §10. Tiers cheapest → most capable; escalation moves one step right.
     tier-order: [small, medium, large]
@@ -104,15 +62,13 @@ orange:
       small:  { model: claude-haiku-5-5,  harness: claude-code, auth: subscription, budget-usd: 1 }
     rules:  # first match wins; no difficulty = any
       - { role: planner,     tier: large,  effort: xhigh }
-      - { role: reviewer,    tier: large,  effort: high }
+      # diff_review runs (project-space §3: verify-review routes small or medium at low effort)
+      - { role: reviewer,    tier: medium, effort: low }
       - { role: ci_fixer,    tier: medium, effort: medium }
       - { role: chore,       tier: small,  effort: low }
       - { role: implementer, difficulty: L, tier: large,  effort: high }
       - { role: implementer, difficulty: M, tier: medium, effort: high }
       - { role: implementer, difficulty: S, tier: medium, effort: medium }
-      # v1 pipeline roles, removed with the Temporal pipeline in PR 2.
-      - { role: tester,      tier: medium, effort: medium }
-      - { role: triage,      tier: medium, effort: medium }
     risk:
       min-tier: large
       min-effort: high
@@ -121,6 +77,45 @@ orange:
       tier-up-after-failures: 2
       needs-human-after-failures: 3
     small-model: claude-haiku-5-5
+  runs:
+    # The coordinator's run loop (v2 spec §7): scheduler, reactor and reaper. Tests turn it off.
+    loop-enabled: ${ORANGE_RUNS_LOOP_ENABLED:true}
+    # This instance's id on the runs it claims. Blank = <hostname>-<8 hex>, new at every start, so
+    # runs a previous instance left running can be told apart and reaped.
+    worker-id: ${ORANGE_WORKER_ID:}
+    max-concurrent: 6
+    # Concurrent runs per kind; judge and brief arrive with project-space phases B and D.
+    slots: { plan: 1, implement: 4, ci_fix: 2, verify: 2, diff_review: 2, integrate: 1, judge: 0, brief: 0 }
+    timeouts: { plan: 30m, implement: 60m, ci_fix: 40m, verify: 30m, diff_review: 20m, integrate: 10m, judge: 5m, brief: 10m }
+    # A run's lease is renewed every heartbeat; one not renewed within lease-ttl is reaped.
+    lease-ttl: 5m
+    heartbeat: 60s
+    scheduler-poll: 5s
+    reactor-sweep: 30s
+    reaper-sweep: 30s
+    # Finished runs' directories under orange.harness.run-root are deleted after this long.
+    retention: 14d
+  mcp:
+    # Where agents reach /mcp/worker. Blank = http://127.0.0.1:<server port>/mcp/worker.
+    worker-url: ${ORANGE_MCP_WORKER_URL:}
+  events:
+    # The inbox (webhooks today): stored first, then processed one per transaction in id order.
+    processing-enabled: ${ORANGE_EVENTS_PROCESSING_ENABLED:true}
+    poll: 5s
+    # A failing event is retried this many times, then left with its last error.
+    max-attempts: 5
+  evidence:
+    # Commands orange runs itself, in a task's worktree at its head, before the task can count as
+    # verified (project-space spec §7). Per-project conventions replace this list in project-space
+    # Phase C. They get only the harness's allowlisted environment. Each entry:
+    #   - { kind: tests|build|lint|custom, command: "./gradlew test", timeout: 20m }
+    commands: []
+    # How much of each command's output (its end) an evidence row keeps.
+    output-tail-chars: 4000
+  integration:
+    # Merge mode: rebase, re-verify if that changed the head, fast-forward the base. Push the base
+    # when the base repo has an origin remote, unless this is false.
+    remote-push: ${ORANGE_INTEGRATION_REMOTE_PUSH:true}
   harness:
     # Per-run files (stream log, isolated Claude config). Must stay outside every git worktree.
     run-root: ${ORANGE_RUN_ROOT:${user.home}/.orange/runs}
@@ -134,6 +129,9 @@ orange:
     master-key: ${LITELLM_MASTER_KEY:}
     # Added to a run's timeout to get its virtual key's expiry.
     key-ttl-margin: 30m
+    # The admin client's timeouts, so a hung proxy fails the call instead of holding a run.
+    connect-timeout: 5s
+    read-timeout: 30s
   billing:
     # Max-plan token for subscription runs (create with: claude setup-token). Only the claude binary gets it.
     subscription-token: ${CLAUDE_CODE_OAUTH_TOKEN:}
@@ -145,7 +143,3 @@ orange:
       claude-opus-5-5:   { input: 4.00,  output: 20.00, cache-read: 0.20, cache-write: 5.00 }
       claude-sonnet-5-5: { input: 2.00,  output: 10.00, cache-read: 0.20, cache-write: 2.50 }
       claude-haiku-5-5:  { input: 0.10,  output: 0.50,  cache-read: 0.01, cache-write: 0.125 }
-
-gg:
-  jte:
-    development-mode: true
