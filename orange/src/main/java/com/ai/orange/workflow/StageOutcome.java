@@ -3,7 +3,7 @@ package com.ai.orange.workflow;
 /**
  * What a single {@link Stage} produced.
  *
- * @param agentStatus  what the agent-runner reported as its final event
+ * @param agentStatus  how the stage's agent run ended
  *                     ({@code success} | {@code failure} | {@code cancelled}).
  * @param verdict      for tester-role stages, parsed from {@code report.md}'s
  *                     first line: {@code "pass"} or {@code "fail"}; {@code null}

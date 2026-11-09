@@ -111,7 +111,8 @@ public class WorkerService {
                     || "env_compose_failed".equals(latestType)) {
                 return Activity.ERRORED;
             }
-            if ("final".equals(latestType) || "claim_complete".equals(latestType)) {
+            if ("final".equals(latestType) || "run_finished".equals(latestType)
+                    || "claim_complete".equals(latestType)) {
                 return Activity.COMPLETING;
             }
             return Activity.WORKING;

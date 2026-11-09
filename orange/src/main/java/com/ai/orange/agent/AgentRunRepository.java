@@ -41,6 +41,32 @@ public class AgentRunRepository {
         return (max == null ? 0 : max) + 1;
     }
 
+    /**
+     * Failure reasons that say nothing about the model's work: the run never got a fair attempt.
+     * They are not counted towards escalation.
+     */
+    static final java.util.List<String> NOT_MODEL_FAILURES = java.util.List.of(
+            "subscription_token_missing", "gateway_unavailable", "start_failed", "plan_limit", "auth_failed",
+            "cancelled");
+
+    /** Failed attempts on a task that count towards escalation (see {@link #NOT_MODEL_FAILURES}). */
+    public int countFailed(UUID taskId) {
+        return dsl.fetchCount(AGENT_RUNS,
+                AGENT_RUNS.TASK_ID.eq(taskId)
+                        .and(AGENT_RUNS.STATUS.eq(AgentRunStatus.FAILED.dbValue()))
+                        .and(org.jooq.impl.DSL.field("coalesce({0} ->> 'failure_reason', '')", String.class,
+                                AGENT_RUNS.METADATA).notIn(NOT_MODEL_FAILURES)));
+    }
+
+    /** Merges {@code patch} into the run's metadata (top-level keys in {@code patch} win). */
+    public boolean mergeMetadata(UUID id, JSONB patch) {
+        return dsl.update(AGENT_RUNS)
+                .set(AGENT_RUNS.METADATA, org.jooq.impl.DSL.field("{0} || {1}", JSONB.class,
+                        AGENT_RUNS.METADATA, org.jooq.impl.DSL.val(patch, AGENT_RUNS.METADATA.getDataType())))
+                .where(AGENT_RUNS.ID.eq(id))
+                .execute() > 0;
+    }
+
     public boolean finish(UUID id, AgentRunStatus status, BigDecimal costUsd, long tokensIn, long tokensOut) {
         return dsl.update(AGENT_RUNS)
                 .set(AGENT_RUNS.STATUS, status.dbValue())

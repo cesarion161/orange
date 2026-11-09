@@ -1,6 +1,6 @@
 package com.ai.orange.workflow;
 
-import com.ai.orange.agent.protocol.ProtocolCodec;
+import com.ai.orange.json.Json;
 import com.ai.orange.devenv.DevEnv;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -49,7 +49,7 @@ public record EnvInfo(
         if (env.ports() == null) return Map.of();
         try {
             @SuppressWarnings("unchecked")
-            Map<String, Object> raw = ProtocolCodec.mapper().readValue(env.ports().data(), Map.class);
+            Map<String, Object> raw = Json.mapper().readValue(env.ports().data(), Map.class);
             Map<String, Integer> out = new LinkedHashMap<>();
             for (Map.Entry<String, Object> e : raw.entrySet()) {
                 if (e.getValue() instanceof Number n) out.put(e.getKey(), n.intValue());
@@ -64,7 +64,7 @@ public record EnvInfo(
         if (env.metadata() == null) return Map.of();
         try {
             @SuppressWarnings("unchecked")
-            Map<String, Object> out = ProtocolCodec.mapper().readValue(env.metadata().data(), Map.class);
+            Map<String, Object> out = Json.mapper().readValue(env.metadata().data(), Map.class);
             return out == null ? Map.of() : out;
         } catch (Exception ex) {
             return Map.of();

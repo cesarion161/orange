@@ -2,22 +2,15 @@ package com.ai.orange.planner;
 
 import com.ai.orange.agent.Agent;
 import com.ai.orange.agent.AgentRepository;
-import com.ai.orange.agent.AgentRunnerLauncher;
-import com.ai.orange.agent.AgentRunnerProcess;
-import com.ai.orange.agent.protocol.Command;
-import com.ai.orange.agent.protocol.Event;
-import com.ai.orange.agent.protocol.ProtocolCodec;
-import com.fasterxml.jackson.core.type.TypeReference;
+import com.ai.orange.agent.AgentRunRequest;
+import com.ai.orange.agent.AgentRunResult;
+import com.ai.orange.agent.AgentRunService;
+import com.ai.orange.json.Json;
 import jakarta.annotation.PostConstruct;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
-import java.util.List;
-import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicReference;
-import org.jooq.JSONB;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -41,20 +34,18 @@ import org.springframework.stereotype.Service;
 public class PlannerService {
 
     private static final Logger log = LoggerFactory.getLogger(PlannerService.class);
-    private static final TypeReference<List<String>> STR_LIST = new TypeReference<>() {};
-    private static final Duration POLL = Duration.ofSeconds(2);
 
     private final AgentRepository agents;
-    private final AgentRunnerLauncher launcher;
+    private final AgentRunService agentRunService;
     private final PlanGraphService planGraph;
     private final PlannerProperties props;
 
     public PlannerService(AgentRepository agents,
-                          AgentRunnerLauncher launcher,
+                          AgentRunService agentRunService,
                           PlanGraphService planGraph,
                           PlannerProperties props) {
         this.agents = agents;
-        this.launcher = launcher;
+        this.agentRunService = agentRunService;
         this.planGraph = planGraph;
         this.props = props;
     }
@@ -66,7 +57,7 @@ public class PlannerService {
 
     /**
      * Persist a {@link PlanJson} produced by a chat-driven planner (one that did
-     * its thinking interactively rather than via the subprocess agent-runner):
+     * its thinking interactively rather than in a headless planner run):
      * write the artifact files and validate the DAG. Does <b>not</b> create
      * tasks — dispatch is a separate step.
      *
@@ -90,7 +81,7 @@ public class PlannerService {
 
         Files.createDirectories(outputDir);
         Path planPath = outputDir.resolve("plan.json");
-        Files.writeString(planPath, ProtocolCodec.mapper().writerWithDefaultPrettyPrinter().writeValueAsString(parsed));
+        Files.writeString(planPath, Json.mapper().writerWithDefaultPrettyPrinter().writeValueAsString(parsed));
         Path archPath = null;
         if (architectureMd != null && !architectureMd.isBlank()) {
             archPath = outputDir.resolve("architecture.md");
@@ -113,45 +104,17 @@ public class PlannerService {
         Path outputDir = Path.of(props.outputRoot()).toAbsolutePath().resolve(planId.toString());
         Files.createDirectories(outputDir);
 
-        Command.StartOptions options = new Command.StartOptions(
-                planner.model(),
-                planner.fallbackModel(),
-                planner.systemPrompt(),
-                jsonbToStringList(planner.allowedTools()),
-                jsonbToStringList(planner.disallowedTools()),
-                outputDir.toString(),
-                planner.maxTurns(),
-                null,
-                planner.permissionMode(),
-                null, null, null);
-        Command.Start start = new Command.Start(description, options);
+        AgentRunResult run = agentRunService.run(new AgentRunRequest(null, "planner", planner, description,
+                outputDir, null, false, props.runTimeout(), planner.name()));
 
-        AtomicReference<String> finalStatus = new AtomicReference<>("failure");
-        AtomicReference<Map<String, String>> finalArtifacts = new AtomicReference<>(Map.of());
-        try (AgentRunnerProcess proc = launcher.launch(start, event -> {
-            if (event instanceof Event.Final f) {
-                finalStatus.set(f.status());
-                if (f.artifacts() != null) finalArtifacts.set(f.artifacts());
-            }
-        })) {
-            long deadline = System.nanoTime() + props.runTimeout().toNanos();
-            while (!proc.awaitTermination(POLL)) {
-                if (System.nanoTime() > deadline) {
-                    log.error("planner exceeded {} for plan {}; cancelling", props.runTimeout(), planId);
-                    return new PlanResult(planId, outputDir, "timeout", null, null, null);
-                }
-            }
+        if (!run.succeeded()) {
+            String status = "timeout".equals(run.failureReason()) ? "timeout" : run.status();
+            log.warn("planner finished with status={} reason={} for plan {}", status, run.failureReason(), planId);
+            return new PlanResult(planId, outputDir, status, null, null, null);
         }
 
-        if (!"success".equals(finalStatus.get())) {
-            log.warn("planner finished with status={} for plan {}", finalStatus.get(), planId);
-            return new PlanResult(planId, outputDir, finalStatus.get(), null, null, null);
-        }
-
-        String archName = finalArtifacts.get().getOrDefault("architecture", "architecture.md");
-        String planName = finalArtifacts.get().getOrDefault("plan", "plan.json");
-        Path archPath = outputDir.resolve(archName);
-        Path planPath = outputDir.resolve(planName);
+        Path archPath = outputDir.resolve("architecture.md");
+        Path planPath = outputDir.resolve("plan.json");
 
         if (!Files.exists(planPath)) {
             log.error("planner emitted final.success but plan.json missing at {}", planPath);
@@ -160,7 +123,7 @@ public class PlannerService {
 
         PlanJson parsed;
         try {
-            parsed = ProtocolCodec.mapper().readValue(planPath.toFile(), PlanJson.class);
+            parsed = Json.mapper().readValue(planPath.toFile(), PlanJson.class);
         } catch (Exception e) {
             log.error("planner produced unparseable plan.json: {}", e.getMessage());
             return new PlanResult(planId, outputDir, "bad_plan_json", null, null, null);
@@ -194,14 +157,5 @@ public class PlannerService {
             PlanJson plan,
             Path architectureMd,
             Path planJson) {
-    }
-
-    private static List<String> jsonbToStringList(JSONB jsonb) {
-        if (jsonb == null) return List.of();
-        try {
-            return ProtocolCodec.mapper().readValue(jsonb.data(), STR_LIST);
-        } catch (Exception e) {
-            return List.of();
-        }
     }
 }

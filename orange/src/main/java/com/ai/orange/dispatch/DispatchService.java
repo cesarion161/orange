@@ -1,6 +1,6 @@
 package com.ai.orange.dispatch;
 
-import com.ai.orange.agent.protocol.ProtocolCodec;
+import com.ai.orange.json.Json;
 import com.ai.orange.planner.PlanGraphService;
 import com.ai.orange.planner.PlanJson;
 import com.ai.orange.planner.PlannerProperties;
@@ -61,7 +61,7 @@ public class DispatchService {
         try {
             Files.createDirectories(outputDir);
             Files.writeString(outputDir.resolve("plan.json"),
-                    ProtocolCodec.mapper().writerWithDefaultPrettyPrinter().writeValueAsString(plan));
+                    Json.mapper().writerWithDefaultPrettyPrinter().writeValueAsString(plan));
             if (architectureMd != null && !architectureMd.isBlank()) {
                 Files.writeString(outputDir.resolve("architecture.md"), architectureMd);
             }
@@ -87,7 +87,7 @@ public class DispatchService {
 
         PlanJson plan;
         try {
-            plan = ProtocolCodec.mapper().readValue(planPath.toFile(), PlanJson.class);
+            plan = Json.mapper().readValue(planPath.toFile(), PlanJson.class);
         } catch (IOException e) {
             throw new IllegalArgumentException("saved plan.json for " + planId + " is unparseable: " + e.getMessage());
         }

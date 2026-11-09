@@ -1,79 +1,58 @@
 package com.ai.orange.planner;
 
+import static com.ai.orange.db.jooq.Tables.AGENTS;
 import static com.ai.orange.db.jooq.Tables.TASKS;
 import static com.ai.orange.db.jooq.Tables.TASK_EDGES;
 import static com.ai.orange.db.jooq.Tables.TASK_EVENTS;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.ai.orange.TestcontainersConfiguration;
-import com.ai.orange.agent.AgentRunnerLauncher;
-import com.ai.orange.agent.AgentRunnerProcess;
-import com.ai.orange.agent.AgentRunnerProperties;
-import com.ai.orange.agent.protocol.Command;
-import com.ai.orange.agent.protocol.Event;
+import com.ai.orange.harness.FakeClaude;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
-import java.time.Duration;
-import java.util.List;
-import java.util.function.Consumer;
 import org.jooq.DSLContext;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIf;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
-import org.springframework.context.annotation.Primary;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 /**
- * Drives {@link PlannerService} end-to-end using a stub planner agent that
- * writes a canned 3-task DAG. Verifies the planner is <b>plan-only</b>: it
- * returns the DAG + artifacts for review and creates no tasks (dispatch is a
+ * Drives {@link PlannerService} end-to-end with the fake Claude Code, whose
+ * {@code [[fake:plan]]} scenario (selected through the planner agent's system
+ * prompt) writes a canned 3-task DAG. Verifies the planner is <b>plan-only</b>:
+ * it returns the DAG + artifacts for review and creates no tasks (dispatch is a
  * separate step — see {@code DispatchServiceIT}).
  */
 @SpringBootTest
-@Import({TestcontainersConfiguration.class, PlannerServiceIT.StubPlannerLauncherConfig.class})
-@EnabledIf("isPython3Available")
+@Import(TestcontainersConfiguration.class)
 class PlannerServiceIT {
 
-    static Path stubScript;
     static Path plannerOutputRoot;
+    static Path runRoot;
 
     @Autowired PlannerService service;
     @Autowired DSLContext dsl;
+
+    String originalPlannerPrompt;
 
     @BeforeAll
     static void prepare() throws IOException {
         Path tmp = Files.createTempDirectory("planner-it-");
         plannerOutputRoot = tmp.resolve("plans");
+        runRoot = tmp.resolve("runs");
         Files.createDirectories(plannerOutputRoot);
-        stubScript = Files.createTempFile("stub_planner-", ".py");
-        try (var in = PlannerServiceIT.class.getResourceAsStream("/stub_planner.py")) {
-            if (in == null) throw new IllegalStateException("stub_planner.py not on classpath");
-            Files.copy(in, stubScript, StandardCopyOption.REPLACE_EXISTING);
-        }
-        stubScript.toFile().deleteOnExit();
     }
 
     @DynamicPropertySource
     static void registerProps(DynamicPropertyRegistry r) {
         r.add("orange.planner.output-root", () -> plannerOutputRoot.toString());
-        r.add("orange.workflow.auto-start", () -> "false");
-    }
-
-    static boolean isPython3Available() {
-        try {
-            return new ProcessBuilder("python3", "--version").start().waitFor() == 0;
-        } catch (Exception e) {
-            return false;
-        }
+        FakeClaude.register(r, runRoot);
     }
 
     @BeforeEach
@@ -81,6 +60,15 @@ class PlannerServiceIT {
         dsl.deleteFrom(TASK_EVENTS).execute();
         dsl.deleteFrom(TASK_EDGES).execute();
         dsl.deleteFrom(TASKS).execute();
+        originalPlannerPrompt = dsl.select(AGENTS.SYSTEM_PROMPT).from(AGENTS)
+                .where(AGENTS.ROLE.eq("planner")).fetchOne(AGENTS.SYSTEM_PROMPT);
+        dsl.update(AGENTS).set(AGENTS.SYSTEM_PROMPT, originalPlannerPrompt + "\n[[fake:plan]]")
+                .where(AGENTS.ROLE.eq("planner")).execute();
+    }
+
+    @AfterEach
+    void restorePlannerPrompt() {
+        dsl.update(AGENTS).set(AGENTS.SYSTEM_PROMPT, originalPlannerPrompt).where(AGENTS.ROLE.eq("planner")).execute();
     }
 
     @Test
@@ -121,27 +109,12 @@ class PlannerServiceIT {
         assertThat(Files.exists(r2.outputDir())).isTrue();
     }
 
-    /**
-     * Replaces the production launcher with one that runs the stub planner
-     * Python script — the only way we can drive PlannerService in CI without
-     * a real Anthropic key.
-     */
-    @TestConfiguration
-    static class StubPlannerLauncherConfig {
-        @Bean
-        @Primary
-        AgentRunnerLauncher stubPlannerLauncher() {
-            AgentRunnerProperties props = new AgentRunnerProperties(
-                    "python3", "ignored", Duration.ofSeconds(10), Duration.ofSeconds(5));
-            return new AgentRunnerLauncher(props) {
-                @Override
-                public AgentRunnerProcess launch(Command.Start start, Consumer<Event> cb) throws IOException {
-                    return AgentRunnerProcess.launch(
-                            List.of("python3", "-u", stubScript.toString()),
-                            Duration.ofSeconds(5), start, cb);
-                }
-            };
-        }
+    @Test
+    void planner_failure_is_reported_without_a_plan() throws Exception {
+        dsl.update(AGENTS).set(AGENTS.SYSTEM_PROMPT, originalPlannerPrompt + "\n[[fake:error]]")
+                .where(AGENTS.ROLE.eq("planner")).execute();
+        PlannerService.PlanResult result = service.plan("This planner run fails.");
+        assertThat(result.status()).isEqualTo("failure");
+        assertThat(result.plan()).isNull();
     }
-
 }

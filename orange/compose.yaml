@@ -41,6 +41,38 @@ services:
     depends_on:
       - temporal
 
+  # ── LiteLLM gateway (only for routing tiers with auth: gateway) ──────────────────────
+  # Not started by a plain `docker compose up`; use: docker compose --profile gateway up -d litellm
+  litellm-db-init:
+    image: 'postgres:18-alpine'
+    profiles: ['gateway']
+    environment:
+      - 'PGPASSWORD=secret'
+    # Creates the litellm database on Postgres volumes that predate 02-litellm-db.sql.
+    command: ['sh', '-c', "psql -h postgres -U orange -d orange -tAc \"SELECT 1 FROM pg_database WHERE datname = 'litellm'\" | grep -q 1 || createdb -h postgres -U orange litellm"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  litellm:
+    # Pinned by digest (LiteLLM's PyPI package was compromised in March 2026; the image was not).
+    image: 'ghcr.io/berriai/litellm:v1.106.6@sha256:37e2dafb088a7723beb998590682957386dfc83ffea1848486f8e0e5cfac0b06'
+    profiles: ['gateway']
+    entrypoint: ['/bin/sh', '-c']
+    # Refuse to start without a master key: LiteLLM would otherwise serve its admin API unauthenticated.
+    command: ['test -n "$$LITELLM_MASTER_KEY" || { echo "LITELLM_MASTER_KEY is not set (orange/.env)" >&2; exit 1; }; exec litellm --config /app/config.yaml --port 4000']
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    environment:
+      - 'LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-}'
+      - 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}'
+      - 'DATABASE_URL=postgresql://orange:secret@postgres:5432/litellm'
+    ports:
+      - '4000:4000'
+    depends_on:
+      litellm-db-init:
+        condition: service_completed_successfully
+
   grafana-lgtm:
     image: 'grafana/otel-lgtm:latest'
     ports:

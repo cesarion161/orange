@@ -1,5 +1,6 @@
 package com.ai.orange.api;
 
+import com.ai.orange.agent.AgentRunService;
 import com.ai.orange.task.ClaimService;
 import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskClaimRepository;
@@ -39,19 +40,22 @@ public class TaskController {
     private final ClaimService claimService;
     private final TaskClaimRepository claimRepo;
     private final WorkflowClient workflowClient;
+    private final AgentRunService agentRuns;
 
     public TaskController(TaskService service,
                           TaskRepository taskRepo,
                           TaskEventRepository eventRepo,
                           ClaimService claimService,
                           TaskClaimRepository claimRepo,
-                          WorkflowClient workflowClient) {
+                          WorkflowClient workflowClient,
+                          AgentRunService agentRuns) {
         this.service = service;
         this.taskRepo = taskRepo;
         this.eventRepo = eventRepo;
         this.claimService = claimService;
         this.claimRepo = claimRepo;
         this.workflowClient = workflowClient;
+        this.agentRuns = agentRuns;
     }
 
     @PostMapping
@@ -174,6 +178,10 @@ public class TaskController {
         } catch (Exception e) {
             log.warn("workflow termination for task {} threw: {}", id, e.getMessage());
         }
+
+        // Terminating the workflow does not interrupt an in-flight activity, so kill the
+        // task's running Claude Code process directly.
+        agentRuns.cancel(id);
 
         // Chat-driven workers don't have a workflow to terminate — they poll
         // the claim's cancel_requested flag on heartbeat. Flip it so they

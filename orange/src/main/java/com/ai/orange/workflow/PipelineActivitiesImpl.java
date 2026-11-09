@@ -2,37 +2,27 @@ package com.ai.orange.workflow;
 
 import com.ai.orange.agent.Agent;
 import com.ai.orange.agent.AgentRepository;
-import com.ai.orange.agent.AgentRun;
-import com.ai.orange.agent.AgentRunRepository;
-import com.ai.orange.agent.AgentRunStatus;
-import com.ai.orange.agent.AgentRunnerLauncher;
-import com.ai.orange.agent.AgentRunnerProcess;
-import com.ai.orange.agent.protocol.Command;
-import com.ai.orange.agent.protocol.Event;
-import com.ai.orange.agent.protocol.ProtocolCodec;
+import com.ai.orange.agent.AgentRunRequest;
+import com.ai.orange.agent.AgentRunResult;
+import com.ai.orange.agent.AgentRunService;
 import com.ai.orange.devenv.DevEnv;
 import com.ai.orange.devenv.DevEnvService;
 import com.ai.orange.devenv.EnvComposeRunner;
 import com.ai.orange.github.GithubPrService;
 import com.ai.orange.github.PrInfo;
+import com.ai.orange.json.Json;
 import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskEventRepository;
 import com.ai.orange.task.TaskRepository;
 import com.ai.orange.task.TaskStatus;
 import com.ai.orange.worktree.WorktreeService;
-import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import io.temporal.spring.boot.ActivityImpl;
 import java.io.IOException;
-import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.time.OffsetDateTime;
-import java.util.List;
-import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
 import org.jooq.JSONB;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,15 +34,14 @@ import org.springframework.stereotype.Component;
 public class PipelineActivitiesImpl implements PipelineActivities {
 
     private static final Logger log = LoggerFactory.getLogger(PipelineActivitiesImpl.class);
-    private static final TypeReference<List<String>> STR_LIST = new TypeReference<>() {};
-    private static final Duration POLL = Duration.ofSeconds(2);
+    /** Per-stage agent run timeout; the runStage activity's own start-to-close timeout is 2 h. */
+    static final Duration STAGE_TIMEOUT = Duration.ofMinutes(60);
 
     private final TaskRepository tasks;
     private final TaskEventRepository taskEvents;
     private final AgentRepository agents;
-    private final AgentRunRepository agentRuns;
+    private final AgentRunService agentRunService;
     private final WorktreeService worktrees;
-    private final AgentRunnerLauncher launcher;
     private final GithubPrService prService;
     private final DevEnvService devEnvs;
     private final EnvComposeRunner composeRunner;
@@ -61,9 +50,8 @@ public class PipelineActivitiesImpl implements PipelineActivities {
     public PipelineActivitiesImpl(TaskRepository tasks,
                                    TaskEventRepository taskEvents,
                                    AgentRepository agents,
-                                   AgentRunRepository agentRuns,
+                                   AgentRunService agentRunService,
                                    WorktreeService worktrees,
-                                   AgentRunnerLauncher launcher,
                                    GithubPrService prService,
                                    DevEnvService devEnvs,
                                    EnvComposeRunner composeRunner,
@@ -71,9 +59,8 @@ public class PipelineActivitiesImpl implements PipelineActivities {
         this.tasks = tasks;
         this.taskEvents = taskEvents;
         this.agents = agents;
-        this.agentRuns = agentRuns;
+        this.agentRunService = agentRunService;
         this.worktrees = worktrees;
-        this.launcher = launcher;
         this.prService = prService;
         this.devEnvs = devEnvs;
         this.composeRunner = composeRunner;
@@ -154,61 +141,14 @@ public class PipelineActivitiesImpl implements PipelineActivities {
         Agent agent = agents.findEnabledByRole(agentRole).stream().findFirst()
                 .orElseThrow(() -> new IllegalStateException("no enabled agent for role " + agentRole));
 
-        int attempt = agentRuns.nextAttempt(taskId);
         String prompt = buildPrompt(task, augmentation, env);
-        AgentRun run = agentRuns.start(taskId, agent.id(), attempt, prompt, null);
-
-        Command.StartOptions options = new Command.StartOptions(
-                agent.model(),
-                agent.fallbackModel(),
-                agent.systemPrompt(),
-                jsonbToStringList(agent.allowedTools()),
-                jsonbToStringList(agent.disallowedTools()),
-                worktreePath,
-                agent.maxTurns(),
-                null,
-                agent.permissionMode(),
-                null, null, null);
-        Command.Start start = new Command.Start(prompt, options);
-
-        AtomicReference<String> finalStatus = new AtomicReference<>("failure");
-        AtomicReference<Map<String, String>> finalArtifacts = new AtomicReference<>(Map.of());
-        AtomicReference<BigDecimal> totalCost = new AtomicReference<>(BigDecimal.ZERO);
-        // Last assistant message text — the reviewer's verdict lives here (it's
-        // read-only and has no report file like the tester does).
-        AtomicReference<String> lastAssistant = new AtomicReference<>("");
-
-        Consumer<Event> sink = event -> {
-            if (event instanceof Event.AssistantMessage am) lastAssistant.set(am.text());
-            persistEvent(taskId, agent.name(), event, finalStatus, finalArtifacts, totalCost);
-        };
-
-        try (AgentRunnerProcess proc = launcher.launch(start, sink)) {
-            while (!proc.awaitTermination(POLL)) {
-                tasks.updateHeartbeat(taskId, OffsetDateTime.now());
-            }
-        } catch (IOException e) {
-            log.error("runStage IO error for task {}", taskId, e);
-            agentRuns.finish(run.id(), AgentRunStatus.FAILED, totalCost.get(), 0, 0);
-            return new StageOutcome("failure", null, null);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            agentRuns.finish(run.id(), AgentRunStatus.CANCELLED, totalCost.get(), 0, 0);
-            return new StageOutcome("cancelled", null, null);
-        }
-
-        AgentRunStatus runStatus = switch (finalStatus.get()) {
-            case "success" -> AgentRunStatus.SUCCEEDED;
-            case "cancelled" -> AgentRunStatus.CANCELLED;
-            default -> AgentRunStatus.FAILED;
-        };
-        agentRuns.finish(run.id(), runStatus, totalCost.get(), 0, 0);
+        AgentRunResult run = agentRunService.run(new AgentRunRequest(taskId, agentRole, agent, prompt,
+                Path.of(worktreePath), difficultyOf(task), riskOf(task), STAGE_TIMEOUT, agent.name()));
 
         String verdict = null;
         String report = null;
         if ("tester".equals(agentRole)) {
-            String reportName = finalArtifacts.get().getOrDefault("report", "report.md");
-            Path reportPath = Path.of(worktreePath).resolve(reportName);
+            Path reportPath = Path.of(worktreePath).resolve("report.md");
             if (Files.exists(reportPath)) {
                 try {
                     report = Files.readString(reportPath);
@@ -225,14 +165,35 @@ public class PipelineActivitiesImpl implements PipelineActivities {
             // so the review stage's retryPrevious bounces back to dev with the
             // review attached as augmentation. No verdict line → null → the stage
             // passes (advisory), so a malformed review never wedges the pipeline.
-            report = lastAssistant.get();
+            report = run.lastAssistantText();
             verdict = parseReviewVerdict(report);
             if (verdict == null) {
                 log.warn("reviewer for task {} emitted no VERDICT line; treating review as non-blocking", taskId);
             }
         }
 
-        return new StageOutcome(finalStatus.get(), verdict, report);
+        return new StageOutcome(run.status(), verdict, report);
+    }
+
+    /** Planner-assigned difficulty from {@code tasks.metadata.difficulty}; M when absent. */
+    static String difficultyOf(Task task) {
+        JsonNode meta = metadataOf(task);
+        String d = meta.path("difficulty").asText("");
+        return d.isBlank() ? "M" : d;
+    }
+
+    /** Risk flag from {@code tasks.metadata.risk}; false when absent. */
+    static boolean riskOf(Task task) {
+        return metadataOf(task).path("risk").asBoolean(false);
+    }
+
+    private static JsonNode metadataOf(Task task) {
+        if (task.metadata() == null) return Json.mapper().createObjectNode();
+        try {
+            return Json.mapper().readTree(task.metadata().data());
+        } catch (Exception e) {
+            return Json.mapper().createObjectNode();
+        }
     }
 
     @Override
@@ -319,25 +280,6 @@ public class PipelineActivitiesImpl implements PipelineActivities {
         return sb.toString();
     }
 
-    private void persistEvent(UUID taskId, String actor, Event event,
-                              AtomicReference<String> finalStatus,
-                              AtomicReference<Map<String, String>> finalArtifacts,
-                              AtomicReference<BigDecimal> totalCost) {
-        try {
-            String json = ProtocolCodec.mapper().writeValueAsString(event);
-            taskEvents.append(taskId, actor, eventType(event), JSONB.valueOf(json));
-        } catch (Exception e) {
-            log.warn("could not persist event for task {}: {}", taskId, e.getMessage());
-        }
-        tasks.updateHeartbeat(taskId, OffsetDateTime.now());
-        if (event instanceof Event.Final f) {
-            finalStatus.set(f.status());
-            if (f.artifacts() != null) finalArtifacts.set(f.artifacts());
-        } else if (event instanceof Event.Cost c) {
-            totalCost.updateAndGet(prev -> prev.add(BigDecimal.valueOf(c.usd())));
-        }
-    }
-
     static String parseVerdict(String reportMarkdown) {
         if (reportMarkdown == null) return null;
         String firstLine = reportMarkdown.lines().findFirst().orElse("").toUpperCase();
@@ -367,35 +309,10 @@ public class PipelineActivitiesImpl implements PipelineActivities {
         return verdict;
     }
 
-    private static String eventType(Event e) {
-        return switch (e) {
-            case Event.Ready r -> "ready";
-            case Event.AssistantMessage a -> "assistant_message";
-            case Event.Thinking t -> "thinking";
-            case Event.ToolUse u -> "tool_use";
-            case Event.ToolResult r -> "tool_result";
-            case Event.HookRequest h -> "hook_request";
-            case Event.SubagentStart s -> "subagent_start";
-            case Event.SubagentEnd s -> "subagent_end";
-            case Event.Cost c -> "cost";
-            case Event.Final f -> "final";
-            case Event.ErrorEvent err -> "error";
-        };
-    }
-
-    private static List<String> jsonbToStringList(JSONB jsonb) {
-        if (jsonb == null) return List.of();
-        try {
-            return ProtocolCodec.mapper().readValue(jsonb.data(), STR_LIST);
-        } catch (Exception e) {
-            return List.of();
-        }
-    }
-
     private static String jsonString(String s) {
         if (s == null) return "null";
         try {
-            return ProtocolCodec.mapper().writeValueAsString(s);
+            return Json.mapper().writeValueAsString(s);
         } catch (Exception e) {
             return "\"\"";
         }

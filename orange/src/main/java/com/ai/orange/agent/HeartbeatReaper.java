@@ -22,8 +22,8 @@ import org.springframework.transaction.annotation.Transactional;
  * {@code failed}. Required because the orchestrator can crash mid-run; without
  * a reaper the orphaned task would stay claimed forever.
  *
- * Heartbeats themselves are written by {@code AgentRunnerProcess} consumers in
- * Phase 3 (every event from the runner bumps the timestamp).
+ * Heartbeats themselves are written by {@link AgentRunService}: on every event a
+ * run emits, and every 30 s while a run is silent (a long build emits nothing).
  */
 @Service
 public class HeartbeatReaper {

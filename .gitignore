@@ -11,7 +11,7 @@
 .DS_Store
 Thumbs.db
 
-# Python (covers agent-runner/ and orange-mcp/)
+# Python (covers orange-mcp/)
 __pycache__/
 *.py[cod]
 *$py.class

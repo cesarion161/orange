@@ -25,7 +25,7 @@ plan DAG and creates nothing; `orange_dispatch` runs a plan (inline or by saved
 ## Quickstart
 
 ```sh
-# 1. Install (uses uv, like agent-runner/)
+# 1. Install (uses uv)
 cd orange-mcp
 uv sync
 
