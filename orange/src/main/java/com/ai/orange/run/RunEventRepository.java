@@ -4,6 +4,7 @@ import static com.ai.orange.db.jooq.Tables.RUN_EVENTS;
 
 import com.ai.orange.db.jooq.tables.records.RunEventsRecord;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.jooq.DSLContext;
 import org.jooq.JSONB;
@@ -37,6 +38,16 @@ public class RunEventRepository {
                 .orderBy(RUN_EVENTS.SEQ.asc())
                 .limit(safeLimit)
                 .fetch()
+                .map(RunEventRepository::toDomain);
+    }
+
+    /** The latest event of {@code type} in {@code runId}, e.g. a run's last assistant message. */
+    public Optional<RunEventRow> findLastByType(UUID runId, String type) {
+        return dsl.selectFrom(RUN_EVENTS)
+                .where(RUN_EVENTS.RUN_ID.eq(runId).and(RUN_EVENTS.TYPE.eq(type)))
+                .orderBy(RUN_EVENTS.SEQ.desc())
+                .limit(1)
+                .fetchOptional()
                 .map(RunEventRepository::toDomain);
     }
 

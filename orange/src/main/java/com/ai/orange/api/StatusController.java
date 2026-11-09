@@ -86,11 +86,11 @@ public class StatusController {
                 "leased", leased,
                 "free", envs.size() - leased));
 
-        // Aggregate spend from agent_runs.cost_usd
+        // Aggregate spend from runs.cost_usd (planner runs included)
         java.math.BigDecimal allTime = (java.math.BigDecimal) dsl.fetchValue(
-                "SELECT COALESCE(SUM(cost_usd), 0)::numeric FROM agent_runs");
+                "SELECT COALESCE(SUM(cost_usd), 0)::numeric FROM runs");
         java.math.BigDecimal today = (java.math.BigDecimal) dsl.fetchValue(
-                "SELECT COALESCE(SUM(cost_usd), 0)::numeric FROM agent_runs"
+                "SELECT COALESCE(SUM(cost_usd), 0)::numeric FROM runs"
                         + " WHERE started_at >= now() - interval '24 hours'");
         Map<String, Object> cost = new LinkedHashMap<>();
         cost.put("total_usd", allTime);

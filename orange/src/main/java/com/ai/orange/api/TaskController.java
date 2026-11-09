@@ -1,6 +1,6 @@
 package com.ai.orange.api;
 
-import com.ai.orange.agent.AgentRunService;
+import com.ai.orange.run.WorkerRunner;
 import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskDef;
 import com.ai.orange.task.TaskEvent;
@@ -28,16 +28,16 @@ public class TaskController {
     private final TaskService service;
     private final TaskRepository taskRepo;
     private final TaskEventRepository eventRepo;
-    private final AgentRunService agentRuns;
+    private final WorkerRunner runner;
 
     public TaskController(TaskService service,
                           TaskRepository taskRepo,
                           TaskEventRepository eventRepo,
-                          AgentRunService agentRuns) {
+                          WorkerRunner runner) {
         this.service = service;
         this.taskRepo = taskRepo;
         this.eventRepo = eventRepo;
-        this.agentRuns = agentRuns;
+        this.runner = runner;
     }
 
     @PostMapping
@@ -138,7 +138,7 @@ public class TaskController {
         }
 
         // Kill the task's running Claude Code process, if any.
-        agentRuns.cancel(id);
+        runner.cancel(id);
 
         taskRepo.transitionStatus(id, task.status(), TaskStatus.CANCELLED);
         Task updated = service.findById(id).orElseThrow();

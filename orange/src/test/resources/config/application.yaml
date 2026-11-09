@@ -1,0 +1,6 @@
+# Test overrides, layered over src/main/resources/application.yaml.
+orange:
+  runs:
+    # Tests drive the run executors directly. A test that needs the scheduler, reactor or reaper
+    # turns the loop on itself.
+    loop-enabled: false

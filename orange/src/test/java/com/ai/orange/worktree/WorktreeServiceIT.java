@@ -95,6 +95,38 @@ class WorktreeServiceIT {
     }
 
     @Test
+    void ensure_creates_once_then_returns_the_same_worktree_with_its_commits() throws Exception {
+        WorktreeService svc = service(20);
+        UUID taskId = UUID.randomUUID();
+
+        Path first = svc.ensure(taskId);
+        Files.writeString(first.resolve("work.txt"), "attempt 1\n");
+        run(first, "git", "add", ".");
+        run(first, "git", "commit", "-q", "-m", "attempt 1");
+
+        Path second = svc.ensure(taskId);
+        assertThat(second).isEqualTo(first);
+        assertThat(second.resolve("work.txt")).exists();
+        assertThat(capture(second, "git", "rev-list", "--count", "main..HEAD").strip()).isEqualTo("1");
+    }
+
+    @Test
+    void ensure_reattaches_the_branch_when_only_the_worktree_was_removed() throws Exception {
+        WorktreeService svc = service(20);
+        UUID taskId = UUID.randomUUID();
+        Path first = svc.ensure(taskId);
+        Files.writeString(first.resolve("work.txt"), "attempt 1\n");
+        run(first, "git", "add", ".");
+        run(first, "git", "commit", "-q", "-m", "attempt 1");
+        svc.remove(taskId);
+
+        Path again = svc.ensure(taskId);
+
+        assertThat(again.resolve("work.txt")).as("the branch kept the earlier commit").exists();
+        assertThat(capture(again, "git", "rev-parse", "--abbrev-ref", "HEAD").strip()).isEqualTo("orange/" + taskId);
+    }
+
+    @Test
     void remove_deletes_orphaned_dir_that_is_not_a_registered_worktree() throws Exception {
         WorktreeService svc = service(20);
         UUID taskId = UUID.randomUUID();

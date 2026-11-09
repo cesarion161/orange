@@ -116,4 +116,20 @@ class StreamJsonParserTest {
         RunEvent.ToolResult r = (RunEvent.ToolResult) events.get(0);
         assertThat(r.excerpt()).hasSize(2000);
     }
+
+    @Test
+    void apiRetryIsParsed() {
+        // Captured from claude 2.1.319 with a rejected token (ClaudeCliContractLiveIT).
+        String line = "{\"type\":\"system\",\"subtype\":\"api_retry\",\"attempt\":1,\"max_retries\":10,"
+                + "\"retry_delay_ms\":609,\"error_status\":401,\"error\":\"authentication_failed\","
+                + "\"session_id\":\"10d5ea3e-9ee4-474b-b098-a8d131dbbe07\",\"uuid\":\"03ee28a6\"}";
+        assertThat(parser.parse(line)).containsExactly(new RunEvent.ApiRetry(1, 10, 609, 401, "authentication_failed"));
+    }
+
+    @Test
+    void apiRetryWithoutStatusHasNullStatus() {
+        String line = "{\"type\":\"system\",\"subtype\":\"api_retry\",\"attempt\":2,\"max_retries\":10,"
+                + "\"retry_delay_ms\":1164,\"error\":\"overloaded\"}";
+        assertThat(parser.parse(line)).containsExactly(new RunEvent.ApiRetry(2, 10, 1164, null, "overloaded"));
+    }
 }

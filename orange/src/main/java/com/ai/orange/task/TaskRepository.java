@@ -83,6 +83,18 @@ public class TaskRepository {
                 .execute() > 0;
     }
 
+    /**
+     * Counts one more model failure against the task (routing escalates on the count, the reactor
+     * gives up on it). Returns the new count, or empty if the task does not exist.
+     */
+    public java.util.Optional<Integer> incrementFailures(UUID id) {
+        return dsl.update(TASKS)
+                .set(TASKS.FAILURES, TASKS.FAILURES.plus(1))
+                .where(TASKS.ID.eq(id))
+                .returningResult(TASKS.FAILURES)
+                .fetchOptional(TASKS.FAILURES);
+    }
+
     /** Records the branch head that verification and integration work from. */
     public boolean recordHead(UUID id, String branch, String headSha) {
         return dsl.update(TASKS)

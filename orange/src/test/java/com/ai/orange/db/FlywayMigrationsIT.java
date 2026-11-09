@@ -62,8 +62,10 @@ class FlywayMigrationsIT {
                          "SELECT tablename FROM pg_tables WHERE schemaname = 'public'")) {
                 while (rs.next()) tables.add(rs.getString(1));
             }
-            assertThat(tables).contains("tasks", "task_edges", "task_events", "dev_envs");
-            assertThat(tables).doesNotContain("task_claims");
+            assertThat(tables).contains("tasks", "task_edges", "task_events", "dev_envs", "runs", "run_events",
+                    "settings");
+            assertThat(tables).as("runs replaced agent_runs; role prompts are files (V16)")
+                    .doesNotContain("task_claims", "agents", "agent_runs");
 
             // Spot-check a partial index, an enum CHECK, and the seeded env pool.
             try (Statement st = c.createStatement();

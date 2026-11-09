@@ -1,6 +1,6 @@
 package com.ai.orange.api;
 
-import static com.ai.orange.db.jooq.Tables.AGENT_RUNS;
+import static com.ai.orange.db.jooq.Tables.RUNS;
 import static com.ai.orange.db.jooq.Tables.TASKS;
 import static com.ai.orange.db.jooq.Tables.TASK_EDGES;
 import static com.ai.orange.db.jooq.Tables.TASK_EVENTS;
@@ -53,7 +53,7 @@ class TaskApiIT {
 
     @BeforeEach
     void clean() {
-        dsl.deleteFrom(AGENT_RUNS).execute();
+        dsl.deleteFrom(RUNS).execute();
         dsl.deleteFrom(TASK_EVENTS).execute();
         dsl.deleteFrom(TASK_EDGES).execute();
         dsl.deleteFrom(TASKS).execute();

@@ -10,6 +10,8 @@ import com.ai.orange.harness.RunSpec;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -57,16 +59,33 @@ public class ClaudeCodeAdapter implements HarnessAdapter {
         pb.environment().clear();
         pb.environment().putAll(ClaudeCodeCommand.env(spec, hostEnv.get(), props.claudeCode().passEnv(), configDir));
 
-        return ProcessRunHandle.start(pb, spec.prompt(), runDir, parser::parse, sink, redactor(spec.credentials()));
+        return ProcessRunHandle.start(pb, spec.prompt(), runDir, parser::parse, sink,
+                redactor(spec.credentials(), spec.redact()));
     }
 
     /** Replaces the run's own credential wherever it appears in the harness's output. */
     static UnaryOperator<String> redactor(Credentials credentials) {
-        String secret = switch (credentials) {
+        return redactor(credentials, List.of());
+    }
+
+    /** Replaces the run's credential and every {@code extra} secret wherever they appear in the output. */
+    static UnaryOperator<String> redactor(Credentials credentials, List<String> extra) {
+        String credential = switch (credentials) {
             case Credentials.Subscription s -> s.oauthToken();
             case Credentials.Gateway g -> g.virtualKey();
         };
-        if (secret == null || secret.isBlank()) return UnaryOperator.identity();
-        return line -> line.contains(secret) ? line.replace(secret, "***") : line;
+        List<String> secrets = new ArrayList<>();
+        if (credential != null && !credential.isBlank()) secrets.add(credential);
+        for (String s : extra) {
+            if (s != null && !s.isBlank()) secrets.add(s);
+        }
+        if (secrets.isEmpty()) return UnaryOperator.identity();
+        return line -> {
+            String out = line;
+            for (String secret : secrets) {
+                if (out.contains(secret)) out = out.replace(secret, "***");
+            }
+            return out;
+        };
     }
 }

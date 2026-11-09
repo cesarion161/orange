@@ -61,7 +61,8 @@ orange:
       small:  { model: claude-haiku-5-5,  harness: claude-code, auth: subscription, budget-usd: 1 }
     rules:  # first match wins; no difficulty = any
       - { role: planner,     tier: large,  effort: xhigh }
-      - { role: reviewer,    tier: large,  effort: high }
+      # diff_review runs (project-space §3: verify-review routes small or medium at low effort)
+      - { role: reviewer,    tier: medium, effort: low }
       - { role: ci_fixer,    tier: medium, effort: medium }
       - { role: chore,       tier: small,  effort: low }
       - { role: implementer, difficulty: L, tier: large,  effort: high }
@@ -75,6 +76,24 @@ orange:
       tier-up-after-failures: 2
       needs-human-after-failures: 3
     small-model: claude-haiku-5-5
+  runs:
+    # The coordinator's run loop (v2 spec §7): scheduler, reactor and reaper. Tests turn it off.
+    loop-enabled: ${ORANGE_RUNS_LOOP_ENABLED:true}
+    # This instance's id on the runs it claims. Blank = <hostname>-<8 hex>, new at every start, so
+    # runs a previous instance left running can be told apart and reaped.
+    worker-id: ${ORANGE_WORKER_ID:}
+    max-concurrent: 6
+    # Concurrent runs per kind; judge and brief arrive with project-space phases B and D.
+    slots: { plan: 1, implement: 4, ci_fix: 2, verify: 2, diff_review: 2, integrate: 1, judge: 0, brief: 0 }
+    timeouts: { plan: 30m, implement: 60m, ci_fix: 40m, verify: 30m, diff_review: 20m, integrate: 10m, judge: 5m, brief: 10m }
+    # A run's lease is renewed every heartbeat; one not renewed within lease-ttl is reaped.
+    lease-ttl: 5m
+    heartbeat: 60s
+    scheduler-poll: 5s
+    reactor-sweep: 30s
+    reaper-sweep: 30s
+    # Finished runs' directories under orange.harness.run-root are deleted after this long.
+    retention: 14d
   harness:
     # Per-run files (stream log, isolated Claude config). Must stay outside every git worktree.
     run-root: ${ORANGE_RUN_ROOT:${user.home}/.orange/runs}

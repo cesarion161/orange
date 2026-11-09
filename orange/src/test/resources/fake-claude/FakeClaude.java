@@ -154,6 +154,8 @@ public class FakeClaude {
                 String token = System.getenv().getOrDefault("CLAUDE_CODE_OAUTH_TOKEN", "");
                 String key = System.getenv().getOrDefault("ANTHROPIC_AUTH_TOKEN", "");
                 String runToken = mcpConfig == null ? "" : mcpField("Authorization").replaceFirst("^Bearer ", "");
+                // For the test to look for: the token is otherwise only in memory and in mcp.json.
+                Files.writeString(configDir.resolve("fake-token.txt"), runToken);
                 String dump = "CLAUDE_CODE_OAUTH_TOKEN=" + token + "\nANTHROPIC_AUTH_TOKEN=" + key
                         + "\nAuthorization: Bearer " + runToken;
                 assistant("msg_1", model, "Let me check the environment: " + token + " " + key + " " + runToken, 100, 20);
@@ -163,7 +165,8 @@ public class FakeClaude {
                 System.err.flush();
                 assistant("msg_2", model, "Found it: " + token + key + runToken, 1500, 40);
                 if (mcpConfig != null) {
-                    callTool("report_result", "{\"status\":\"done\",\"summary\":" + q("the token is " + runToken) + "}");
+                    callTool("report_result", "{\"status\":\"done\",\"summary\":"
+                            + q("the tokens are " + token + " " + key + " " + runToken) + "}");
                 }
                 result(false, "success", "Done, the token is " + token + key + runToken, "0.01", session);
             }
@@ -172,9 +175,9 @@ public class FakeClaude {
                         "# TODO app\n\nApproach: split work into auth → ui → tests.\n");
                 Files.writeString(cwd.resolve("plan.json"), """
                         {"tasks":[
-                          {"key":"auth","title":"Build auth module","description":"JWT-based session handling.","role":"dev","priority":100},
-                          {"key":"ui","title":"Build UI","description":"List view + detail view.","role":"dev","priority":100},
-                          {"key":"tests","title":"Write integration tests","description":"Cover auth and UI happy paths.","role":"tester","priority":100}
+                          {"key":"auth","title":"Build auth module","description":"JWT-based session handling.","role":"implementer","priority":100},
+                          {"key":"ui","title":"Build UI","description":"List view + detail view.","role":"implementer","priority":100},
+                          {"key":"tests","title":"Write integration tests","description":"Cover auth and UI happy paths.","role":"implementer","priority":100}
                         ],
                         "edges":[{"from":"auth","to":"ui"},{"from":"ui","to":"tests"}]}
                         """);

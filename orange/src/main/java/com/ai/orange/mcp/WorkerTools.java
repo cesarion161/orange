@@ -5,6 +5,7 @@ import com.ai.orange.run.Run;
 import com.ai.orange.run.RunKind;
 import com.ai.orange.run.RunOutcome;
 import com.ai.orange.run.RunRepository;
+import com.ai.orange.run.RunSecrets;
 import io.modelcontextprotocol.common.McpTransportContext;
 import io.modelcontextprotocol.json.McpJsonMapper;
 import io.modelcontextprotocol.server.McpStatelessServerFeatures.SyncToolSpecification;
@@ -16,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.BiFunction;
+import org.jooq.JSONB;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -61,10 +63,12 @@ public class WorkerTools {
              "required":["verdict","summary"]}""";
 
     private final RunRepository runs;
+    private final RunSecrets secrets;
     private final McpJsonMapper jsonMapper;
 
-    public WorkerTools(RunRepository runs, McpJsonMapper jsonMapper) {
+    public WorkerTools(RunRepository runs, RunSecrets secrets, McpJsonMapper jsonMapper) {
         this.runs = runs;
+        this.secrets = secrets;
         this.jsonMapper = jsonMapper;
     }
 
@@ -146,7 +150,10 @@ public class WorkerTools {
 
     private CallToolResult record(McpTransportContext ctx, RunOutcome outcome) {
         Run run = runOf(ctx);
-        if (!runs.recordOutcome(run.id(), outcome.toJsonb())) {
+        // An agent can echo its credential or token into a summary; outcomes are stored and fed into later
+        // prompts. The secrets contain no JSON metacharacters, so redacting the serialised form is safe.
+        JSONB redacted = JSONB.valueOf(secrets.redact(run.id(), outcome.toJsonb().data()));
+        if (!runs.recordOutcome(run.id(), redacted)) {
             return error("this run is no longer running; nothing was recorded");
         }
         log.info("run {} reported {}", run.id(), outcome.getClass().getSimpleName().toLowerCase(java.util.Locale.ROOT));

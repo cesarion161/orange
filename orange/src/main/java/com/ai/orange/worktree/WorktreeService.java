@@ -63,11 +63,7 @@ public class WorktreeService {
         String repo = requireBaseRepo();
         String baseBranch = props.baseBranch();
         Path root = rootPath();
-        long existing = countExisting(root);
-        if (existing >= props.maxCount()) {
-            throw new IllegalStateException(
-                    "worktree cap reached (" + existing + "/" + props.maxCount() + "); cannot create " + taskId);
-        }
+        requireCapacity(root, taskId);
         Path target = root.resolve(taskId.toString()).toAbsolutePath();
         if (Files.exists(target)) {
             throw new IllegalStateException("worktree already exists: " + target);
@@ -78,6 +74,40 @@ public class WorktreeService {
         runGit(repo, List.of("worktree", "add", "-b", branch, target.toString(), sourceRef));
         log.info("created worktree taskId={} path={} sourceRef={} branch={}", taskId, target, sourceRef, branch);
         return target;
+    }
+
+    /**
+     * The task's worktree, created on first use. Every later run of the task gets the same
+     * worktree and branch back, with the earlier runs' commits. If only the directory is gone
+     * (disposed of, or removed by hand) but the branch {@code orange/<taskId>} is still there,
+     * the branch is checked out again rather than started over from the base.
+     */
+    public Path ensure(UUID taskId) throws IOException, InterruptedException {
+        Path target = resolve(taskId);
+        // A linked worktree has a .git file pointing at the base repo.
+        if (Files.exists(target.resolve(".git"))) return target;
+        if (Files.exists(target)) {
+            log.warn("{} is not a git worktree; recreating it", target);
+            remove(taskId);
+        }
+        String repo = requireBaseRepo();
+        String branch = "orange/" + taskId;
+        if (runGitOrTimeoutOrMissing(repo, List.of("rev-parse", "--verify", "--quiet", "refs/heads/" + branch)) != 0) {
+            return create(taskId);
+        }
+        requireCapacity(rootPath(), taskId);
+        runGit(repo, List.of("worktree", "prune"));
+        runGit(repo, List.of("worktree", "add", target.toString(), branch));
+        log.info("re-attached worktree taskId={} path={} branch={}", taskId, target, branch);
+        return target;
+    }
+
+    private void requireCapacity(Path root, UUID taskId) throws IOException {
+        long existing = countExisting(root);
+        if (existing >= props.maxCount()) {
+            throw new IllegalStateException(
+                    "worktree cap reached (" + existing + "/" + props.maxCount() + "); cannot create " + taskId);
+        }
     }
 
     /**

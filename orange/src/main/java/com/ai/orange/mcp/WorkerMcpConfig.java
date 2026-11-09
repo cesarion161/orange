@@ -1,6 +1,7 @@
 package com.ai.orange.mcp;
 
 import com.ai.orange.run.RunRepository;
+import com.ai.orange.run.RunSecrets;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.modelcontextprotocol.common.McpTransportContext;
@@ -46,8 +47,8 @@ public class WorkerMcpConfig {
     }
 
     @Bean
-    WorkerTools workerTools(RunRepository runs, McpJsonMapper workerMcpJsonMapper) {
-        return new WorkerTools(runs, workerMcpJsonMapper);
+    WorkerTools workerTools(RunRepository runs, RunSecrets runSecrets, McpJsonMapper workerMcpJsonMapper) {
+        return new WorkerTools(runs, runSecrets, workerMcpJsonMapper);
     }
 
     @Bean(destroyMethod = "close")

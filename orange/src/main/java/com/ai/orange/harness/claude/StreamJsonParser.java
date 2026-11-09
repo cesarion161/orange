@@ -27,9 +27,16 @@ public final class StreamJsonParser {
 
         try {
             return switch (root.path("type").asText("")) {
-                case "system" -> "init".equals(root.path("subtype").asText())
-                        ? List.of(new RunEvent.Init(text(root, "session_id"), text(root, "model")))
-                        : List.of(new RunEvent.Unparsed(line));
+                case "system" -> switch (root.path("subtype").asText()) {
+                    case "init" -> List.of(new RunEvent.Init(text(root, "session_id"), text(root, "model")));
+                    case "api_retry" -> List.of(new RunEvent.ApiRetry(
+                            root.path("attempt").asInt(0),
+                            root.path("max_retries").asInt(0),
+                            root.path("retry_delay_ms").asLong(0),
+                            root.path("error_status").isNumber() ? root.path("error_status").asInt() : null,
+                            text(root, "error")));
+                    default -> List.of(new RunEvent.Unparsed(line));
+                };
                 case "assistant" -> assistant(root.path("message"));
                 case "user" -> toolResults(root.path("message"));
                 case "result" -> List.of(result(root));

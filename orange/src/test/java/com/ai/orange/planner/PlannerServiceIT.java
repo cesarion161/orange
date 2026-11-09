@@ -1,6 +1,6 @@
 package com.ai.orange.planner;
 
-import static com.ai.orange.db.jooq.Tables.AGENTS;
+import static com.ai.orange.db.jooq.Tables.RUNS;
 import static com.ai.orange.db.jooq.Tables.TASKS;
 import static com.ai.orange.db.jooq.Tables.TASK_EDGES;
 import static com.ai.orange.db.jooq.Tables.TASK_EVENTS;
@@ -12,7 +12,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import org.jooq.DSLContext;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -24,8 +23,8 @@ import org.springframework.test.context.DynamicPropertySource;
 
 /**
  * Drives {@link PlannerService} end-to-end with the fake Claude Code, whose
- * {@code [[fake:plan]]} scenario (selected through the planner agent's system
- * prompt) writes a canned 3-task DAG. Verifies the planner is <b>plan-only</b>:
+ * {@code [[fake:plan]]} scenario (selected by a marker in the request) writes a
+ * canned 3-task DAG. Verifies the planner is <b>plan-only</b>:
  * it returns the DAG + artifacts for review and creates no tasks (dispatch is a
  * separate step — see {@code DispatchServiceIT}).
  */
@@ -38,8 +37,6 @@ class PlannerServiceIT {
 
     @Autowired PlannerService service;
     @Autowired DSLContext dsl;
-
-    String originalPlannerPrompt;
 
     @BeforeAll
     static void prepare() throws IOException {
@@ -60,22 +57,21 @@ class PlannerServiceIT {
         dsl.deleteFrom(TASK_EVENTS).execute();
         dsl.deleteFrom(TASK_EDGES).execute();
         dsl.deleteFrom(TASKS).execute();
-        originalPlannerPrompt = dsl.select(AGENTS.SYSTEM_PROMPT).from(AGENTS)
-                .where(AGENTS.ROLE.eq("planner")).fetchOne(AGENTS.SYSTEM_PROMPT);
-        dsl.update(AGENTS).set(AGENTS.SYSTEM_PROMPT, originalPlannerPrompt + "\n[[fake:plan]]")
-                .where(AGENTS.ROLE.eq("planner")).execute();
-    }
-
-    @AfterEach
-    void restorePlannerPrompt() {
-        dsl.update(AGENTS).set(AGENTS.SYSTEM_PROMPT, originalPlannerPrompt).where(AGENTS.ROLE.eq("planner")).execute();
+        dsl.deleteFrom(RUNS).where(RUNS.TASK_ID.isNull()).execute();
     }
 
     @Test
     void plan_returns_dag_for_review_and_creates_no_tasks() throws Exception {
-        PlannerService.PlanResult result = service.plan("Build a TODO web app with auth.");
+        PlannerService.PlanResult result = service.plan("Build a TODO web app with auth. [[fake:plan]]");
 
         assertThat(result.status()).isEqualTo("success");
+
+        // The planner ran as a runs row of kind plan, with no task.
+        var run = dsl.selectFrom(RUNS).where(RUNS.KIND.eq("plan")).fetchSingle();
+        assertThat(run.getStatus()).isEqualTo("succeeded");
+        assertThat(run.getTaskId()).isNull();
+        assertThat(run.getRole()).isEqualTo("planner");
+        assertThat(run.getTier()).isEqualTo("large");
 
         // The reviewable DAG comes back in the result — 3 tasks, 2 edges.
         assertThat(result.plan()).isNotNull();
@@ -85,7 +81,7 @@ class PlannerServiceIT {
         var byTitle = result.plan().tasks().stream()
                 .collect(java.util.stream.Collectors.toMap(PlanJson.PlanTask::title, t -> t));
         assertThat(byTitle).containsKeys("Build auth module", "Build UI", "Write integration tests");
-        assertThat(byTitle.get("Write integration tests").role()).isEqualTo("tester");
+        assertThat(byTitle.get("Write integration tests").role()).isEqualTo("implementer");
 
         // Architecture + plan files are reachable on disk.
         assertThat(result.architectureMd()).isNotNull();
@@ -100,8 +96,8 @@ class PlannerServiceIT {
 
     @Test
     void planner_output_dir_is_per_plan_uuid_and_persists_after_call() throws Exception {
-        PlannerService.PlanResult r1 = service.plan("First request");
-        PlannerService.PlanResult r2 = service.plan("Second request");
+        PlannerService.PlanResult r1 = service.plan("First request [[fake:plan]]");
+        PlannerService.PlanResult r2 = service.plan("Second request [[fake:plan]]");
 
         assertThat(r1.planId()).isNotEqualTo(r2.planId());
         assertThat(r1.outputDir()).isNotEqualTo(r2.outputDir());
@@ -111,10 +107,9 @@ class PlannerServiceIT {
 
     @Test
     void planner_failure_is_reported_without_a_plan() throws Exception {
-        dsl.update(AGENTS).set(AGENTS.SYSTEM_PROMPT, originalPlannerPrompt + "\n[[fake:error]]")
-                .where(AGENTS.ROLE.eq("planner")).execute();
-        PlannerService.PlanResult result = service.plan("This planner run fails.");
+        PlannerService.PlanResult result = service.plan("This planner run fails. [[fake:error]]");
         assertThat(result.status()).isEqualTo("failure");
         assertThat(result.plan()).isNull();
+        assertThat(dsl.selectFrom(RUNS).where(RUNS.KIND.eq("plan")).fetchSingle().getError()).isEqualTo("error_result");
     }
 }
