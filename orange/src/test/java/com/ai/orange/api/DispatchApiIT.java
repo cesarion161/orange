@@ -71,7 +71,7 @@ class DispatchApiIT {
 
     @Test
     void dispatch_inline_plan_creates_tasks_and_returns_201() throws Exception {
-        Map<String, Object> body = Map.of("plan", twoTaskPlan(), "defaultPipeline", "dev_only");
+        Map<String, Object> body = Map.of("plan", twoTaskPlan());
 
         HttpResponse<String> res = postJson("/dispatch", body);
         assertThat(res.statusCode()).isEqualTo(201);
@@ -99,7 +99,7 @@ class DispatchApiIT {
 
     @Test
     void dispatch_with_neither_plan_nor_planId_returns_422() throws Exception {
-        HttpResponse<String> res = postJson("/dispatch", Map.of("defaultPipeline", "dev_only"));
+        HttpResponse<String> res = postJson("/dispatch", Map.of("architectureMd", "# only"));
         assertThat(res.statusCode()).isEqualTo(422);
         assertThat(MAPPER.readTree(res.body()).get("status").asText()).isEqualTo("invalid_plan");
         assertThat(dsl.fetchCount(TASKS)).isZero();

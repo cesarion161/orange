@@ -12,6 +12,7 @@ import com.ai.orange.task.TaskDef;
 import com.ai.orange.task.TaskEventRepository;
 import com.ai.orange.task.TaskRepository;
 import com.ai.orange.task.TaskService;
+import com.ai.orange.task.TaskStatus;
 import java.util.List;
 import java.util.Map;
 import org.jooq.DSLContext;
@@ -49,11 +50,11 @@ class StatusControllerIT {
     }
 
     @Test
-    void events_live_returns_in_progress_tasks_with_recent_events() {
-        taskService.createGraph(
-                List.of(new TaskDef("a", "Build A", null, "dev", null, null, null)),
-                List.of());
-        Task claimed = tasks.claimNextReady("dev", "worker-A").orElseThrow();
+    void events_live_returns_running_tasks_with_recent_events() {
+        Task claimed = taskService.createGraph(
+                List.of(new TaskDef("a", "Build A", null, "implementer", null, null)),
+                List.of()).get(0);
+        tasks.transitionStatus(claimed.id(), TaskStatus.READY, TaskStatus.RUNNING);
         taskEvents.append(claimed.id(), "worker-A", "assistant_message", JSONB.valueOf("{\"text\":\"hi\"}"));
 
         ResponseEntity<List<Map<String, Object>>> r = http.exchange(
@@ -63,8 +64,8 @@ class StatusControllerIT {
         assertThat(r.getBody()).hasSize(1);
         Map<String, Object> row = r.getBody().get(0);
         assertThat(row.get("taskId")).isEqualTo(claimed.id().toString());
-        assertThat(row.get("role")).isEqualTo("dev");
-        assertThat(row.get("status")).isEqualTo("in_progress");
+        assertThat(row.get("role")).isEqualTo("implementer");
+        assertThat(row.get("status")).isEqualTo("running");
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> events = (List<Map<String, Object>>) row.get("recentEvents");
         assertThat(events).isNotEmpty();
@@ -73,12 +74,11 @@ class StatusControllerIT {
 
     @Test
     void events_live_role_filter_excludes_other_roles() {
-        taskService.createGraph(List.of(
-                new TaskDef("a", "Dev task", null, "dev", null, null, null),
-                new TaskDef("b", "Chore task", null, "chore", null, null, null)),
+        List<Task> created = taskService.createGraph(List.of(
+                new TaskDef("a", "Dev task", null, "implementer", null, null),
+                new TaskDef("b", "Chore task", null, "chore", null, null)),
                 List.of());
-        tasks.claimNextReady("dev", "worker-A");
-        tasks.claimNextReady("chore", "worker-B");
+        created.forEach(t -> tasks.transitionStatus(t.id(), TaskStatus.READY, TaskStatus.RUNNING));
 
         ResponseEntity<List<Map<String, Object>>> r = http.exchange(
                 url("/events/live?role=chore"), HttpMethod.GET, null, LIST_OF_MAPS);

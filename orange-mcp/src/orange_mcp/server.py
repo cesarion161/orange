@@ -128,8 +128,8 @@ def _tools() -> list[Tool]:
                     "status": {
                         "type": "string",
                         "description": (
-                            "Optional status filter. One of: pending, ready, in_progress, "
-                            "pr_open, dev_ready, in_test, test_done, failed, cancelled."
+                            "Optional status filter. One of: pending, ready, running, in_review, "
+                            "merged, needs_human, failed, cancelled."
                         ),
                     },
                     "limit": {
@@ -192,7 +192,7 @@ def _tools() -> list[Tool]:
         Tool(
             name="orange_status_live",
             description=(
-                "Aggregate 'what's happening right now' view: every in_progress task plus its "
+                "Aggregate 'what's happening right now' view: every running task plus its "
                 "last few events. Use this to narrate parallel agent activity in chat without "
                 "fanning out to per-task orange_tail calls. Filter by role."
             ),
@@ -510,8 +510,8 @@ async def _health(_args: dict[str, Any]) -> list[TextContent]:
     e = payload.get("envs", {})
     c = payload.get("cost", {})
     line = (
-        f"queues: ready={q.get('ready', 0)} in_progress={q.get('in_progress', 0)} "
-        f"pr_open={q.get('pr_open', 0)} dev_ready={q.get('dev_ready', 0)}  |  "
+        f"queues: ready={q.get('ready', 0)} running={q.get('running', 0)} "
+        f"in_review={q.get('in_review', 0)} needs_human={q.get('needs_human', 0)}  |  "
         f"envs: {e.get('leased', 0)}/{e.get('total', 0)} leased  |  "
         f"spend: ${c.get('last_24h_usd', 0)}/24h (total ${c.get('total_usd', 0)})"
     )

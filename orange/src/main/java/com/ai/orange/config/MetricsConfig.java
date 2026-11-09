@@ -35,25 +35,12 @@ public class MetricsConfig {
 
     @PostConstruct
     void register() {
-        // Queue depths — one gauge per status the operator cares about.
-        Gauge.builder("orange.tasks.ready", tasks, t -> t.findRecent(TaskStatus.READY, 1000).size())
-                .description("Tasks in READY status awaiting a worker")
-                .register(registry);
-        Gauge.builder("orange.tasks.in_progress",
-                        tasks, t -> t.findInProgress(null).size())
-                .description("Tasks currently being worked on")
-                .register(registry);
-        Gauge.builder("orange.tasks.pr_open", tasks, t -> t.findRecent(TaskStatus.PR_OPEN, 1000).size())
-                .description("Tasks with an open PR awaiting merge")
-                .register(registry);
-
-        // In-progress count per role — labelled so the operator can spot
-        // tester-saturated vs dev-saturated states.
-        for (String role : new String[]{"dev", "tester", "reviewer", "planner", "triage"}) {
-            Gauge.builder("orange.tasks.in_progress.by_role",
-                            tasks, t -> t.countInProgress(role))
-                    .tag("role", role)
-                    .description("Tasks in_progress for a specific role")
+        // Queue depths — one gauge per non-terminal status, tagged by status.
+        for (TaskStatus status : new TaskStatus[]{TaskStatus.READY, TaskStatus.RUNNING,
+                TaskStatus.IN_REVIEW, TaskStatus.NEEDS_HUMAN}) {
+            Gauge.builder("orange.tasks", tasks, t -> t.countByStatus(status))
+                    .tag("status", status.dbValue())
+                    .description("Tasks currently in this status")
                     .register(registry);
         }
 

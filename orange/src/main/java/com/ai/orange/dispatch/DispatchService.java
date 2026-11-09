@@ -18,8 +18,7 @@ import org.springframework.stereotype.Service;
  * Ingests a {@link PlanJson} DAG from anywhere — an inline body or a plan a
  * planner already saved to disk by {@code planId} — and runs it. Validation
  * and the actual graph insert live in {@link PlanGraphService}; once the root
- * tasks flip to {@code ready}, the existing {@code task_ready} →
- * {@code WorkflowStarter} machinery picks them up.
+ * tasks flip to {@code ready}, the coordinator starts their implement runs.
  *
  * <p>The dispatcher is intentionally independent of the planner: it neither
  * knows nor cares whether the plan came from orange's planner agent, a chat

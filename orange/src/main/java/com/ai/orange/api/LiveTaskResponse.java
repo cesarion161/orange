@@ -15,11 +15,8 @@ public record LiveTaskResponse(
         UUID taskId,
         String title,
         String role,
-        String pipeline,
         String status,
-        String claimedBy,
-        OffsetDateTime claimedAt,
-        OffsetDateTime heartbeatAt,
+        OffsetDateTime updatedAt,
         List<TaskEventResponse> recentEvents) {
 
     public static LiveTaskResponse of(Task t, List<TaskEvent> recent) {
@@ -27,11 +24,8 @@ public record LiveTaskResponse(
                 t.id(),
                 t.title(),
                 t.role(),
-                t.pipeline(),
                 t.status().dbValue(),
-                t.claimedBy(),
-                t.claimedAt(),
-                t.heartbeatAt(),
+                t.updatedAt(),
                 recent.stream().map(TaskEventResponse::of).toList());
     }
 }

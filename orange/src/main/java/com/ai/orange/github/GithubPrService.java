@@ -20,19 +20,17 @@ import org.springframework.stereotype.Service;
 /**
  * Composes the moving parts of "open a PR for this task": pushes the task's
  * worktree branch to the remote, calls {@link GithubClient} to open the PR,
- * and persists the resulting metadata on the task row.
+ * and records the PR on the task row.
  */
 @Service
 public class GithubPrService {
 
-    private static final Logger log = LoggerFactory.getLogger(GithubPrService.class);
     public static final String CORRELATION_PREFIX = "<!-- orange-task: ";
     public static final String CORRELATION_SUFFIX = " -->";
 
     private final GithubClient client;
     private final GithubProperties props;
     private final TaskRepository tasks;
-    private final ObjectMapper mapper = new ObjectMapper();
 
     public GithubPrService(GithubClient client, GithubProperties props, TaskRepository tasks) {
         this.client = client;
@@ -41,9 +39,9 @@ public class GithubPrService {
     }
 
     /**
-     * Push the worktree's branch and open a PR. Returns the PR info; also
-     * stamps {@code pr_number}, {@code pr_url}, and {@code pr_repo} into
-     * {@code tasks.metadata} so webhook routing can find the task by PR.
+     * Push the worktree's branch and open a PR. Returns the PR info; also records
+     * {@code repo}, {@code branch}, {@code pr_number} and {@code pr_url} on the task
+     * so webhook routing can find the task by PR.
      */
     public PrInfo openPrForTask(UUID taskId, Path worktreePath) throws IOException, InterruptedException {
         Task task = tasks.findById(taskId)
@@ -59,7 +57,7 @@ public class GithubPrService {
 
         PrInfo pr = client.openPullRequest(title, body, branch, props.baseBranch(), props.defaultReviewers());
 
-        persistPrMetadata(task, pr);
+        tasks.recordPublished(task.id(), pr.repo(), branch, pr.number(), pr.htmlUrl(), null);
         return pr;
     }
 
@@ -103,7 +101,7 @@ public class GithubPrService {
     /**
      * Thrown when {@code git push} fails specifically because the remote tip
      * has moved (non-fast-forward). Distinct from generic {@link IOException}
-     * so callers can branch on triage-relevant failures.
+     * so callers can tell a moved branch from a broken remote.
      */
     public static class PushConflictException extends IOException {
         private final String output;
@@ -114,24 +112,10 @@ public class GithubPrService {
         public String output() { return output; }
     }
 
-    private void persistPrMetadata(Task task, PrInfo pr) {
-        try {
-            ObjectNode node = (task.metadata() == null)
-                    ? mapper.createObjectNode()
-                    : (ObjectNode) mapper.readTree(task.metadata().data());
-            node.put("pr_number", pr.number());
-            node.put("pr_url", pr.htmlUrl());
-            node.put("pr_repo", pr.repo());
-            tasks.updateMetadata(task.id(), JSONB.valueOf(mapper.writeValueAsString(node)));
-        } catch (Exception e) {
-            log.warn("could not stamp PR metadata onto task {}: {}", task.id(), e.getMessage());
-        }
-    }
-
     /**
      * Pulls a task UUID out of a PR body that contains {@code <!-- orange-task: <uuid> --> }.
-     * Used by {@code GithubEventRouter} as a fallback when the metadata-based
-     * lookup misses (e.g. PR created out-of-band).
+     * Used by {@code GithubEventRouter} as a fallback when the PR-number lookup
+     * misses (e.g. PR created out-of-band).
      */
     public static Optional<UUID> extractTaskIdFromBody(String body) {
         if (body == null) return Optional.empty();

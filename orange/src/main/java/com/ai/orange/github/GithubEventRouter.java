@@ -12,18 +12,15 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /**
- * Translates GitHub webhook payloads into orchestrator state changes. For
- * Phase 5 we wire up two events:
+ * Translates GitHub webhook payloads into orchestrator state changes:
  *
  * <ul>
- *   <li>{@code pull_request.closed} with {@code merged=true} → transition the
- *       owning task from {@code pr_open} to {@code dev_ready}.</li>
- *   <li>{@code pull_request_review.submitted} → currently logged only; future
- *       phases will use this to drive the {@code RETRY_PREVIOUS} dev-loop on
- *       reviewer-requested changes.</li>
+ *   <li>{@code pull_request.closed} with {@code merged=true} → the owning task
+ *       goes from {@code in_review} to {@code merged}, which promotes its dependents.</li>
+ *   <li>{@code pull_request_review.submitted} → logged only.</li>
  * </ul>
  *
- * Task lookup uses {@code tasks.metadata.pr_repo}/{@code pr_number} (stamped
+ * Task lookup uses the task's {@code repo}/{@code pr_number} columns (recorded
  * by {@link GithubPrService}). If that misses, the body's
  * {@code <!-- orange-task: <uuid> --> } marker is used as a fallback.
  */
@@ -75,13 +72,13 @@ public class GithubEventRouter {
             log.info("merged PR has no matching orange task; ignoring");
             return;
         }
-        if (task.status() != TaskStatus.PR_OPEN) {
+        if (task.status() != TaskStatus.IN_REVIEW) {
             log.info("PR-merged for task {} but status was {}; not transitioning", task.id(), task.status());
             return;
         }
-        boolean ok = tasks.transitionStatus(task.id(), TaskStatus.PR_OPEN, TaskStatus.DEV_READY);
+        boolean ok = tasks.transitionStatus(task.id(), TaskStatus.IN_REVIEW, TaskStatus.MERGED);
         if (ok) {
-            log.info("task {} transitioned PR_OPEN → DEV_READY on PR merge", task.id());
+            log.info("task {} transitioned IN_REVIEW → MERGED on PR merge", task.id());
         } else {
             log.warn("task {} could not be transitioned (raced)", task.id());
         }

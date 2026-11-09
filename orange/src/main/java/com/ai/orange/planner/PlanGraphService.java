@@ -78,8 +78,7 @@ public class PlanGraphService {
                     t.key(),
                     t.title(),
                     t.description(),
-                    (t.role() == null || t.role().isBlank()) ? "dev" : t.role(),
-                    null,
+                    t.role(), // TaskDef normalises it to implementer or chore
                     t.priority(),
                     overridesToMetadata(t.overrides())));
         }

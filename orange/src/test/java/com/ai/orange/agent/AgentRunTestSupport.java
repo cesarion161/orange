@@ -34,7 +34,7 @@ final class AgentRunTestSupport {
 
     static Task newTask(TaskService taskService) {
         return taskService.createGraph(List.of(new TaskDef("agent-run-it-" + UUID.randomUUID(),
-                "Agent run IT task", "exercise AgentRunService", "dev", "dev_only", null, null)), List.of()).get(0);
+                "Agent run IT task", "exercise AgentRunService", "implementer", null, null)), List.of()).get(0);
     }
 
     static String eventsText(TaskEventRepository events, UUID taskId) {

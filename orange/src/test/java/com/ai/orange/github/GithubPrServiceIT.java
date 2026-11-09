@@ -11,8 +11,6 @@ import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskDef;
 import com.ai.orange.task.TaskRepository;
 import com.ai.orange.task.TaskService;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -74,7 +72,7 @@ class GithubPrServiceIT {
         run(temp, "git", "init", "--bare", "-b", "main", bareRemote.toString());
 
         TaskDef def = new TaskDef("conflict-it-" + UUID.randomUUID(),
-                "PR with conflicting push", null, "dev", "dev_only", null, null);
+                "PR with conflicting push", null, "implementer", null, null);
         Task task = taskService.createGraph(List.of(def), List.<EdgeKey>of()).get(0);
         String branch = "orange/" + task.id();
 
@@ -117,7 +115,7 @@ class GithubPrServiceIT {
     }
 
     @Test
-    void openPrForTask_pushes_branch_and_stamps_metadata() throws Exception {
+    void openPrForTask_pushes_branch_and_records_the_pr() throws Exception {
         Path bareRemote = temp.resolve("remote.git");
         Path worktree = temp.resolve("wt");
         run(temp, "git", "init", "--bare", "-b", "main", bareRemote.toString());
@@ -133,7 +131,7 @@ class GithubPrServiceIT {
         // Branch must be named the same as WorktreeService produces: orange/<taskId>.
         TaskDef def = new TaskDef("pr-it-" + UUID.randomUUID(),
                 "Open a PR", "Body of the PR description.",
-                "dev", "dev_only", null, null);
+                "implementer", null, null);
         Task task = taskService.createGraph(List.of(def), List.<EdgeKey>of()).get(0);
 
         run(worktree, "git", "checkout", "-q", "-b", "orange/" + task.id());
@@ -152,13 +150,12 @@ class GithubPrServiceIT {
         String branches = capture(bareRemote, "git", "branch", "--list", "orange/" + task.id());
         assertThat(branches).contains("orange/" + task.id());
 
-        // Metadata got stamped with PR fields.
+        // The PR is recorded on the task row.
         Task reloaded = taskRepo.findById(task.id()).orElseThrow();
-        ObjectMapper mapper = new ObjectMapper();
-        JsonNode meta = mapper.readTree(reloaded.metadata().data());
-        assertThat(meta.get("pr_number").asInt()).isEqualTo(99);
-        assertThat(meta.get("pr_url").asText()).contains("/pull/99");
-        assertThat(meta.get("pr_repo").asText()).isEqualTo("orange/test");
+        assertThat(reloaded.prNumber()).isEqualTo(99);
+        assertThat(reloaded.prUrl()).contains("/pull/99");
+        assertThat(reloaded.repo()).isEqualTo("orange/test");
+        assertThat(reloaded.branch()).isEqualTo("orange/" + task.id());
 
         // findByPullRequest now finds it.
         assertThat(taskRepo.findByPullRequest("orange/test", 99))

@@ -23,50 +23,35 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 /**
- * Periodic safety-net that releases dev_env leases whose task has clearly
- * moved past the env-needing stage. The workflow's own try/finally release
- * still fires on the happy path — this disposer catches the cases where it
- * didn't:
- *
- * <ul>
- *   <li>Orchestrator crashed mid-stage with an env still leased.</li>
- *   <li>Task was cancelled while the env was held.</li>
- *   <li>Future chat-as-executor flows that lease envs but skip the workflow's
- *       finally block.</li>
- * </ul>
+ * Periodic safety-net that releases dev_env leases whose task can no longer be
+ * using them: the holder's own release path normally frees the env, and this
+ * catches the cases where it didn't (the coordinator crashed with an env
+ * leased, the task was cancelled while holding one). Dev-env leasing is
+ * dormant until UI QA runs (v2 plan, PR 8).
  *
  * <p>The releaser only touches leases whose holder follows the {@code task-<uuid>}
- * convention written by {@link com.ai.orange.workflow.PipelineActivitiesImpl#acquireDevEnv}.
- * Anything else (manual operator lease, future non-task holders) is left
- * alone — the lease was set up by some other code path and that code path
+ * convention. Anything else (manual operator lease, future non-task holders) is
+ * left alone — the lease was set up by some other code path and that code path
  * owns the release.
  *
- * <p>Release boundary: any task status that's downstream of the qa stage —
- * {@link TaskStatus#PR_OPEN}, {@link TaskStatus#DEV_READY},
- * {@link TaskStatus#IN_TEST}, {@link TaskStatus#TEST_DONE},
- * {@link TaskStatus#FAILED}, {@link TaskStatus#CANCELLED}. The purely active
- * states {@code PENDING} and {@code READY} are skipped on purpose. {@code
- * IN_PROGRESS} tasks are also left alone <em>unless</em> their {@code
- * heartbeat_at} is older than {@code orange.heartbeat.stale-after} (default
- * 5 m), which indicates the workflow is dead; those envs are reclaimed with
- * reason {@code stale_heartbeat}. {@code IN_PROGRESS} tasks that have never
- * written a heartbeat ({@code heartbeat_at} is {@code null}) are treated as
- * not-yet-stale and skipped.
+ * <p>Release boundary: any task status where no run of the task is working —
+ * {@link TaskStatus#IN_REVIEW}, {@link TaskStatus#MERGED}, {@link TaskStatus#NEEDS_HUMAN},
+ * {@link TaskStatus#FAILED}, {@link TaskStatus#CANCELLED}. {@code PENDING},
+ * {@code READY} and {@code RUNNING} are skipped on purpose.
  */
 @Service
 public class DevEnvAutoReleaser {
 
     private static final Logger log = LoggerFactory.getLogger(DevEnvAutoReleaser.class);
 
-    /** Holder string convention used by the workflow's acquire path. */
+    /** Holder string convention used when a task leases an env. */
     static final String TASK_HOLDER_PREFIX = "task-";
 
-    /** Statuses where the env is downstream of the qa stage and is safe to reclaim. */
+    /** Statuses where no run of the task is working, so its env is safe to reclaim. */
     static final Set<TaskStatus> RELEASE_BOUNDARY = EnumSet.of(
-            TaskStatus.PR_OPEN,
-            TaskStatus.DEV_READY,
-            TaskStatus.IN_TEST,
-            TaskStatus.TEST_DONE,
+            TaskStatus.IN_REVIEW,
+            TaskStatus.MERGED,
+            TaskStatus.NEEDS_HUMAN,
             TaskStatus.FAILED,
             TaskStatus.CANCELLED);
 
@@ -76,22 +61,19 @@ public class DevEnvAutoReleaser {
     private final TaskRepository tasks;
     private final TaskEventRepository taskEvents;
     private final boolean enabled;
-    private final Duration staleAfter;
 
     public DevEnvAutoReleaser(DevEnvRepository envs,
                               DevEnvService envService,
                               EnvComposeRunner composeRunner,
                               TaskRepository tasks,
                               TaskEventRepository taskEvents,
-                              @Value("${orange.envs.auto-release-enabled:true}") boolean enabled,
-                              @Value("${orange.heartbeat.stale-after:5m}") Duration staleAfter) {
+                              @Value("${orange.envs.auto-release-enabled:true}") boolean enabled) {
         this.envs = envs;
         this.envService = envService;
         this.composeRunner = composeRunner;
         this.tasks = tasks;
         this.taskEvents = taskEvents;
         this.enabled = enabled;
-        this.staleAfter = staleAfter;
     }
 
     @Scheduled(fixedDelayString = "${orange.envs.auto-release-delay:1m}",
@@ -109,10 +91,6 @@ public class DevEnvAutoReleaser {
      */
     public int sweepOnce() {
         List<DevEnv> leased = envs.findLeased();
-        // Compute the staleness cutoff once per sweep so every env in the
-        // batch is compared against the same threshold (matches HeartbeatReaper's
-        // pattern) and we don't re-read the clock per row.
-        OffsetDateTime staleThreshold = OffsetDateTime.now().minus(staleAfter);
         int released = 0;
         for (DevEnv env : leased) {
             UUID taskId = parseTaskHolder(env.leasedBy());
@@ -131,15 +109,6 @@ public class DevEnvAutoReleaser {
             }
             Task task = taskOpt.get();
             TaskStatus status = task.status();
-            // IN_PROGRESS with a stale heartbeat means the workflow is dead;
-            // reclaim the env. Null heartbeat_at (task never checked in) is
-            // treated as not-yet-stale and skipped.
-            if (status == TaskStatus.IN_PROGRESS
-                    && task.heartbeatAt() != null
-                    && task.heartbeatAt().isBefore(staleThreshold)) {
-                if (releaseEnv(env, taskId, "stale_heartbeat", true)) released++;
-                continue;
-            }
             if (!RELEASE_BOUNDARY.contains(status)) continue;
             if (releaseEnv(env, taskId, status.dbValue(), true)) released++;
         }
@@ -161,7 +130,7 @@ public class DevEnvAutoReleaser {
 
         boolean ok = envService.release(env.id());
         if (!ok) {
-            // Race with the workflow's own release path — already returned.
+            // Race with the holder's own release path — already returned.
             // Not an error; the auto-releaser is a backstop.
             log.debug("auto-release: env {} already released by another path", env.name());
             return false;

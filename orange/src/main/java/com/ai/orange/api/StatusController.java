@@ -24,7 +24,7 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <p>Two endpoints today:
  * <ul>
- *   <li>{@code GET /events/live} — every {@code in_progress} task plus its
+ *   <li>{@code GET /events/live} — every {@code running} task plus its
  *       last few events. Optional {@code role} filter.</li>
  *   <li>{@code GET /dev-envs} — env occupancy, ports, who holds each one.</li>
  * </ul>
@@ -52,7 +52,7 @@ public class StatusController {
     public ResponseEntity<List<LiveTaskResponse>> live(
             @RequestParam(required = false) String role,
             @RequestParam(defaultValue = "3") int perTaskLimit) {
-        List<Task> active = tasks.findInProgress(role);
+        List<Task> active = tasks.findByStatus(TaskStatus.RUNNING, role);
         int safeLimit = Math.min(Math.max(perTaskLimit, 1), 50);
         List<LiveTaskResponse> rows = active.stream()
                 .map(t -> {
@@ -72,10 +72,10 @@ public class StatusController {
         Map<String, Object> body = new LinkedHashMap<>();
         // Queue depths by status
         Map<String, Integer> queues = new LinkedHashMap<>();
-        queues.put("ready", tasks.findRecent(TaskStatus.READY, 200).size());
-        queues.put("in_progress", tasks.findInProgress(null).size());
-        queues.put("pr_open", tasks.findRecent(TaskStatus.PR_OPEN, 200).size());
-        queues.put("dev_ready", tasks.findRecent(TaskStatus.DEV_READY, 200).size());
+        for (TaskStatus s : List.of(TaskStatus.READY, TaskStatus.RUNNING, TaskStatus.IN_REVIEW,
+                TaskStatus.NEEDS_HUMAN)) {
+            queues.put(s.dbValue(), tasks.countByStatus(s));
+        }
         body.put("queues", queues);
 
         // Env occupancy

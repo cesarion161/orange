@@ -46,8 +46,7 @@ public class TaskController {
                 "manual-" + UUID.randomUUID(),
                 req.title(),
                 req.description(),
-                req.role() == null ? "dev" : req.role(),
-                req.pipeline(),
+                req.role(), // TaskDef normalises it to implementer or chore
                 req.priority(),
                 null);
         List<Task> created = service.createGraph(List.of(def), List.of());

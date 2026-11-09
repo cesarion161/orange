@@ -66,7 +66,7 @@ class TaskApiIT {
         Task b = createTask("bravo");
         Thread.sleep(20);
         createTask("charlie");
-        taskRepo.transitionStatus(b.id(), TaskStatus.READY, TaskStatus.IN_PROGRESS);
+        taskRepo.transitionStatus(b.id(), TaskStatus.READY, TaskStatus.RUNNING);
 
         HttpResponse<String> all = get("/tasks?limit=10");
         assertThat(all.statusCode()).isEqualTo(200);
@@ -120,8 +120,8 @@ class TaskApiIT {
     @Test
     void cancel_on_already_terminal_task_returns_409() throws Exception {
         Task t = createTask("already-done");
-        taskRepo.transitionStatus(t.id(), TaskStatus.READY, TaskStatus.IN_PROGRESS);
-        taskRepo.transitionStatus(t.id(), TaskStatus.IN_PROGRESS, TaskStatus.FAILED);
+        taskRepo.transitionStatus(t.id(), TaskStatus.READY, TaskStatus.RUNNING);
+        taskRepo.transitionStatus(t.id(), TaskStatus.RUNNING, TaskStatus.FAILED);
 
         HttpResponse<String> res = post("/tasks/" + t.id() + "/cancel");
         assertThat(res.statusCode()).isEqualTo(409);
@@ -148,7 +148,7 @@ class TaskApiIT {
 
     private Task createTask(String title) {
         TaskDef def = new TaskDef("api-it-" + UUID.randomUUID(), title, null,
-                "dev", "dev_only", null, null);
+                "implementer", null, null);
         return taskService.createGraph(List.of(def), List.<EdgeKey>of()).get(0);
     }
 }

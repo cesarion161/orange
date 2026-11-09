@@ -15,7 +15,6 @@ import com.ai.orange.task.TaskStatus;
 import java.util.List;
 import java.util.UUID;
 import org.jooq.DSLContext;
-import org.jooq.JSONB;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -57,7 +56,7 @@ class GithubEventRouterIT {
         router.route("pull_request", payload);
 
         Task reloaded = taskRepo.findById(task.id()).orElseThrow();
-        assertThat(reloaded.status()).isEqualTo(TaskStatus.DEV_READY);
+        assertThat(reloaded.status()).isEqualTo(TaskStatus.MERGED);
     }
 
     @Test
@@ -75,7 +74,7 @@ class GithubEventRouterIT {
         router.route("pull_request", payload);
 
         Task reloaded = taskRepo.findById(task.id()).orElseThrow();
-        assertThat(reloaded.status()).isEqualTo(TaskStatus.PR_OPEN);
+        assertThat(reloaded.status()).isEqualTo(TaskStatus.IN_REVIEW);
     }
 
     @Test
@@ -95,8 +94,8 @@ class GithubEventRouterIT {
     }
 
     @Test
-    void body_marker_falls_back_when_metadata_lookup_misses() {
-        // Insert a task without PR metadata; the router should still find it
+    void body_marker_falls_back_when_pr_lookup_misses() {
+        // Insert a task without a recorded PR; the router should still find it
         // via the orange-task marker in the PR body.
         Task task = createTaskWithoutPrMetadata();
 
@@ -115,26 +114,24 @@ class GithubEventRouterIT {
         router.route("pull_request", payload);
 
         Task reloaded = taskRepo.findById(task.id()).orElseThrow();
-        assertThat(reloaded.status()).isEqualTo(TaskStatus.DEV_READY);
+        assertThat(reloaded.status()).isEqualTo(TaskStatus.MERGED);
     }
 
     private Task createTaskInPrOpenState(String repo, int prNumber) {
         Task t = createTaskWithoutPrMetadata();
-        // Stamp PR metadata as if openPr had completed.
-        String json = String.format(
-                "{\"pr_number\":%d,\"pr_url\":\"https://github.com/%s/pull/%d\",\"pr_repo\":\"%s\"}",
-                prNumber, repo, prNumber, repo);
-        taskRepo.updateMetadata(t.id(), JSONB.valueOf(json));
+        // Record the PR as if the coordinator had published it.
+        taskRepo.recordPublished(t.id(), repo, "orange/" + t.id(), prNumber,
+                "https://github.com/" + repo + "/pull/" + prNumber, null);
         return taskRepo.findById(t.id()).orElseThrow();
     }
 
     private Task createTaskWithoutPrMetadata() {
         TaskDef def = new TaskDef("router-it-" + UUID.randomUUID(),
-                "Routing demo", null, "dev", "dev_only", null, null);
+                "Routing demo", null, "implementer", null, null);
         Task t = taskService.createGraph(List.of(def), List.<EdgeKey>of()).get(0);
-        // March it through ready → in_progress → pr_open so the merge transition is valid.
-        taskRepo.transitionStatus(t.id(), TaskStatus.READY, TaskStatus.IN_PROGRESS);
-        taskRepo.transitionStatus(t.id(), TaskStatus.IN_PROGRESS, TaskStatus.PR_OPEN);
+        // March it through ready → running → in_review so the merge transition is valid.
+        taskRepo.transitionStatus(t.id(), TaskStatus.READY, TaskStatus.RUNNING);
+        taskRepo.transitionStatus(t.id(), TaskStatus.RUNNING, TaskStatus.IN_REVIEW);
         return taskRepo.findById(t.id()).orElseThrow();
     }
 }

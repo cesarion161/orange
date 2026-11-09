@@ -53,14 +53,14 @@ Tests never call a model: `orange/src/test/resources/fake-claude/FakeClaude.java
 ### Orange data model
 Flyway migrations live under `orange/src/main/resources/db/migration/` (immutable once merged; add `V<n+1>__…` files):
 
-- **`tasks`** — DAG of work units with status FSM (`pending → ready → in_progress → pr_open → dev_ready → in_test → test_done | failed | cancelled`). Hot path is "claim next ready task" via partial index `idx_tasks_ready_queue` + `FOR UPDATE SKIP LOCKED`. Status transitions to `ready`/`dev_ready` fire `pg_notify('task_ready', ...)` so workers don't poll.
+- **`tasks`** — DAG of work units with status FSM v2 (`pending → ready → running → in_review → merged`, plus `needs_human`, `failed`, `cancelled`; see `TaskStatus`). A child becomes `ready` when every parent is `merged` (trigger `promote_ready_dependents`). PR state lives in columns (`repo`, `branch`, `pr_number`, `pr_url`, `head_sha`, `reviewed_sha`, `review_verdict`), and `failures` counts model failures. Every status change fires `pg_notify('task_changed', <id>)`.
 - **`agents`** + **`agent_runs`** — per-role prompts/tools and per-attempt run history (one row per `(task, attempt)`, prompt stored for replay).
 - **`dev_envs`** — leasable port-pool envs (5 pre-seeded). Returning to `free` fires `pg_notify('dev_env_freed', ...)`.
 
 When adding or modifying tables, follow the existing patterns: `uuidv7()` PKs, `touch_updated_at()` trigger, partial indexes on hot-status queues, `pg_notify` on state changes that callers might `LISTEN` for.
 
 ### Webhook ingress
-`POST /webhooks/github` is HMAC-authenticated by `GithubWebhookHmacFilter` (verifies `X-Hub-Signature-256` against `orange.github.webhook-secret`). The filter wraps the request via `CachedBodyHttpServletRequest` so the controller can re-read the body. Security config (`SecurityConfig`) permits this path and lets the HMAC filter authenticate; CSRF is disabled because there are no browser-form writes. `GithubEventRouter` handles a merged PR (`pr_open → dev_ready`); other events are logged.
+`POST /webhooks/github` is HMAC-authenticated by `GithubWebhookHmacFilter` (verifies `X-Hub-Signature-256` against `orange.github.webhook-secret`). The filter wraps the request via `CachedBodyHttpServletRequest` so the controller can re-read the body. Security config (`SecurityConfig`) permits this path and lets the HMAC filter authenticate; CSRF is disabled because there are no browser-form writes. `GithubEventRouter` handles a merged PR (`in_review → merged`); other events are logged.
 
 ### Spring config
 - App config lives in `orange/src/main/resources/application.yaml`. Notable knobs: `orange.routing` (tiers, rules, risk paths, escalation), `orange.harness` (run root, Claude Code command, env allowlist), `orange.billing` (subscription token, prices), `orange.gateway` (LiteLLM URL and master key), `orange.worktrees.root`, `orange.github.webhook-secret`. All take env-var overrides.

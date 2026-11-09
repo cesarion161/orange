@@ -36,9 +36,9 @@ class TaskServiceCreateGraphIT {
     @Test
     void linear_graph_marks_only_root_ready() {
         var defs = List.of(
-                new TaskDef("a", "Build A", null, "dev", null, null, null),
-                new TaskDef("b", "Build B", null, "dev", null, null, null),
-                new TaskDef("c", "Build C", null, "dev", null, null, null));
+                new TaskDef("a", "Build A", null, "implementer", null, null),
+                new TaskDef("b", "Build B", null, "implementer", null, null),
+                new TaskDef("c", "Build C", null, "implementer", null, null));
         var edges = List.of(new EdgeKey("a", "b"), new EdgeKey("b", "c"));
 
         List<Task> created = taskService.createGraph(defs, edges);
@@ -53,9 +53,9 @@ class TaskServiceCreateGraphIT {
     @Test
     void parallel_roots_both_ready() {
         var defs = List.of(
-                new TaskDef("a", "A", null, "dev", null, null, null),
-                new TaskDef("b", "B", null, "dev", null, null, null),
-                new TaskDef("merge", "Merge", null, "dev", null, null, null));
+                new TaskDef("a", "A", null, "implementer", null, null),
+                new TaskDef("b", "B", null, "implementer", null, null),
+                new TaskDef("merge", "Merge", null, "implementer", null, null));
         var edges = List.of(new EdgeKey("a", "merge"), new EdgeKey("b", "merge"));
 
         List<Task> created = taskService.createGraph(defs, edges);
@@ -69,12 +69,12 @@ class TaskServiceCreateGraphIT {
     }
 
     @Test
-    void dependent_promoted_to_ready_only_when_all_parents_reach_dev_ready() {
+    void mergedParentPromotesChild() {
         // a, b -> c : c depends on BOTH a and b. (diamond-ish fan-in)
         var defs = List.of(
-                new TaskDef("a", "A", null, "dev", null, null, null),
-                new TaskDef("b", "B", null, "dev", null, null, null),
-                new TaskDef("c", "C", null, "dev", null, null, null));
+                new TaskDef("a", "A", null, "implementer", null, null),
+                new TaskDef("b", "B", null, "implementer", null, null),
+                new TaskDef("c", "C", null, "implementer", null, null));
         var edges = List.of(new EdgeKey("a", "c"), new EdgeKey("b", "c"));
         List<Task> created = taskService.createGraph(defs, edges);
         var byTitle = created.stream().collect(Collectors.toMap(Task::title, t -> t));
@@ -83,23 +83,28 @@ class TaskServiceCreateGraphIT {
         UUID c = byTitle.get("C").id();
         assertThat(byTitle.get("C").status()).isEqualTo(TaskStatus.PENDING);
 
-        // First parent reaches dev_ready — c must stay pending (b not done yet).
-        driveToDevReady(a);
+        // A parent that is only in review does not count.
+        taskRepository.transitionStatus(a, TaskStatus.READY, TaskStatus.RUNNING);
+        taskRepository.transitionStatus(a, TaskStatus.RUNNING, TaskStatus.IN_REVIEW);
         assertThat(taskRepository.findById(c).orElseThrow().status()).isEqualTo(TaskStatus.PENDING);
 
-        // Second (last) parent reaches dev_ready — the trigger promotes c → ready.
-        driveToDevReady(b);
+        // First parent merged — c must stay pending (b not done yet).
+        taskRepository.transitionStatus(a, TaskStatus.IN_REVIEW, TaskStatus.MERGED);
+        assertThat(taskRepository.findById(c).orElseThrow().status()).isEqualTo(TaskStatus.PENDING);
+
+        // Second (last) parent merged — the trigger promotes c → ready.
+        driveToMerged(b);
         assertThat(taskRepository.findById(c).orElseThrow().status()).isEqualTo(TaskStatus.READY);
     }
 
     @Test
     void dependent_stays_blocked_when_a_parent_fails() {
-        // a, b -> c. a merges (dev_ready) but b FAILS — c must NOT be promoted:
+        // a, b -> c. a merges but b FAILS — c must NOT be promoted:
         // a broken dependency must not unblock downstream work.
         var defs = List.of(
-                new TaskDef("a", "A", null, "dev", null, null, null),
-                new TaskDef("b", "B", null, "dev", null, null, null),
-                new TaskDef("c", "C", null, "dev", null, null, null));
+                new TaskDef("a", "A", null, "implementer", null, null),
+                new TaskDef("b", "B", null, "implementer", null, null),
+                new TaskDef("c", "C", null, "implementer", null, null));
         var edges = List.of(new EdgeKey("a", "c"), new EdgeKey("b", "c"));
         List<Task> created = taskService.createGraph(defs, edges);
         var byTitle = created.stream().collect(Collectors.toMap(Task::title, t -> t));
@@ -107,26 +112,26 @@ class TaskServiceCreateGraphIT {
         UUID b = byTitle.get("B").id();
         UUID c = byTitle.get("C").id();
 
-        driveToDevReady(a);
-        taskRepository.transitionStatus(b, TaskStatus.READY, TaskStatus.IN_PROGRESS);
-        taskRepository.transitionStatus(b, TaskStatus.IN_PROGRESS, TaskStatus.FAILED);
+        driveToMerged(a);
+        taskRepository.transitionStatus(b, TaskStatus.READY, TaskStatus.RUNNING);
+        taskRepository.transitionStatus(b, TaskStatus.RUNNING, TaskStatus.FAILED);
 
         assertThat(taskRepository.findById(c).orElseThrow().status()).isEqualTo(TaskStatus.PENDING);
     }
 
-    /** Walk a root task through the FSM to dev_ready (the merged state). */
-    private void driveToDevReady(UUID id) {
-        taskRepository.transitionStatus(id, TaskStatus.READY, TaskStatus.IN_PROGRESS);
-        taskRepository.transitionStatus(id, TaskStatus.IN_PROGRESS, TaskStatus.PR_OPEN);
-        taskRepository.transitionStatus(id, TaskStatus.PR_OPEN, TaskStatus.DEV_READY);
+    /** Walk a root task through the FSM to merged. */
+    private void driveToMerged(UUID id) {
+        taskRepository.transitionStatus(id, TaskStatus.READY, TaskStatus.RUNNING);
+        taskRepository.transitionStatus(id, TaskStatus.RUNNING, TaskStatus.IN_REVIEW);
+        taskRepository.transitionStatus(id, TaskStatus.IN_REVIEW, TaskStatus.MERGED);
     }
 
     @Test
     void rejects_cyclic_graph_before_inserting_anything() {
         var defs = List.of(
-                new TaskDef("a", "A", null, "dev", null, null, null),
-                new TaskDef("b", "B", null, "dev", null, null, null),
-                new TaskDef("c", "C", null, "dev", null, null, null));
+                new TaskDef("a", "A", null, "implementer", null, null),
+                new TaskDef("b", "B", null, "implementer", null, null),
+                new TaskDef("c", "C", null, "implementer", null, null));
         var edges = List.of(
                 new EdgeKey("a", "b"),
                 new EdgeKey("b", "c"),
@@ -145,8 +150,8 @@ class TaskServiceCreateGraphIT {
     @Test
     void rejects_duplicate_task_keys() {
         var defs = List.of(
-                new TaskDef("a", "A1", null, "dev", null, null, null),
-                new TaskDef("a", "A2", null, "dev", null, null, null));
+                new TaskDef("a", "A1", null, "implementer", null, null),
+                new TaskDef("a", "A2", null, "implementer", null, null));
 
         assertThatThrownBy(() -> taskService.createGraph(defs, List.of()))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -155,7 +160,7 @@ class TaskServiceCreateGraphIT {
 
     @Test
     void rejects_edge_referencing_unknown_node() {
-        var defs = List.of(new TaskDef("a", "A", null, "dev", null, null, null));
+        var defs = List.of(new TaskDef("a", "A", null, "implementer", null, null));
         var edges = List.of(new EdgeKey("a", "ghost"));
 
         assertThatThrownBy(() -> taskService.createGraph(defs, edges))

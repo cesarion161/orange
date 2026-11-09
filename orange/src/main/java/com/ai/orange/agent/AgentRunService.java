@@ -57,7 +57,7 @@ public class AgentRunService {
     private static final Logger log = LoggerFactory.getLogger(AgentRunService.class);
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final TypeReference<List<String>> STR_LIST = new TypeReference<>() {};
-    /** How often the task heartbeat is refreshed while a run is silent (the reaper gives up after 5 min). */
+    /** Length of each wait slice while a run is silent; run leases replace the v1 task heartbeat. */
     private static final Duration HEARTBEAT = Duration.ofSeconds(30);
     /** How long to wait for the process to exit after a kill. */
     private static final Duration KILL_GRACE = Duration.ofSeconds(30);
@@ -206,7 +206,7 @@ public class AgentRunService {
             try {
                 return handle.exit().get(Math.min(remaining, HEARTBEAT.toNanos()), TimeUnit.NANOSECONDS);
             } catch (TimeoutException e) {
-                heartbeat(req.taskId());
+                // still running; wait another slice
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 handle.kill("cancelled");
@@ -370,7 +370,6 @@ public class AgentRunService {
             }
         }
         append(taskId, actor, type, payload);
-        heartbeat(taskId);
     }
 
     private void append(UUID taskId, String actor, String type, ObjectNode payload) {
@@ -378,15 +377,6 @@ public class AgentRunService {
             taskEvents.append(taskId, actor, type, JSONB.valueOf(payload.toString()));
         } catch (RuntimeException e) {
             log.warn("could not persist {} event for task {}: {}", type, taskId, e.getMessage());
-        }
-    }
-
-    private void heartbeat(UUID taskId) {
-        if (taskId == null) return;
-        try {
-            tasks.updateHeartbeat(taskId, OffsetDateTime.now());
-        } catch (RuntimeException e) {
-            log.debug("heartbeat for task {} failed: {}", taskId, e.getMessage());
         }
     }
 
