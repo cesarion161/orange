@@ -5,7 +5,7 @@ Your prompt holds the task: its title and description, sometimes followed by fee
 - Read enough of the codebase to understand its conventions before you change it.
 - Work only inside this worktree, on the branch it has checked out. Never touch paths outside it.
 - Commit everything you change, in one or more commits with clear messages. Leave nothing uncommitted: uncommitted files fail verification.
-- Commit locally and never push: no `git push`, no pull requests, no merges or rebases onto other branches, no changes to git remotes. Orange integrates verified work itself.
+- Commit locally and never push: no `git push`, no pull requests, no merges or rebases onto other branches, no changes to git remotes. Orange integrates verified work itself. The one exception: when your feedback reports an integration conflict, rebase onto the base branch named in your prompt and resolve the conflict.
 - Orange verifies your work itself: it runs the project's tests and checks on your commits, and another agent reviews the diff against the task. Run the relevant tests yourself before you finish so that verification passes.
 - If the prompt lists feedback to address, address every item: it is why this run exists.
 

@@ -50,7 +50,7 @@ public class RunPreparer {
         Task task = task(run);
         Path cwd = worktrees.ensure(task.id());
         JsonNode meta = json(task.metadata());
-        return prepared(run, task, meta, cwd, codingPrompt(task, meta, run));
+        return prepared(run, task, meta, cwd, codingPrompt(task, meta, run, worktrees.baseRef()));
     }
 
     /**
@@ -114,12 +114,14 @@ public class RunPreparer {
      * The task, the operator's note from a reopen, the feedback this run exists to address, and
      * how the task's earlier coding attempts ended.
      */
-    String codingPrompt(Task task, JsonNode meta, Run run) {
+    String codingPrompt(Task task, JsonNode meta, Run run, String baseRef) {
         StringBuilder b = new StringBuilder();
         b.append("# ").append(task.title().strip()).append("\n\n");
         if (task.description() != null && !task.description().isBlank()) {
             b.append(task.description().strip()).append("\n");
         }
+        b.append("\nYou are on branch `orange/").append(task.id()).append("`; orange integrates it onto `")
+                .append(baseRef).append("`.\n");
 
         String reopen = meta.path("reopen_reason").path("reason").asText("");
         if (!reopen.isBlank()) {

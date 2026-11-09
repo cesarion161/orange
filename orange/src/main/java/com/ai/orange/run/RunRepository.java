@@ -12,6 +12,7 @@ import java.util.UUID;
 import org.jooq.Condition;
 import org.jooq.DSLContext;
 import org.jooq.JSONB;
+import org.jooq.impl.DSL;
 import org.springframework.stereotype.Repository;
 
 /**
@@ -166,6 +167,28 @@ public class RunRepository {
         return dsl.selectFrom(RUNS).where(RUNS.TASK_ID.eq(taskId))
                 .orderBy(RUNS.QUEUED_AT.asc(), RUNS.ID.asc())
                 .fetch().map(RunRepository::toDomain);
+    }
+
+    /** The task's most recently finished run (succeeded, failed or cancelled), if any. */
+    public Optional<Run> findLastFinished(UUID taskId) {
+        return dsl.selectFrom(RUNS)
+                .where(RUNS.TASK_ID.eq(taskId).and(RUNS.STATUS.notIn(RunStatus.QUEUED.dbValue(),
+                        RunStatus.RUNNING.dbValue())))
+                .orderBy(RUNS.FINISHED_AT.desc().nullsLast(), RUNS.ID.desc())
+                .limit(1)
+                .fetchOptional().map(RunRepository::toDomain);
+    }
+
+    /**
+     * Whether a run of {@code kind} for this head succeeded with {@code passed: true} in its
+     * outcome — for verify runs, that every check passed on that head.
+     */
+    public boolean hasSucceeded(UUID taskId, RunKind kind, String headSha) {
+        return dsl.fetchExists(RUNS, RUNS.TASK_ID.eq(taskId)
+                .and(RUNS.KIND.eq(kind.dbValue()))
+                .and(RUNS.STATUS.eq(RunStatus.SUCCEEDED.dbValue()))
+                .and(DSL.condition("{0} ->> 'head_sha' = {1}", RUNS.INPUT, DSL.val(headSha)))
+                .and(DSL.condition("({0} ->> 'passed')::boolean IS TRUE", RUNS.OUTCOME)));
     }
 
     public Optional<Run> findActiveByTask(UUID taskId) {

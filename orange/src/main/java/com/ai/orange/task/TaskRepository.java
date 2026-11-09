@@ -40,6 +40,24 @@ public class TaskRepository {
     }
 
     /**
+     * Reads the task and locks its row until the caller's transaction ends ({@code FOR UPDATE}),
+     * so concurrent reactors decide one at a time.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public Optional<Task> lockForUpdate(UUID id) {
+        return dsl.selectFrom(TASKS).where(TASKS.ID.eq(id)).forUpdate().fetchOptional().map(TaskRepository::toDomain);
+    }
+
+    /** Tasks the reactor may have something to do for: ready, running, verifying or verified. */
+    public List<UUID> findActiveIds() {
+        return dsl.select(TASKS.ID).from(TASKS)
+                .where(TASKS.STATUS.in(TaskStatus.READY.dbValue(), TaskStatus.RUNNING.dbValue(),
+                        TaskStatus.VERIFYING.dbValue(), TaskStatus.VERIFIED.dbValue()))
+                .orderBy(TASKS.PRIORITY.asc(), TASKS.CREATED_AT.asc())
+                .fetch(TASKS.ID);
+    }
+
+    /**
      * Atomically transitions a task's status. Returns true if the row was
      * updated; false if the current status no longer matches {@code expected}.
      * Throws if the transition isn't allowed by the FSM.
