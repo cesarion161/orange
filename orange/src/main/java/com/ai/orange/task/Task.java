@@ -7,13 +7,13 @@ import org.jooq.JSONB;
 /**
  * One unit of work in the DAG.
  *
- * @param role         {@code implementer} or {@code chore} (chores route to a smaller model)
- * @param failures     model failures since the last human answer; drives escalation and needs_human
- * @param repo         {@code owner/name} of the PR's repository, once a PR exists
- * @param branch       {@code orange/<task id>} once the coordinator has pushed it
- * @param headSha      PR head the coordinator last saw
- * @param reviewedSha  head the latest review run judged
- * @param reviewVerdict {@code approve} or {@code request_changes} for {@code reviewedSha}
+ * @param role     {@code implementer} or {@code chore} (chores route to a smaller model)
+ * @param failures model failures since the last human answer; drives escalation and needs_human
+ * @param repo     {@code owner/name} of the remote, when known
+ * @param branch   {@code orange/<task id>} once a run has committed work
+ * @param headSha  the branch head being verified or integrated
+ * @param prNumber PR integration mode only (a later phase)
+ * @param prUrl    PR integration mode only (a later phase)
  */
 public record Task(
         UUID id,
@@ -28,8 +28,6 @@ public record Task(
         Integer prNumber,
         String prUrl,
         String headSha,
-        String reviewedSha,
-        String reviewVerdict,
         JSONB metadata,
         OffsetDateTime createdAt,
         OffsetDateTime updatedAt) {

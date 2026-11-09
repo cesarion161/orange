@@ -128,8 +128,8 @@ def _tools() -> list[Tool]:
                     "status": {
                         "type": "string",
                         "description": (
-                            "Optional status filter. One of: pending, ready, running, in_review, "
-                            "merged, needs_human, failed, cancelled."
+                            "Optional status filter. One of: pending, ready, running, verifying, "
+                            "verified, integrated, needs_human, failed, cancelled."
                         ),
                     },
                     "limit": {
@@ -143,7 +143,7 @@ def _tools() -> list[Tool]:
             name="orange_task",
             description=(
                 "Get the full state of a specific task — current status, priority, "
-                "PR url if any. Returns the task row alone, not events."
+                "branch and head. Returns the task row alone, not events."
             ),
             inputSchema={
                 "type": "object",
@@ -511,7 +511,8 @@ async def _health(_args: dict[str, Any]) -> list[TextContent]:
     c = payload.get("cost", {})
     line = (
         f"queues: ready={q.get('ready', 0)} running={q.get('running', 0)} "
-        f"in_review={q.get('in_review', 0)} needs_human={q.get('needs_human', 0)}  |  "
+        f"verifying={q.get('verifying', 0)} verified={q.get('verified', 0)} "
+        f"needs_human={q.get('needs_human', 0)}  |  "
         f"envs: {e.get('leased', 0)}/{e.get('total', 0)} leased  |  "
         f"spend: ${c.get('last_24h_usd', 0)}/24h (total ${c.get('total_usd', 0)})"
     )

@@ -115,10 +115,10 @@ class FlywayMigrationsIT {
             assertThat(column(c, ids.get("pending"), "status")).isEqualTo("pending");
             assertThat(column(c, ids.get("ready"), "status")).isEqualTo("ready");
             assertThat(column(c, ids.get("in_progress"), "status")).isEqualTo("ready");
-            assertThat(column(c, ids.get("pr_open"), "status")).isEqualTo("in_review");
-            assertThat(column(c, ids.get("dev_ready"), "status")).isEqualTo("merged");
-            assertThat(column(c, ids.get("in_test"), "status")).isEqualTo("merged");
-            assertThat(column(c, ids.get("test_done"), "status")).isEqualTo("merged");
+            assertThat(column(c, ids.get("pr_open"), "status")).as("a v1 PR waits for a person").isEqualTo("needs_human");
+            assertThat(column(c, ids.get("dev_ready"), "status")).isEqualTo("integrated");
+            assertThat(column(c, ids.get("in_test"), "status")).isEqualTo("integrated");
+            assertThat(column(c, ids.get("test_done"), "status")).isEqualTo("integrated");
             assertThat(column(c, ids.get("failed"), "status")).isEqualTo("failed");
             assertThat(column(c, ids.get("cancelled"), "status")).isEqualTo("cancelled");
 
@@ -133,6 +133,12 @@ class FlywayMigrationsIT {
             assertThat(column(c, ids.get("chore"), "role")).isEqualTo("chore");
             assertThat(column(c, ids.get("pending"), "branch")).isNull();
 
+            try (Statement st = c.createStatement();
+                 ResultSet rs = st.executeQuery("SELECT count(*) FROM information_schema.columns "
+                         + "WHERE table_name = 'tasks' AND column_name IN ('reviewed_sha', 'review_verdict')")) {
+                rs.next();
+                assertThat(rs.getInt(1)).as("the diff-review verdict is evidence, not a task column").isZero();
+            }
             try (Statement st = c.createStatement();
                  ResultSet rs = st.executeQuery("SELECT to_regclass('public.task_claims') IS NULL")) {
                 rs.next();

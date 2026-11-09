@@ -66,14 +66,15 @@ class DevEnvAutoReleaserIT {
     }
 
     @Test
-    void releases_lease_when_task_reaches_in_review() throws Exception {
+    void releases_lease_when_task_is_verified() throws Exception {
         UUID taskId = createTask();
         DevEnv leased = envService.acquire("task-" + taskId, Duration.ofSeconds(2)).orElseThrow();
         assertThat(envs.findLeased()).hasSize(1);
 
-        // The task moved on to review but its holder never released the env.
+        // The task was verified but its holder never released the env.
         tasks.transitionStatus(taskId, TaskStatus.READY, TaskStatus.RUNNING);
-        tasks.transitionStatus(taskId, TaskStatus.RUNNING, TaskStatus.IN_REVIEW);
+        tasks.transitionStatus(taskId, TaskStatus.RUNNING, TaskStatus.VERIFYING);
+        tasks.transitionStatus(taskId, TaskStatus.VERIFYING, TaskStatus.VERIFIED);
 
         int released = releaser.sweepOnce();
 
@@ -87,7 +88,7 @@ class DevEnvAutoReleaserIT {
                         .and(TASK_EVENTS.EVENT_TYPE.eq("env_auto_released")))
                 .fetchOne(0, JSONB.class);
         JsonNode node = MAPPER.readTree(payload.data());
-        assertThat(node.path("reason").asText()).isEqualTo("in_review");
+        assertThat(node.path("reason").asText()).isEqualTo("verified");
     }
 
     @Test
@@ -99,6 +100,17 @@ class DevEnvAutoReleaserIT {
         int released = releaser.sweepOnce();
 
         assertThat(released).isZero();
+        assertThat(envs.findLeased()).hasSize(1);
+    }
+
+    @Test
+    void leaves_lease_alone_while_task_is_verifying() throws Exception {
+        UUID taskId = createTask();
+        envService.acquire("task-" + taskId, Duration.ofSeconds(2));
+        tasks.transitionStatus(taskId, TaskStatus.READY, TaskStatus.RUNNING);
+        tasks.transitionStatus(taskId, TaskStatus.RUNNING, TaskStatus.VERIFYING);
+
+        assertThat(releaser.sweepOnce()).isZero();
         assertThat(envs.findLeased()).hasSize(1);
     }
 

@@ -83,7 +83,16 @@ public class TaskRepository {
                 .execute() > 0;
     }
 
-    /** Stores where the task's PR lives once the coordinator has pushed and opened (or updated) it. */
+    /** Records the branch head that verification and integration work from. */
+    public boolean recordHead(UUID id, String branch, String headSha) {
+        return dsl.update(TASKS)
+                .set(TASKS.BRANCH, branch)
+                .set(TASKS.HEAD_SHA, headSha)
+                .where(TASKS.ID.eq(id))
+                .execute() > 0;
+    }
+
+    /** PR integration mode (a later phase): stores where the task's PR lives. */
     public boolean recordPublished(UUID id, String repo, String branch, int prNumber, String prUrl, String headSha) {
         return dsl.update(TASKS)
                 .set(TASKS.REPO, repo)
@@ -127,14 +136,14 @@ public class TaskRepository {
     }
 
     /**
-     * Terminal tasks (merged / failed / cancelled) whose worktree hasn't
+     * Terminal tasks (integrated / failed / cancelled) whose worktree hasn't
      * been swept yet — used by the post-merge worktree disposer. We treat
      * {@code metadata.worktree_removed_at = null} as the live marker; the
      * sweeper stamps it once disposal succeeds so re-runs become no-ops.
      */
     public List<Task> findTerminalWithLiveWorktree() {
         return dsl.selectFrom(TASKS)
-                .where("status IN ('merged','failed','cancelled')"
+                .where("status IN ('integrated','failed','cancelled')"
                         + " AND metadata->>'worktree_removed_at' IS NULL")
                 .orderBy(TASKS.UPDATED_AT.asc())
                 .fetch()
@@ -175,8 +184,6 @@ public class TaskRepository {
                 r.getPrNumber(),
                 r.getPrUrl(),
                 r.getHeadSha(),
-                r.getReviewedSha(),
-                r.getReviewVerdict(),
                 r.getMetadata(),
                 r.getCreatedAt(),
                 r.getUpdatedAt());

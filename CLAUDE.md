@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **`orange/`** — Java 27 / Spring Boot 4 orchestrator. Owns persistence (Postgres + Flyway + jOOQ), task state, GitHub webhooks, and the agent runs themselves: it starts Claude Code (`claude -p`) directly, one process per agent run.
 - **`orange-mcp/`** — Python stdio MCP shim the Claude Code plugin uses to call orange's REST API.
 - **`plugin/`** — the Claude Code plugin (skills, slash commands).
-- **`docs/superpowers/`** — the v2 design spec and per-PR implementation plans.
+- **`docs/superpowers/`** — the v2 design spec, the project-space spec that amends it, and per-PR implementation plans.
 
 Inside `orange/src/main/java/com/ai/orange/`:
 - **`harness/`** — harness-neutral run model (`RunSpec`, `RunEvent`, `HarnessAdapter`, `ProcessRunHandle`) and **`harness/claude/`**, the Claude Code adapter (`ClaudeCodeCommand` builds argv + env, `StreamJsonParser` reads `--output-format stream-json`).
@@ -53,14 +53,14 @@ Tests never call a model: `orange/src/test/resources/fake-claude/FakeClaude.java
 ### Orange data model
 Flyway migrations live under `orange/src/main/resources/db/migration/` (immutable once merged; add `V<n+1>__…` files):
 
-- **`tasks`** — DAG of work units with status FSM v2 (`pending → ready → running → in_review → merged`, plus `needs_human`, `failed`, `cancelled`; see `TaskStatus`). A child becomes `ready` when every parent is `merged` (trigger `promote_ready_dependents`). PR state lives in columns (`repo`, `branch`, `pr_number`, `pr_url`, `head_sha`, `reviewed_sha`, `review_verdict`), and `failures` counts model failures. Every status change fires `pg_notify('task_changed', <id>)`.
+- **`tasks`** — DAG of work units with the evidence-gated lifecycle (`pending → ready → running → verifying → verified → integrated`, plus `needs_human`, `failed`, `cancelled`; see `TaskStatus` and the project-space spec §10). A child becomes `ready` when every parent is `integrated` (trigger `promote_ready_dependents`). `branch` and `head_sha` are what verification and integration work from; `pr_number`/`pr_url` are for the later PR mode; `failures` counts model failures. Every status change fires `pg_notify('task_changed', <id>)`.
 - **`agents`** + **`agent_runs`** — per-role prompts/tools and per-attempt run history (one row per `(task, attempt)`, prompt stored for replay).
 - **`dev_envs`** — leasable port-pool envs (5 pre-seeded). Returning to `free` fires `pg_notify('dev_env_freed', ...)`.
 
 When adding or modifying tables, follow the existing patterns: `uuidv7()` PKs, `touch_updated_at()` trigger, partial indexes on hot-status queues, `pg_notify` on state changes that callers might `LISTEN` for.
 
 ### Webhook ingress
-`POST /webhooks/github` is HMAC-authenticated by `GithubWebhookHmacFilter` (verifies `X-Hub-Signature-256` against `orange.github.webhook-secret`). The filter wraps the request via `CachedBodyHttpServletRequest` so the controller can re-read the body. Security config (`SecurityConfig`) permits this path and lets the HMAC filter authenticate; CSRF is disabled because there are no browser-form writes. `GithubEventRouter` handles a merged PR (`in_review → merged`); other events are logged.
+`POST /webhooks/github` is HMAC-authenticated by `GithubWebhookHmacFilter` (verifies `X-Hub-Signature-256` against `orange.github.webhook-secret`). The filter wraps the request via `CachedBodyHttpServletRequest` so the controller can re-read the body. Security config (`SecurityConfig`) permits this path and lets the HMAC filter authenticate; CSRF is disabled because there are no browser-form writes. `GithubEventRouter` only logs events: orange integrates verified work itself, and merged PRs matter again only in the later PR integration mode.
 
 ### Spring config
 - App config lives in `orange/src/main/resources/application.yaml`. Notable knobs: `orange.routing` (tiers, rules, risk paths, escalation), `orange.harness` (run root, Claude Code command, env allowlist), `orange.billing` (subscription token, prices), `orange.gateway` (LiteLLM URL and master key), `orange.worktrees.root`, `orange.github.webhook-secret`. All take env-var overrides.

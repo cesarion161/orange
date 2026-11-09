@@ -72,8 +72,8 @@ public class StatusController {
         Map<String, Object> body = new LinkedHashMap<>();
         // Queue depths by status
         Map<String, Integer> queues = new LinkedHashMap<>();
-        for (TaskStatus s : List.of(TaskStatus.READY, TaskStatus.RUNNING, TaskStatus.IN_REVIEW,
-                TaskStatus.NEEDS_HUMAN)) {
+        for (TaskStatus s : List.of(TaskStatus.READY, TaskStatus.RUNNING, TaskStatus.VERIFYING,
+                TaskStatus.VERIFIED, TaskStatus.NEEDS_HUMAN)) {
             queues.put(s.dbValue(), tasks.countByStatus(s));
         }
         body.put("queues", queues);

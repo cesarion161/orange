@@ -35,9 +35,9 @@ import org.springframework.stereotype.Service;
  * owns the release.
  *
  * <p>Release boundary: any task status where no run of the task is working —
- * {@link TaskStatus#IN_REVIEW}, {@link TaskStatus#MERGED}, {@link TaskStatus#NEEDS_HUMAN},
- * {@link TaskStatus#FAILED}, {@link TaskStatus#CANCELLED}. {@code PENDING},
- * {@code READY} and {@code RUNNING} are skipped on purpose.
+ * {@link TaskStatus#VERIFIED}, {@link TaskStatus#INTEGRATED}, {@link TaskStatus#NEEDS_HUMAN},
+ * {@link TaskStatus#FAILED}, {@link TaskStatus#CANCELLED}. {@code PENDING}, {@code READY},
+ * {@code RUNNING} and {@code VERIFYING} (whose evidence may need the env) are skipped on purpose.
  */
 @Service
 public class DevEnvAutoReleaser {
@@ -49,8 +49,8 @@ public class DevEnvAutoReleaser {
 
     /** Statuses where no run of the task is working, so its env is safe to reclaim. */
     static final Set<TaskStatus> RELEASE_BOUNDARY = EnumSet.of(
-            TaskStatus.IN_REVIEW,
-            TaskStatus.MERGED,
+            TaskStatus.VERIFIED,
+            TaskStatus.INTEGRATED,
             TaskStatus.NEEDS_HUMAN,
             TaskStatus.FAILED,
             TaskStatus.CANCELLED);

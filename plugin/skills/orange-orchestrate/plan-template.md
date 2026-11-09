@@ -82,6 +82,6 @@ Unknown override keys are preserved on the task row but ignored — safe to add 
 ## DAG-sizing rules
 
 - Cap at ~7 tasks for a single planner run. More than that → ask the user which slice to expand and re-plan.
-- Each task should be one focused agent session (~30-90 min of work) and one reviewable PR. If a task feels bigger, split it; if smaller, fold it into a neighbor.
-- Edges express *requires*: `from` produces output that `to` consumes. A task starts only after every parent's PR is merged. Don't add edges for soft ordering preferences — those go in `priority`.
+- Each task should be one focused agent session (~30-90 min of work) and one reviewable change. If a task feels bigger, split it; if smaller, fold it into a neighbor.
+- Edges express *requires*: `from` produces output that `to` consumes. A task starts only after every parent is integrated. Don't add edges for soft ordering preferences — those go in `priority`.
 - Acyclic. Dispatch rejects a cycle; better to spot it in the draft.

@@ -18,15 +18,12 @@ public record TaskResponse(
         Integer prNumber,
         String prUrl,
         String headSha,
-        String reviewedSha,
-        String reviewVerdict,
         OffsetDateTime createdAt,
         OffsetDateTime updatedAt) {
 
     public static TaskResponse of(Task t) {
         return new TaskResponse(
                 t.id(), t.title(), t.description(), t.role(), t.status(), t.priority(), t.failures(),
-                t.repo(), t.branch(), t.prNumber(), t.prUrl(), t.headSha(), t.reviewedSha(),
-                t.reviewVerdict(), t.createdAt(), t.updatedAt());
+                t.repo(), t.branch(), t.prNumber(), t.prUrl(), t.headSha(), t.createdAt(), t.updatedAt());
     }
 }

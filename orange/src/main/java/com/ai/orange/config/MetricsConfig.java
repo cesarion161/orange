@@ -37,7 +37,7 @@ public class MetricsConfig {
     void register() {
         // Queue depths — one gauge per non-terminal status, tagged by status.
         for (TaskStatus status : new TaskStatus[]{TaskStatus.READY, TaskStatus.RUNNING,
-                TaskStatus.IN_REVIEW, TaskStatus.NEEDS_HUMAN}) {
+                TaskStatus.VERIFYING, TaskStatus.VERIFIED, TaskStatus.NEEDS_HUMAN}) {
             Gauge.builder("orange.tasks", tasks, t -> t.countByStatus(status))
                     .tag("status", status.dbValue())
                     .description("Tasks currently in this status")

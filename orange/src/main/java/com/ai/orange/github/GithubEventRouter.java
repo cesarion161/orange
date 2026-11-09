@@ -12,17 +12,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /**
- * Translates GitHub webhook payloads into orchestrator state changes:
+ * Logs incoming GitHub webhook payloads against the task they concern. It changes no task:
+ * orange verifies and integrates work itself, and a merged PR means something again only in
+ * the later PR integration mode (project-space spec §11).
  *
- * <ul>
- *   <li>{@code pull_request.closed} with {@code merged=true} → the owning task
- *       goes from {@code in_review} to {@code merged}, which promotes its dependents.</li>
- *   <li>{@code pull_request_review.submitted} → logged only.</li>
- * </ul>
- *
- * Task lookup uses the task's {@code repo}/{@code pr_number} columns (recorded
- * by {@link GithubPrService}). If that misses, the body's
- * {@code <!-- orange-task: <uuid> --> } marker is used as a fallback.
+ * Task lookup uses the task's {@code repo}/{@code pr_number} columns. If that misses, the
+ * body's {@code <!-- orange-task: <uuid> --> } marker is used as a fallback.
  */
 @Service
 public class GithubEventRouter {
@@ -72,16 +67,8 @@ public class GithubEventRouter {
             log.info("merged PR has no matching orange task; ignoring");
             return;
         }
-        if (task.status() != TaskStatus.IN_REVIEW) {
-            log.info("PR-merged for task {} but status was {}; not transitioning", task.id(), task.status());
-            return;
-        }
-        boolean ok = tasks.transitionStatus(task.id(), TaskStatus.IN_REVIEW, TaskStatus.MERGED);
-        if (ok) {
-            log.info("task {} transitioned IN_REVIEW → MERGED on PR merge", task.id());
-        } else {
-            log.warn("task {} could not be transitioned (raced)", task.id());
-        }
+        log.info("PR #{} of task {} was merged (task status {}); PR integration mode is not built yet",
+                pr.path("number").asInt(), task.id(), task.status());
     }
 
     private void handlePullRequestReview(JsonNode root) {

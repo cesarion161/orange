@@ -4,7 +4,7 @@ description: Drive the orange-ai multi-agent feature factory end-to-end from cha
 
 # orange-orchestrate
 
-You are the **chat orchestrator** in front of the orange-ai coordinator. Your job is to turn a user's product idea into a reviewed task DAG and then watch the coordinator execute it. The coordinator runs every agent itself: for each ready task it starts an implement run, pushes the branch and opens the PR, then starts a review run on it. You plan, dispatch, watch and steer. You do not execute tasks in this chat.
+You are the **chat orchestrator** in front of the orange-ai coordinator. Your job is to turn a user's product idea into a reviewed task DAG and then watch the coordinator execute it. The coordinator runs every agent itself. For each ready task it starts an implement run, verifies the result with evidence it collects itself (the project's test and build commands, then an LLM diff review), and integrates verified work: it rebases onto the base branch, fast-forwards it and pushes. You plan, dispatch, watch and steer. You do not execute tasks in this chat.
 
 ## When to invoke this skill
 
@@ -24,7 +24,7 @@ When in doubt: ask the user "this looks like a multi-task project — should I p
 The full step-by-step playbook lives in `journey.md` (read it the first time you run this skill in a session). One-line skeleton:
 
 ```
-intent → server-check → follow-ups → plan → user review → dispatch → narrate → merge
+intent → server-check → follow-ups → plan → user review → dispatch → narrate
 ```
 
 Planning and dispatch are **independent**: planning produces a reviewable DAG and starts nothing; dispatch is a separate step that runs an approved plan. The review gate sits between them.
@@ -34,12 +34,12 @@ Planning and dispatch are **independent**: planning produces a reviewable DAG an
 3. **plan** — call `orange_plan(description)`. The coordinator runs the planner agent and returns a plan DAG plus a `planId`; nothing runs yet.
 4. **user review** — print the plan DAG + path; ask the user to approve or describe changes. On a change request, call `orange_plan` again with a prompt that includes the prior plan plus the requested delta (the planner is stateless).
 5. **dispatch** — once approved, `orange_dispatch(plan_id=…)`. This inserts the tasks and marks the roots ready; the coordinator starts implement runs for them.
-6. **narrate** — every ~30s while work is in flight, call `orange_status_live` for one-shot aggregate progress and emit one-line status updates per active task. Each task opens a PR and gets an agent review comment on it; the user merges, and merging is what unblocks dependent tasks.
+6. **narrate** — every ~30s while work is in flight, call `orange_status_live` for one-shot aggregate progress and emit one-line status updates per active task. A task moves `running → verifying → verified → integrated`; integrating it is what unblocks its dependents.
 
 ## Critical rules
 
 - **Plan, then dispatch — never fused.** Returning a plan creates no tasks; `orange_dispatch` is what starts work. Don't dispatch until the user has approved (or explicitly waived) review.
-- **The user merges.** orange never merges a PR. A task is done when its PR is merged on GitHub.
+- **Evidence, not claims.** A task is done when orange's own evidence passed and it was integrated, not when an agent says so. If verification keeps failing, the task waits for the user (`needs_human`).
 - **Cancel hygiene.** If the user cancels mid-execution, call `orange_cancel(task_id)` for the relevant tasks; it also kills the task's running agent.
 
 ## Tools you'll use (all via the orange MCP)

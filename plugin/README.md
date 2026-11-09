@@ -23,6 +23,6 @@ Or, for a persistent local install via a marketplace JSON, see `docs/marketplace
 
 ## What the skill triggers on
 
-The skill describes itself as fitting "build a feature", "implement / ship X", "plan + execute a project". When a user asks for non-trivial software development work in chat, the orchestrator skill kicks in: it asks only the follow-up questions the request leaves open, runs the planner, drops the resulting `plan.json` DAG in chat for review (nothing runs yet), and on approve dispatches it; the coordinator then runs the agents, opens a PR per task and reviews it.
+The skill describes itself as fitting "build a feature", "implement / ship X", "plan + execute a project". When a user asks for non-trivial software development work in chat, the orchestrator skill kicks in: it asks only the follow-up questions the request leaves open, runs the planner, drops the resulting `plan.json` DAG in chat for review (nothing runs yet), and on approve dispatches it; the coordinator then runs the agents, verifies each task with its own evidence and integrates it.
 
 For small one-off tasks (a single file edit, a typo fix), the skill explicitly defers to the regular chat — orange is overkill below the multi-task threshold.

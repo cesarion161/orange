@@ -69,7 +69,7 @@ class TaskServiceCreateGraphIT {
     }
 
     @Test
-    void mergedParentPromotesChild() {
+    void integratedParentPromotesChild() {
         // a, b -> c : c depends on BOTH a and b. (diamond-ish fan-in)
         var defs = List.of(
                 new TaskDef("a", "A", null, "implementer", null, null),
@@ -83,23 +83,24 @@ class TaskServiceCreateGraphIT {
         UUID c = byTitle.get("C").id();
         assertThat(byTitle.get("C").status()).isEqualTo(TaskStatus.PENDING);
 
-        // A parent that is only in review does not count.
+        // A parent that is verified but not yet integrated does not count.
         taskRepository.transitionStatus(a, TaskStatus.READY, TaskStatus.RUNNING);
-        taskRepository.transitionStatus(a, TaskStatus.RUNNING, TaskStatus.IN_REVIEW);
+        taskRepository.transitionStatus(a, TaskStatus.RUNNING, TaskStatus.VERIFYING);
+        taskRepository.transitionStatus(a, TaskStatus.VERIFYING, TaskStatus.VERIFIED);
         assertThat(taskRepository.findById(c).orElseThrow().status()).isEqualTo(TaskStatus.PENDING);
 
-        // First parent merged — c must stay pending (b not done yet).
-        taskRepository.transitionStatus(a, TaskStatus.IN_REVIEW, TaskStatus.MERGED);
+        // First parent integrated — c must stay pending (b not done yet).
+        taskRepository.transitionStatus(a, TaskStatus.VERIFIED, TaskStatus.INTEGRATED);
         assertThat(taskRepository.findById(c).orElseThrow().status()).isEqualTo(TaskStatus.PENDING);
 
-        // Second (last) parent merged — the trigger promotes c → ready.
-        driveToMerged(b);
+        // Second (last) parent integrated — the trigger promotes c → ready.
+        driveToIntegrated(b);
         assertThat(taskRepository.findById(c).orElseThrow().status()).isEqualTo(TaskStatus.READY);
     }
 
     @Test
     void dependent_stays_blocked_when_a_parent_fails() {
-        // a, b -> c. a merges but b FAILS — c must NOT be promoted:
+        // a, b -> c. a integrates but b FAILS — c must NOT be promoted:
         // a broken dependency must not unblock downstream work.
         var defs = List.of(
                 new TaskDef("a", "A", null, "implementer", null, null),
@@ -112,18 +113,19 @@ class TaskServiceCreateGraphIT {
         UUID b = byTitle.get("B").id();
         UUID c = byTitle.get("C").id();
 
-        driveToMerged(a);
+        driveToIntegrated(a);
         taskRepository.transitionStatus(b, TaskStatus.READY, TaskStatus.RUNNING);
         taskRepository.transitionStatus(b, TaskStatus.RUNNING, TaskStatus.FAILED);
 
         assertThat(taskRepository.findById(c).orElseThrow().status()).isEqualTo(TaskStatus.PENDING);
     }
 
-    /** Walk a root task through the FSM to merged. */
-    private void driveToMerged(UUID id) {
+    /** Walk a root task through the lifecycle to integrated. */
+    private void driveToIntegrated(UUID id) {
         taskRepository.transitionStatus(id, TaskStatus.READY, TaskStatus.RUNNING);
-        taskRepository.transitionStatus(id, TaskStatus.RUNNING, TaskStatus.IN_REVIEW);
-        taskRepository.transitionStatus(id, TaskStatus.IN_REVIEW, TaskStatus.MERGED);
+        taskRepository.transitionStatus(id, TaskStatus.RUNNING, TaskStatus.VERIFYING);
+        taskRepository.transitionStatus(id, TaskStatus.VERIFYING, TaskStatus.VERIFIED);
+        taskRepository.transitionStatus(id, TaskStatus.VERIFIED, TaskStatus.INTEGRATED);
     }
 
     @Test
