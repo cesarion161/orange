@@ -23,14 +23,14 @@ import org.springframework.stereotype.Service;
  * {@link PgNotificationEvent} so the rest of the app can {@code @EventListener}
  * over normal Spring infrastructure.
  *
- * Channels subscribed (matching the triggers in V14__fsm_v2.sql /
- * V3__init_dev_envs.sql): {@code task_changed}, {@code dev_env_freed}.
+ * Channels subscribed (matching the triggers in V14__fsm_v2.sql, V15__runs.sql /
+ * V3__init_dev_envs.sql): {@code task_changed}, {@code run_queued}, {@code run_changed}, {@code dev_env_freed}.
  */
 @Service
 public class PgListenerService {
 
     private static final Logger log = LoggerFactory.getLogger(PgListenerService.class);
-    private static final List<String> CHANNELS = List.of("task_changed", "dev_env_freed");
+    private static final List<String> CHANNELS = List.of("task_changed", "run_queued", "run_changed", "dev_env_freed");
     private static final long POLL_TIMEOUT_MS = 2_000L;
     private static final long RECONNECT_BACKOFF_MS = 2_000L;
 
