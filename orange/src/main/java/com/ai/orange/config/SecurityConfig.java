@@ -26,6 +26,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/actuator/health", "/actuator/info", "/actuator/prometheus").permitAll()
                         .requestMatchers("/webhooks/github").permitAll()  // HMAC filter authenticates instead
+                        .requestMatchers("/mcp/worker").permitAll()       // WorkerTokenFilter authenticates (per-run bearer token)
                         .requestMatchers("/error").permitAll()             // Tomcat forwards here on sendError(); must not denyAll
                         .requestMatchers("/tasks", "/tasks/**").permitAll()  // operator-driven; auth lands later
                         .requestMatchers("/plans", "/plans/**").permitAll()  // operator-driven; auth lands later
