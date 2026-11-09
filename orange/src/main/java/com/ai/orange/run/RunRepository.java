@@ -203,6 +203,37 @@ public class RunRepository {
                 .fetchOptional().map(RunRepository::toDomain);
     }
 
+    /** Finished gateway runs whose virtual key has not been deleted yet: spend may still be booked on them. */
+    public List<Run> findSpendSyncCandidates() {
+        return dsl.selectFrom(RUNS)
+                .where(RUNS.STATUS.notIn(RunStatus.QUEUED.dbValue(), RunStatus.RUNNING.dbValue())
+                        .and(RUNS.GATEWAY_KEY_ALIAS.isNotNull())
+                        .and(RUNS.GATEWAY_KEY_DELETED_AT.isNull()))
+                .orderBy(RUNS.FINISHED_AT.asc())
+                .fetch().map(RunRepository::toDomain);
+    }
+
+    /** The run's cost as LiteLLM has now booked it. */
+    public void recordSpend(UUID id, BigDecimal cost) {
+        dsl.update(RUNS)
+                .set(RUNS.COST_USD, cost)
+                .set(RUNS.SPEND_SYNCED_AT, OffsetDateTime.now())
+                .where(RUNS.ID.eq(id))
+                .execute();
+    }
+
+    public void markKeyDeleted(UUID id) {
+        dsl.update(RUNS).set(RUNS.GATEWAY_KEY_DELETED_AT, OffsetDateTime.now()).where(RUNS.ID.eq(id)).execute();
+    }
+
+    /** Runs that finished before {@code t}, oldest first. */
+    public List<Run> findFinishedBefore(OffsetDateTime t) {
+        return dsl.selectFrom(RUNS)
+                .where(RUNS.FINISHED_AT.lessThan(t))
+                .orderBy(RUNS.FINISHED_AT.asc())
+                .fetch().map(RunRepository::toDomain);
+    }
+
     /** Every running run, oldest start first. */
     public List<Run> findRunning() {
         return dsl.selectFrom(RUNS)
@@ -252,6 +283,7 @@ public class RunRepository {
                 r.getError(),
                 r.getQueuedAt(),
                 r.getStartedAt(),
-                r.getFinishedAt());
+                r.getFinishedAt(),
+                r.getSpendSyncedAt());
     }
 }

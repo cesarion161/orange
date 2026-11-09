@@ -37,5 +37,6 @@ public record Run(
         String error,
         OffsetDateTime queuedAt,
         OffsetDateTime startedAt,
-        OffsetDateTime finishedAt) {
+        OffsetDateTime finishedAt,
+        OffsetDateTime spendSyncedAt) {
 }

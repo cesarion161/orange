@@ -126,6 +126,9 @@ orange:
     master-key: ${LITELLM_MASTER_KEY:}
     # Added to a run's timeout to get its virtual key's expiry.
     key-ttl-margin: 30m
+    # The admin client's timeouts, so a hung proxy fails the call instead of holding a run.
+    connect-timeout: 5s
+    read-timeout: 30s
   billing:
     # Max-plan token for subscription runs (create with: claude setup-token). Only the claude binary gets it.
     subscription-token: ${CLAUDE_CODE_OAUTH_TOKEN:}

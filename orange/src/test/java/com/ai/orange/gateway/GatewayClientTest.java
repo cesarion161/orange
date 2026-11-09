@@ -144,4 +144,61 @@ class GatewayClientTest {
                 .andRespond(withException(new IOException("Connection refused")));
         assertThat(client("mk").healthy()).isFalse();
     }
+
+    @Test
+    void spendByAliasReadsKeyList() {
+        server.expect(requestTo("http://localhost:4000/key/list?key_alias=run-abc&return_full_object=true"))
+                .andExpect(method(HttpMethod.GET))
+                .andExpect(header("Authorization", "Bearer mk"))
+                .andRespond(withSuccess("{\"keys\":[{\"key_alias\":\"run-abc\",\"spend\":0.0731,\"blocked\":true}],"
+                        + "\"total_count\":1,\"current_page\":1,\"total_pages\":1}", MediaType.APPLICATION_JSON));
+        server.expect(requestTo("http://localhost:4000/key/list?key_alias=run-gone&return_full_object=true"))
+                .andRespond(withSuccess("{\"keys\":[],\"total_count\":0}", MediaType.APPLICATION_JSON));
+
+        assertThat(client("mk").spendByAlias("run-abc")).hasValueSatisfying(s -> assertThat(s).isEqualByComparingTo("0.0731"));
+        assertThat(client("mk").spendByAlias("run-gone")).isEmpty();
+        server.verify();
+    }
+
+    @Test
+    void deleteByAliasSendsAliases() {
+        server.expect(requestTo("http://localhost:4000/key/delete"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(header("Authorization", "Bearer mk"))
+                .andExpect(jsonPath("$.key_aliases[0]").value("run-abc"))
+                .andRespond(withSuccess("{\"deleted_keys\":[\"x\"]}", MediaType.APPLICATION_JSON));
+        server.expect(requestTo("http://localhost:4000/key/delete"))
+                .andRespond(org.springframework.test.web.client.response.MockRestResponseCreators
+                        .withStatus(org.springframework.http.HttpStatus.NOT_FOUND)
+                        .body("{\"error\":{\"message\":\"No keys found\",\"code\":\"404\"}}"));
+
+        client("mk").deleteByAlias("run-abc");
+        client("mk").deleteByAlias("run-already-gone"); // LiteLLM answers 404: nothing left to delete
+        server.verify();
+    }
+
+    @Test
+    void readTimeoutFailsFast() throws Exception {
+        try (java.net.ServerSocket silent = new java.net.ServerSocket(0)) {
+            Thread acceptor = Thread.ofVirtual().start(() -> {
+                try {
+                    while (!silent.isClosed()) {
+                        java.net.Socket s = silent.accept(); // accept, then never answer
+                        s.getInputStream();
+                    }
+                } catch (IOException ignored) {
+                    // closed
+                }
+            });
+            GatewayClient slow = new GatewayClient(new GatewayProperties(
+                    URI.create("http://127.0.0.1:" + silent.getLocalPort()), "mk", Duration.ofMinutes(30),
+                    Duration.ofSeconds(1), Duration.ofMillis(200)));
+            long started = System.nanoTime();
+
+            assertThatThrownBy(() -> slow.info("sk-x")).isInstanceOf(GatewayException.class);
+
+            assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(2));
+            acceptor.interrupt();
+        }
+    }
 }
