@@ -95,6 +95,12 @@ orange:
     reaper-sweep: 30s
     # Finished runs' directories under orange.harness.run-root are deleted after this long.
     retention: 14d
+  events:
+    # The inbox (webhooks today): stored first, then processed one per transaction in id order.
+    processing-enabled: ${ORANGE_EVENTS_PROCESSING_ENABLED:true}
+    poll: 5s
+    # A failing event is retried this many times, then left with its last error.
+    max-attempts: 5
   evidence:
     # Commands orange runs itself, in a task's worktree at its head, before the task can count as
     # verified (project-space spec §7). Per-project conventions replace this list in project-space
