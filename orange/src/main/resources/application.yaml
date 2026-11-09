@@ -27,7 +27,8 @@ management:
 
 orange:
   worktrees:
-    root: ${WORKTREES_ROOT:./.worktrees}
+    # Outside every repository (v2 decision 15): one directory per task, named by its id.
+    root: ${WORKTREES_ROOT:${user.home}/.orange/worktrees}
     base-repo: ${WORKTREES_BASE_REPO:}
     # Branch every new worktree is branched off. Should match
     # orange.github.base-branch so worktrees and PRs share a trunk; if the
@@ -94,6 +95,18 @@ orange:
     reaper-sweep: 30s
     # Finished runs' directories under orange.harness.run-root are deleted after this long.
     retention: 14d
+  evidence:
+    # Commands orange runs itself, in a task's worktree at its head, before the task can count as
+    # verified (project-space spec §7). Per-project conventions replace this list in project-space
+    # Phase C. They get only the harness's allowlisted environment. Each entry:
+    #   - { kind: tests|build|lint|custom, command: "./gradlew test", timeout: 20m }
+    commands: []
+    # How much of each command's output (its end) an evidence row keeps.
+    output-tail-chars: 4000
+  integration:
+    # Merge mode: rebase, re-verify if that changed the head, fast-forward the base. Push the base
+    # when the base repo has an origin remote, unless this is false.
+    remote-push: ${ORANGE_INTEGRATION_REMOTE_PUSH:true}
   harness:
     # Per-run files (stream log, isolated Claude config). Must stay outside every git worktree.
     run-root: ${ORANGE_RUN_ROOT:${user.home}/.orange/runs}

@@ -3,6 +3,7 @@ package com.ai.orange.run;
 import com.ai.orange.json.Json;
 import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskRepository;
+import com.ai.orange.worktree.Git;
 import com.ai.orange.worktree.WorktreeService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.MissingNode;
@@ -20,6 +21,8 @@ public class RunPreparer {
 
     /** Each previous attempt is summarised in at most this many characters. */
     static final int MAX_ATTEMPT_TEXT = 2_000;
+    /** A diff review's prompt is cut here (with a note saying where). */
+    static final int MAX_REVIEW_PROMPT = 200_000;
     private static final String DEFAULT_DIFFICULTY = "M";
 
     private final TaskRepository tasks;
@@ -38,20 +41,73 @@ public class RunPreparer {
     public PreparedRun prepare(Run run) throws Exception {
         return switch (run.kind()) {
             case IMPLEMENT, CI_FIX -> prepareCoding(run);
+            case DIFF_REVIEW -> prepareReview(run);
             default -> throw new IllegalArgumentException("no preparation for " + run.kind().dbValue() + " runs");
         };
     }
 
     private PreparedRun prepareCoding(Run run) throws Exception {
-        if (run.taskId() == null) throw new IllegalArgumentException("run " + run.id() + " has no task");
-        Task task = tasks.findById(run.taskId())
-                .orElseThrow(() -> new IllegalStateException("task " + run.taskId() + " does not exist"));
+        Task task = task(run);
         Path cwd = worktrees.ensure(task.id());
         JsonNode meta = json(task.metadata());
+        return prepared(run, task, meta, cwd, codingPrompt(task, meta, run));
+    }
+
+    /**
+     * The reviewer works in the task's worktree with read-only tools (no code-changing run is
+     * active while a task verifies), and its prompt carries the whole diff, since it has no shell.
+     */
+    private PreparedRun prepareReview(Run run) throws Exception {
+        Task task = task(run);
+        Path cwd = worktrees.ensure(task.id());
+        String head = EvidenceRunner.inputHead(run);
+        if (head.isBlank()) head = task.headSha();
+        if (head == null || head.isBlank()) throw new IllegalStateException("task " + task.id() + " has no head to review");
+        String baseRef = worktrees.baseRef();
+        String range = baseRef + "..." + head;
+        String stat = Git.run(cwd, Git.QUICK, "diff", "--stat", range);
+        Git.Output diff = Git.runCapped(cwd, Git.QUICK, MAX_REVIEW_PROMPT + 1, "diff", range);
+        JsonNode meta = json(task.metadata());
+        return prepared(run, task, meta, cwd, reviewPrompt(task, baseRef, head, stat, diff));
+    }
+
+    private Task task(Run run) {
+        if (run.taskId() == null) throw new IllegalArgumentException("run " + run.id() + " has no task");
+        return tasks.findById(run.taskId())
+                .orElseThrow(() -> new IllegalStateException("task " + run.taskId() + " does not exist"));
+    }
+
+    private static PreparedRun prepared(Run run, Task task, JsonNode meta, Path cwd, String prompt) {
         String difficulty = meta.path("difficulty").asText("");
-        return new PreparedRun(cwd, codingPrompt(task, meta, run), run.role(),
-                difficulty.isBlank() ? DEFAULT_DIFFICULTY : difficulty, meta.path("risk").asBoolean(false),
-                task.failures(), null);
+        return new PreparedRun(cwd, prompt, run.role(), difficulty.isBlank() ? DEFAULT_DIFFICULTY : difficulty,
+                meta.path("risk").asBoolean(false), task.failures(), null);
+    }
+
+    /** The intent, the range under review, its stat and its diff; cut at {@link #MAX_REVIEW_PROMPT}. */
+    String reviewPrompt(Task task, String baseRef, String head, String stat, Git.Output diff) {
+        StringBuilder b = new StringBuilder();
+        b.append("# ").append(task.title().strip()).append("\n\n");
+        if (task.description() != null && !task.description().isBlank()) {
+            b.append(task.description().strip()).append("\n\n");
+        }
+        b.append("## Change under review\n\n")
+                .append("Base: `").append(baseRef).append("`\n")
+                .append("Head: `").append(head).append("`\n\n")
+                .append("```\n").append(stat.strip()).append("\n```\n\n")
+                .append("## Diff\n\n```diff\n").append(diff.text());
+        if (!diff.text().endsWith("\n")) b.append('\n');
+        b.append("```\n");
+        if (b.length() <= MAX_REVIEW_PROMPT && !diff.truncated()) return b.toString();
+
+        String cut = b.substring(0, Math.min(b.length(), MAX_REVIEW_PROMPT));
+        int file = cut.lastIndexOf("\ndiff --git a/");
+        String where = "";
+        if (file >= 0) {
+            int end = cut.indexOf(" b/", file);
+            if (end > file) where = ", inside the diff of `" + cut.substring(file + "\ndiff --git a/".length(), end) + "`";
+        }
+        return cut + "\n```\n\n[orange: the prompt was cut here, at " + MAX_REVIEW_PROMPT + " characters" + where
+                + ". The rest of the diff is not shown: read the changed files listed above in the worktree.]\n";
     }
 
     /**
@@ -105,7 +161,11 @@ public class RunPreparer {
 
     private String attemptText(Run r) {
         String summary = RunOutcome.parse(r.outcome())
-                .map(o -> o instanceof RunOutcome.Result res ? res.summary() : ((RunOutcome.Review) o).summary())
+                .map(o -> switch (o) {
+                    case RunOutcome.Result res -> res.summary();
+                    case RunOutcome.Review rev -> rev.summary();
+                    default -> null;
+                })
                 .orElse(null);
         if (summary != null && !summary.isBlank()) return summary.strip();
         return runEvents.findLastByType(r.id(), "assistant")

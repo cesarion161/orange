@@ -23,8 +23,9 @@ import java.util.regex.Pattern;
  */
 public final class ClaudeCodeCommand {
 
-    static final String BOT_NAME = "orange[bot]";
-    static final String BOT_EMAIL = "orange-bot@users.noreply.github.com";
+    /** The git identity of every commit orange or its agents make. */
+    public static final String BOT_NAME = "orange[bot]";
+    public static final String BOT_EMAIL = "orange-bot@users.noreply.github.com";
 
     private static final Set<String> NEVER_PASS = Set.of(
             "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN",
@@ -85,14 +86,23 @@ public final class ClaudeCodeCommand {
         return a;
     }
 
-    public static Map<String, String> env(RunSpec s, Map<String, String> hostEnv, List<String> passEnv,
-                                          Path claudeConfigDir) {
+    /**
+     * The allowlisted part of {@code hostEnv}: the {@code passEnv} names that are set, minus
+     * anything credential-like. Agents and orange's own evidence commands get only this.
+     */
+    public static Map<String, String> passThrough(Map<String, String> hostEnv, List<String> passEnv) {
         Map<String, String> env = new LinkedHashMap<>();
         for (String name : passEnv) {
             if (NEVER_PASS.contains(name) || CREDENTIAL_LIKE.matcher(name).matches()) continue;
             String value = hostEnv.get(name);
             if (value != null) env.put(name, value);
         }
+        return env;
+    }
+
+    public static Map<String, String> env(RunSpec s, Map<String, String> hostEnv, List<String> passEnv,
+                                          Path claudeConfigDir) {
+        Map<String, String> env = passThrough(hostEnv, passEnv);
 
         // A per-run config dir keeps the user's own Claude Code login, plugins, hooks and memory out.
         env.put("CLAUDE_CONFIG_DIR", claudeConfigDir.toString());

@@ -10,8 +10,9 @@ import java.util.Optional;
 import org.jooq.JSONB;
 
 /**
- * What an agent reported through the worker MCP endpoint, stored in {@code runs.outcome}.
- * Outcomes are never parsed out of transcripts (v2 anti-goal).
+ * What a run produced, stored in {@code runs.outcome}: for agent runs, what the agent reported
+ * through the worker MCP endpoint (never parsed out of transcripts, v2 anti-goal); for verify and
+ * integrate runs, what orange's own code found. A {@code type} field tells them apart.
  */
 public sealed interface RunOutcome {
 
@@ -58,6 +59,73 @@ public sealed interface RunOutcome {
         }
     }
 
+    /**
+     * A verify run's finding.
+     *
+     * @param stale  the worktree was no longer at the head the run was queued for; nothing was checked
+     * @param passed every check passed (false when stale)
+     */
+    record Verification(boolean stale, boolean passed, List<EvidenceGap> gaps) implements RunOutcome {
+        public Verification {
+            gaps = gaps == null ? List.of() : List.copyOf(gaps);
+        }
+
+        static Verification ofStale() {
+            return new Verification(true, false, List.of());
+        }
+
+        @Override
+        public JSONB toJsonb() {
+            ObjectNode node = Json.mapper().createObjectNode().put("type", "verification");
+            if (stale) return JSONB.valueOf(node.put("stale", true).toString());
+            node.put("passed", passed);
+            ArrayNode array = node.putArray("gaps");
+            for (EvidenceGap g : gaps) {
+                ObjectNode gap = array.addObject().put("source", g.source()).put("command", g.command());
+                if (g.exitCode() == null) gap.putNull("exit_code");
+                else gap.put("exit_code", g.exitCode());
+                gap.put("output_tail", g.outputTail());
+            }
+            return JSONB.valueOf(node.toString());
+        }
+    }
+
+    /**
+     * An integrate run's result.
+     *
+     * @param status    {@code integrated}, {@code rebased}, {@code conflict}, {@code base_moved},
+     *                  {@code stale} or {@code failed}
+     * @param headSha   the integrated head, or the new head after a rebase
+     * @param pushed    whether the base was pushed (integrated only)
+     * @param localBase {@code updated}, {@code dirty} or {@code skipped} (integrated only)
+     * @param files     the conflicting paths (conflict only)
+     * @param error     what went wrong (failed only)
+     */
+    record Integration(String status, String headSha, Boolean pushed, String localBase, List<String> files,
+                       String error) implements RunOutcome {
+        public Integration {
+            files = files == null ? List.of() : List.copyOf(files);
+        }
+
+        static Integration of(String status) {
+            return new Integration(status, null, null, null, List.of(), null);
+        }
+
+        @Override
+        public JSONB toJsonb() {
+            ObjectNode node = Json.mapper().createObjectNode().put("type", "integration").put("status", status);
+            if (headSha != null) node.put("head_sha", headSha);
+            if (pushed != null) node.put("pushed", pushed);
+            if (localBase != null) node.put("local_base", localBase);
+            if (!files.isEmpty()) {
+                ArrayNode array = node.putArray("files");
+                files.forEach(array::add);
+            }
+            if (error != null) node.put("error", error);
+            return JSONB.valueOf(node.toString());
+        }
+    }
+
     static Optional<RunOutcome> parse(JSONB json) {
         if (json == null) return Optional.empty();
         try {
@@ -74,6 +142,26 @@ public sealed interface RunOutcome {
                                 g.path("body").asText()));
                     }
                     yield Optional.of(new Review(node.path("verdict").asText(), node.path("summary").asText(), gaps));
+                }
+                case "verification" -> {
+                    if (node.path("stale").asBoolean(false)) yield Optional.of(Verification.ofStale());
+                    List<EvidenceGap> gaps = new ArrayList<>();
+                    for (JsonNode g : node.path("gaps")) {
+                        gaps.add(new EvidenceGap(g.path("source").asText(), g.path("command").asText(null),
+                                g.hasNonNull("exit_code") ? g.get("exit_code").asInt() : null,
+                                g.path("output_tail").asText("")));
+                    }
+                    yield Optional.of(new Verification(false, node.path("passed").asBoolean(false), gaps));
+                }
+                case "integration" -> {
+                    List<String> files = new ArrayList<>();
+                    node.path("files").forEach(f -> files.add(f.asText()));
+                    yield Optional.of(new Integration(node.path("status").asText(),
+                            node.hasNonNull("head_sha") ? node.get("head_sha").asText() : null,
+                            node.hasNonNull("pushed") ? node.get("pushed").asBoolean() : null,
+                            node.hasNonNull("local_base") ? node.get("local_base").asText() : null,
+                            files,
+                            node.hasNonNull("error") ? node.get("error").asText() : null));
                 }
                 default -> Optional.empty();
             };

@@ -24,7 +24,6 @@ import com.ai.orange.routing.RouteDecision;
 import com.ai.orange.routing.RouteRequest;
 import com.ai.orange.routing.RoutingProperties;
 import com.ai.orange.routing.RoutingTable;
-import com.ai.orange.task.TaskEventRepository;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -85,9 +84,8 @@ public class WorkerRunner implements RunExecutor {
     private final RunsProperties props;
     private final RunRepository runs;
     private final RunEventRepository runEvents;
-    private final TaskEventRepository taskEvents;
+    private final RunLifecycle lifecycle;
     private final RunPreparer preparer;
-    private final PostRunSteps postRunSteps;
     private final RolePrompts rolePrompts;
     private final WorkerMcpConfigWriter mcpConfigs;
     private final RunSecrets secrets;
@@ -100,9 +98,8 @@ public class WorkerRunner implements RunExecutor {
     public WorkerRunner(RoutingTable routing, RoutingProperties routingProps, HarnessRegistry harnesses,
                         HarnessProperties harnessProps, GatewayClient gateway, GatewayProperties gatewayProps,
                         BillingProperties billing, CostEstimator costs, RunsProperties props, RunRepository runs,
-                        RunEventRepository runEvents, TaskEventRepository taskEvents, RunPreparer preparer,
-                        PostRunSteps postRunSteps, RolePrompts rolePrompts, WorkerMcpConfigWriter mcpConfigs,
-                        RunSecrets secrets) {
+                        RunEventRepository runEvents, RunLifecycle lifecycle, RunPreparer preparer,
+                        RolePrompts rolePrompts, WorkerMcpConfigWriter mcpConfigs, RunSecrets secrets) {
         this.routing = routing;
         this.routingProps = routingProps;
         this.harnesses = harnesses;
@@ -114,9 +111,8 @@ public class WorkerRunner implements RunExecutor {
         this.props = props;
         this.runs = runs;
         this.runEvents = runEvents;
-        this.taskEvents = taskEvents;
+        this.lifecycle = lifecycle;
         this.preparer = preparer;
-        this.postRunSteps = postRunSteps;
         this.rolePrompts = rolePrompts;
         this.mcpConfigs = mcpConfigs;
         this.secrets = secrets;
@@ -135,7 +131,7 @@ public class WorkerRunner implements RunExecutor {
         }
         if (!runs.heartbeat(run.id(), props.workerId(), props.leaseTtl())) {
             log.warn("run {} is no longer this worker's to run (finished or reaped); skipping it", run.id());
-            return fromRow(run.id());
+            return lifecycle.fromRow(run.id());
         }
         PreparedRun prep;
         try {
@@ -206,9 +202,7 @@ public class WorkerRunner implements RunExecutor {
         runs.recordRoute(run.id(), route.tier(), route.model(), route.effort().cli(), route.harness(),
                 authName(route), route.budgetUsd(), alias, mcpToken == null ? null : RunTokens.hash(mcpToken),
                 runDir.toString());
-        taskEvent(run, "run_started", Json.mapper().createObjectNode()
-                .put("run_id", run.id().toString())
-                .put("kind", run.kind().dbValue())
+        lifecycle.started(run, Json.mapper().createObjectNode()
                 .put("tier", route.tier())
                 .put("model", route.model())
                 .put("effort", route.effort().cli()));
@@ -295,7 +289,7 @@ public class WorkerRunner implements RunExecutor {
         if (row == null || row.status() != RunStatus.RUNNING) {
             log.warn("run {} was finished elsewhere ({}) while its process ran; leaving it as it is", run.id(),
                     row == null ? "deleted" : row.status().dbValue() + "/" + row.error());
-            return fromRow(run.id());
+            return lifecycle.fromRow(run.id());
         }
 
         RunEvent.Result result = exit.result();
@@ -325,7 +319,7 @@ public class WorkerRunner implements RunExecutor {
             }
             if (now >= nextBeat) {
                 nextBeat = now + props.heartbeat().toNanos();
-                Boolean renewed = renewLease(run);
+                Boolean renewed = lifecycle.renewLease(run);
                 if (Boolean.FALSE.equals(renewed)) {
                     log.warn("run {} lost its lease; killing it", run.id());
                     handle.kill("lease_lost");
@@ -347,16 +341,6 @@ public class WorkerRunner implements RunExecutor {
                 handle.kill("coordinator_restart");
                 return afterKill(handle, "coordinator_restart");
             }
-        }
-    }
-
-    /** True when renewed, false when the lease is gone, null when the database could not be asked. */
-    private Boolean renewLease(Run run) {
-        try {
-            return runs.heartbeat(run.id(), props.workerId(), props.leaseTtl());
-        } catch (RuntimeException e) {
-            log.warn("run {}: could not renew its lease ({}); trying again", run.id(), e.getMessage());
-            return null;
         }
     }
 
@@ -403,44 +387,8 @@ public class WorkerRunner implements RunExecutor {
 
     /** Post-run steps, then the row is finished: the run stays {@code running} until its effects have landed. */
     private RunResult conclude(Run run, RunResult result, Usage usage) {
-        RunResult fin;
-        try {
-            fin = postRunSteps.after(run, result);
-        } catch (RuntimeException e) {
-            log.error("run {}: post-run steps failed: {}", run.id(), e.toString(), e);
-            fin = result;
-        }
         Usage u = usage == null ? Usage.NONE : usage;
-        if (!runs.finish(run.id(), fin.status(), fin.reason(), fin.costUsd(), u.tokensIn(), u.tokensOut(),
-                u.cacheRead(), u.sessionId())) {
-            log.warn("run {} was no longer running when it finished; its row was left as it was", run.id());
-        }
-        ObjectNode payload = Json.mapper().createObjectNode()
-                .put("run_id", run.id().toString())
-                .put("kind", run.kind().dbValue())
-                .put("status", fin.status().dbValue())
-                .put("cost_usd", fin.costUsd());
-        if (fin.reason() != null) payload.put("reason", fin.reason());
-        taskEvent(run, "run_finished", payload);
-        log.info("run {} finished status={} reason={} cost={}", run.id(), fin.status().dbValue(), fin.reason(),
-                fin.costUsd());
-        return fin;
-    }
-
-    private RunResult fromRow(UUID runId) {
-        return runs.findById(runId)
-                .map(r -> new RunResult(r.id(), r.status(), r.error(), RunOutcome.parse(r.outcome()).orElse(null),
-                        null, null, r.costUsd()))
-                .orElseGet(() -> RunResult.failed(runId, "lease_expired"));
-    }
-
-    private void taskEvent(Run run, String type, ObjectNode payload) {
-        if (run.taskId() == null) return;
-        try {
-            taskEvents.append(run.taskId(), run.role(), type, JSONB.valueOf(payload.toString()));
-        } catch (RuntimeException e) {
-            log.warn("could not persist {} for task {}: {}", type, run.taskId(), e.getMessage());
-        }
+        return lifecycle.finish(run, result, u.tokensIn(), u.tokensOut(), u.cacheRead(), u.sessionId());
     }
 
     // ─────────────────────────── per-run event handling ───────────────────────────

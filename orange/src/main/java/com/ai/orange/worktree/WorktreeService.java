@@ -1,15 +1,13 @@
 package com.ai.orange.worktree;
 
 import jakarta.annotation.PostConstruct;
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.nio.charset.StandardCharsets;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,7 +34,7 @@ import org.springframework.stereotype.Service;
 public class WorktreeService {
 
     private static final Logger log = LoggerFactory.getLogger(WorktreeService.class);
-    private static final long GIT_TIMEOUT_SECONDS = 60;
+    private static final Duration GIT_TIMEOUT = Git.QUICK;
 
     private final WorktreeProperties props;
 
@@ -116,7 +114,7 @@ public class WorktreeService {
      * Otherwise fall back to the local branch — this is the test path, where
      * the repo is initialised with no remote.
      */
-    private String resolveSourceRef(String repo, String baseBranch) throws IOException, InterruptedException {
+    private String resolveSourceRef(String repo, String baseBranch) throws IOException {
         if (!hasOriginRemote(repo)) {
             return baseBranch;
         }
@@ -132,7 +130,7 @@ public class WorktreeService {
      * to the stale-local-ref path the PR exists to prevent. Timeouts throw
      * via {@link #runGitOrTimeoutOrMissing}.
      */
-    private boolean hasOriginRemote(String repo) throws IOException, InterruptedException {
+    private boolean hasOriginRemote(String repo) throws IOException {
         int exit = runGitOrTimeoutOrMissing(repo, List.of("remote", "get-url", "origin"));
         if (exit == 0) return true;
         if (exit == 2) return false;
@@ -207,6 +205,47 @@ public class WorktreeService {
     }
 
     /**
+     * The ref task branches start from, are diffed against and are integrated onto:
+     * {@code origin/<base>} when the base repo has an {@code origin} remote, else the local
+     * {@code <base>} branch.
+     */
+    public String baseRef() {
+        return hasOrigin() ? "origin/" + props.baseBranch() : props.baseBranch();
+    }
+
+    public boolean hasOrigin() {
+        try {
+            return hasOriginRemote(requireBaseRepo());
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /** Brings {@code origin/<base>} up to date; a no-op without an origin remote. */
+    public void fetchBase() {
+        if (hasOrigin()) {
+            Git.run(baseRepo(), Git.SLOW, "fetch", "--quiet", "origin", props.baseBranch());
+        }
+    }
+
+    /** Whether one more worktree fits under {@code orange.worktrees.max-count}. */
+    public boolean hasCapacity() {
+        try {
+            return countExisting(rootPath()) < props.maxCount();
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    public Path baseRepo() {
+        return Path.of(requireBaseRepo()).toAbsolutePath();
+    }
+
+    public String baseBranch() {
+        return props.baseBranch();
+    }
+
+    /**
      * Absolute, canonical worktree root. A <em>relative</em> {@code
      * orange.worktrees.root} is resolved against the configured base repo, NOT
      * the process working directory. Otherwise any orange process whose CWD
@@ -263,26 +302,11 @@ public class WorktreeService {
         }
     }
 
-    private void runGit(String repo, List<String> args) throws IOException, InterruptedException {
-        List<String> cmd = new java.util.ArrayList<>(args.size() + 1);
-        cmd.add("git");
-        cmd.addAll(args);
-        ProcessBuilder pb = new ProcessBuilder(cmd).directory(Path.of(repo).toFile()).redirectErrorStream(true);
-        Process proc = pb.start();
-        StringBuilder out = new StringBuilder();
-        try (BufferedReader r = new BufferedReader(new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = r.readLine()) != null) {
-                out.append(line).append('\n');
-            }
-        }
-        if (!proc.waitFor(GIT_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-            proc.destroyForcibly();
-            throw new IOException("git " + args + " timed out after " + GIT_TIMEOUT_SECONDS + "s");
-        }
-        int code = proc.exitValue();
-        if (code != 0) {
-            throw new IOException("git " + args + " failed (exit " + code + "):\n" + out);
+    private void runGit(String repo, List<String> args) throws IOException {
+        try {
+            Git.run(Path.of(repo), GIT_TIMEOUT, args.toArray(String[]::new));
+        } catch (GitException e) {
+            throw new IOException(e.getMessage(), e);
         }
     }
 
@@ -291,20 +315,11 @@ public class WorktreeService {
      * (so callers don't confuse "command timed out" with "exited normally with
      * code N") — this is the same fail-loud posture as {@link #runGit}.
      */
-    private int runGitOrTimeoutOrMissing(String repo, List<String> args)
-            throws IOException, InterruptedException {
-        List<String> cmd = new java.util.ArrayList<>(args.size() + 1);
-        cmd.add("git");
-        cmd.addAll(args);
-        Process proc = new ProcessBuilder(cmd)
-                .directory(Path.of(repo).toFile())
-                .redirectErrorStream(true)
-                .start();
-        proc.getInputStream().readAllBytes();
-        if (!proc.waitFor(GIT_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-            proc.destroyForcibly();
-            throw new IOException("git " + args + " timed out after " + GIT_TIMEOUT_SECONDS + "s");
+    private int runGitOrTimeoutOrMissing(String repo, List<String> args) throws IOException {
+        try {
+            return Git.exitCode(Path.of(repo), GIT_TIMEOUT, args.toArray(String[]::new));
+        } catch (GitException e) {
+            throw new IOException(e.getMessage(), e);
         }
-        return proc.exitValue();
     }
 }

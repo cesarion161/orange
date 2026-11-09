@@ -64,6 +64,37 @@ public final class RunTestSupport {
         return tasks.findById(t.id()).orElseThrow();
     }
 
+    /**
+     * A task whose implement run is done: its worktree has one commit adding {@code file}, its head is
+     * recorded, and it is VERIFYING, the way the post-run step leaves it.
+     */
+    public static Task verifyingTask(TaskService taskService, TaskRepository tasks,
+                                     com.ai.orange.worktree.WorktreeService worktrees, String description,
+                                     String file, String content) {
+        Task t = runningTask(taskService, tasks, description);
+        Path wt;
+        try {
+            wt = worktrees.ensure(t.id());
+            Path target = wt.resolve(file);
+            if (target.getParent() != null) Files.createDirectories(target.getParent());
+            Files.writeString(target, content);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(e);
+        }
+        git(wt, "add", "-A");
+        git(wt, "-c", "user.email=t@e", "-c", "user.name=T", "commit", "-q", "-m", "task: " + file);
+        tasks.recordHead(t.id(), "orange/" + t.id(), git(wt, "rev-parse", "HEAD"));
+        tasks.transitionStatus(t.id(), TaskStatus.RUNNING, TaskStatus.VERIFYING);
+        return tasks.findById(t.id()).orElseThrow();
+    }
+
+    public static String headInput(String headSha) {
+        return "{\"head_sha\":\"" + headSha + "\"}";
+    }
+
     public static Run start(RunRepository runs, RunsProperties props, UUID taskId, RunKind kind, String role,
                             String inputJson) {
         return runs.insertRunning(kind, role, taskId, props.workerId(), props.leaseTtl(), JSONB.valueOf(inputJson));

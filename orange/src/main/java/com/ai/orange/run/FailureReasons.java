@@ -14,7 +14,7 @@ import java.util.Set;
  *       limit, the gateway down, a missing binary, a broken base repo). Not counted against the
  *       task; the scheduler pauses instead.</li>
  *   <li><b>Infra, not pausing</b>: the run was stopped from outside (cancel, a lost lease, a
- *       coordinator restart). Not counted, no pause.</li>
+ *       coordinator restart), or integration hit git or remote trouble. Not counted, no pause.</li>
  *   <li><b>Model</b>: everything else ({@code timeout}, {@code budget}, {@code error_result},
  *       {@code no_result}, {@code exit_<n>}, {@code no_outcome}, {@code reported_failed},
  *       {@code no_commits}). Each adds one to the task's {@code failures}.</li>
@@ -24,8 +24,9 @@ public final class FailureReasons {
 
     public static final Set<String> PAUSING = Set.of("subscription_token_missing", "auth_failed", "plan_limit",
             "gateway_unavailable", "start_failed", "workspace_failed");
+    /** {@code integrate_failed} (git or remote trouble while integrating) sends the task to a person instead. */
     public static final Set<String> NOT_COUNTED = Set.of("cancelled", "lease_expired", "lease_lost",
-            "coordinator_restart");
+            "coordinator_restart", "integrate_failed");
 
     /** How long a plan-limit pause lasts when the message names no reset time. */
     static final Duration PLAN_LIMIT_FALLBACK = Duration.ofHours(1);

@@ -112,7 +112,8 @@ class WorkerRunnerGatewayIT {
     void agentEchoedVirtualKeyNeverPersists() {
         RunResult result = implement("[[fake:leak-env]]");
 
-        assertThat(result.status()).as(String.valueOf(result.reason())).isEqualTo(RunStatus.SUCCEEDED);
+        // leak-env reports done without committing, so the run itself ends no_commits.
+        assertThat(result.outcome()).as("the agent's report landed").isNotNull();
         assertThat(runEventsText(runEvents, result.runId())).doesNotContain("sk-secret-virtual-key");
         assertThat(runs.findById(result.runId()).orElseThrow().outcome().data()).doesNotContain("sk-secret-virtual-key");
         assertThat(result.lastAssistantText()).doesNotContain("sk-secret-virtual-key");

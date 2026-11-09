@@ -127,6 +127,45 @@ class WorktreeServiceIT {
     }
 
     @Test
+    void base_ref_is_the_local_branch_without_a_remote_and_origin_with_one() throws Exception {
+        WorktreeService svc = service(20);
+        assertThat(svc.baseRef()).isEqualTo("main");
+
+        Path origin = tempDir.resolve("origin.git");
+        run(tempDir, "git", "init", "-q", "--bare", "-b", "main", origin.toString());
+        run(baseRepo, "git", "remote", "add", "origin", origin.toString());
+        run(baseRepo, "git", "push", "-q", "origin", "main");
+        assertThat(svc.baseRef()).isEqualTo("origin/main");
+    }
+
+    @Test
+    void fetch_base_brings_the_remote_tracking_ref_up_to_date() throws Exception {
+        Path origin = tempDir.resolve("origin.git");
+        run(tempDir, "git", "init", "-q", "--bare", "-b", "main", origin.toString());
+        run(baseRepo, "git", "remote", "add", "origin", origin.toString());
+        run(baseRepo, "git", "push", "-q", "origin", "main");
+        Path other = tempDir.resolve("other");
+        run(tempDir, "git", "clone", "-q", origin.toString(), other.toString());
+        Files.writeString(other.resolve("new.txt"), "new\n");
+        run(other, "git", "add", ".");
+        run(other, "git", "-c", "user.email=o@e", "-c", "user.name=O", "commit", "-q", "-m", "new");
+        run(other, "git", "push", "-q", "origin", "main");
+        String pushed = capture(other, "git", "rev-parse", "HEAD").strip();
+
+        service(20).fetchBase();
+
+        assertThat(capture(baseRepo, "git", "rev-parse", "origin/main").strip()).isEqualTo(pushed);
+    }
+
+    @Test
+    void has_capacity_follows_max_count() throws Exception {
+        WorktreeService svc = service(1);
+        assertThat(svc.hasCapacity()).isTrue();
+        svc.create(UUID.randomUUID());
+        assertThat(svc.hasCapacity()).isFalse();
+    }
+
+    @Test
     void remove_deletes_orphaned_dir_that_is_not_a_registered_worktree() throws Exception {
         WorktreeService svc = service(20);
         UUID taskId = UUID.randomUUID();
