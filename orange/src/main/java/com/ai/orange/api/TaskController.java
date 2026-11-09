@@ -1,24 +1,17 @@
 package com.ai.orange.api;
 
 import com.ai.orange.agent.AgentRunService;
-import com.ai.orange.task.ClaimService;
 import com.ai.orange.task.Task;
-import com.ai.orange.task.TaskClaimRepository;
 import com.ai.orange.task.TaskDef;
 import com.ai.orange.task.TaskEvent;
 import com.ai.orange.task.TaskEventRepository;
 import com.ai.orange.task.TaskRepository;
 import com.ai.orange.task.TaskService;
 import com.ai.orange.task.TaskStatus;
-import io.temporal.client.WorkflowClient;
-import io.temporal.client.WorkflowNotFoundException;
-import io.temporal.client.WorkflowStub;
 import jakarta.validation.Valid;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -32,29 +25,18 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/tasks")
 public class TaskController {
 
-    private static final Logger log = LoggerFactory.getLogger(TaskController.class);
-
     private final TaskService service;
     private final TaskRepository taskRepo;
     private final TaskEventRepository eventRepo;
-    private final ClaimService claimService;
-    private final TaskClaimRepository claimRepo;
-    private final WorkflowClient workflowClient;
     private final AgentRunService agentRuns;
 
     public TaskController(TaskService service,
                           TaskRepository taskRepo,
                           TaskEventRepository eventRepo,
-                          ClaimService claimService,
-                          TaskClaimRepository claimRepo,
-                          WorkflowClient workflowClient,
                           AgentRunService agentRuns) {
         this.service = service;
         this.taskRepo = taskRepo;
         this.eventRepo = eventRepo;
-        this.claimService = claimService;
-        this.claimRepo = claimRepo;
-        this.workflowClient = workflowClient;
         this.agentRuns = agentRuns;
     }
 
@@ -109,20 +91,9 @@ public class TaskController {
     }
 
     /**
-     * Read the parent tasks' captured artifacts. The chat-as-executor MCP
-     * surface calls this so a worker can peek at upstream results before
-     * deciding how to attack its task.
-     */
-    @GetMapping("/{id}/dep-artifacts")
-    public ResponseEntity<Map<UUID, Map<String, Object>>> depArtifacts(@PathVariable UUID id) {
-        if (service.findById(id).isEmpty()) return ResponseEntity.notFound().build();
-        return ResponseEntity.ok(claimService.dependencyArtifacts(id));
-    }
-
-    /**
      * Reopen a FAILED or TEST_DONE task by transitioning it back to READY with
-     * a reason attached as augmentation metadata. The triage agent calls this
-     * via {@code orange_reopen_task}; operators can also hit it directly.
+     * a reason attached as augmentation metadata. Operators call this directly
+     * or through {@code orange_reopen_task}.
      */
     @PostMapping("/{id}/reopen")
     public ResponseEntity<Map<String, Object>> reopen(@PathVariable UUID id,
@@ -167,26 +138,8 @@ public class TaskController {
             return ResponseEntity.status(409).body(TaskResponse.of(task));
         }
 
-        // Best-effort terminate of the Temporal workflow. If the workflow
-        // isn't running (or never existed), we still flip the task to
-        // CANCELLED below.
-        try {
-            WorkflowStub stub = workflowClient.newUntypedWorkflowStub("task-" + id);
-            stub.terminate("user-cancellation");
-        } catch (WorkflowNotFoundException nf) {
-            log.info("no workflow to terminate for task {}", id);
-        } catch (Exception e) {
-            log.warn("workflow termination for task {} threw: {}", id, e.getMessage());
-        }
-
-        // Terminating the workflow does not interrupt an in-flight activity, so kill the
-        // task's running Claude Code process directly.
+        // Kill the task's running Claude Code process, if any.
         agentRuns.cancel(id);
-
-        // Chat-driven workers don't have a workflow to terminate — they poll
-        // the claim's cancel_requested flag on heartbeat. Flip it so they
-        // notice promptly and call release.
-        claimRepo.requestCancel(id);
 
         taskRepo.transitionStatus(id, task.status(), TaskStatus.CANCELLED);
         Task updated = service.findById(id).orElseThrow();

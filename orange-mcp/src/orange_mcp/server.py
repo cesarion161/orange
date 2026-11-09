@@ -10,15 +10,9 @@ Planner and dispatcher are independent steps: orange_plan produces a plan DAG
 (creating nothing), and orange_dispatch runs a plan — from inline JSON or a
 saved planId. Review (or skip review) between the two.
 
-Two flavors of tools live here:
-  - "user-facing" tools (orange_plan, orange_dispatch, orange_create_task,
-    orange_list_tasks, orange_task, orange_tail, orange_cancel) for
-    chat-as-user contexts;
-  - "chat-as-executor" tools (orange_claim_next_task, orange_heartbeat,
-    orange_complete_task, orange_fail_task, orange_release_claim,
-    orange_submit_plan, orange_dep_artifacts, orange_my_active_claims) for
-    chat-as-worker contexts where the chat session itself drives a task
-    through the FSM instead of a headless Claude Code run.
+The coordinator runs every agent itself; these tools let a chat session plan,
+dispatch, watch and steer that work. (orange v2 replaces this shim with an MCP
+endpoint served by the coordinator.)
 
 Configuration via env vars:
   ORANGE_BASE_URL          base URL of the orange-ai REST API (default localhost:8080)
@@ -73,8 +67,8 @@ def _tools() -> list[Tool]:
             description=(
                 "Run a plan: ingest a plan DAG and start implementation. The plan can come "
                 "from anywhere — supply EITHER an inline `plan` (e.g. one re-imported or "
-                "edited after review) OR a `plan_id` returned by orange_plan / "
-                "orange_submit_plan. orange-ai validates the DAG (acyclic, pipelines resolve), "
+                "edited after review) OR a `plan_id` returned by orange_plan. "
+                "orange-ai validates the DAG (acyclic), "
                 "inserts the tasks, and marks dependency-free tasks ready so agents pick them "
                 "up. Returns the created tasks with their statuses. This is the half that "
                 "actually starts work — call it only when the plan is approved."
@@ -90,20 +84,13 @@ def _tools() -> list[Tool]:
                         "type": "object",
                         "description": (
                             "Inline plan.json to dispatch: "
-                            "{tasks: [{key,title,description,role,priority,pipeline?,overrides?}], "
+                            "{tasks: [{key,title,description,role,priority,overrides?}], "
                             "edges: [{from,to}]}. Provide this OR plan_id, not both."
                         ),
                     },
                     "architecture_md": {
                         "type": "string",
                         "description": "Optional architecture markdown, persisted alongside an inline plan.",
-                    },
-                    "default_pipeline": {
-                        "type": "string",
-                        "description": (
-                            "Pipeline applied to any task without an explicit one. "
-                            "One of: dev_only, dev_qa, dev_review_qa. Null → dev_only."
-                        ),
                     },
                 },
             },
@@ -122,14 +109,7 @@ def _tools() -> list[Tool]:
                     "description": {"type": "string"},
                     "role": {
                         "type": "string",
-                        "description": "Agent role (e.g. dev, tester, reviewer). Defaults to dev.",
-                    },
-                    "pipeline": {
-                        "type": "string",
-                        "description": (
-                            "Pipeline name: dev_only | dev_qa | dev_review_qa. "
-                            "Defaults to dev_only for one-off manual tasks."
-                        ),
+                        "description": "Task role: implementer (default) or chore.",
                     },
                     "priority": {"type": "integer"},
                 },
@@ -162,8 +142,8 @@ def _tools() -> list[Tool]:
         Tool(
             name="orange_task",
             description=(
-                "Get the full state of a specific task — current status, claim info, "
-                "pipeline, priority, PR url if any. Returns the task row alone, not events."
+                "Get the full state of a specific task — current status, priority, "
+                "PR url if any. Returns the task row alone, not events."
             ),
             inputSchema={
                 "type": "object",
@@ -197,9 +177,8 @@ def _tools() -> list[Tool]:
         Tool(
             name="orange_cancel",
             description=(
-                "Cancel a running task. Terminates its Temporal workflow, kills the task's "
-                "running Claude Code process, and marks the task as cancelled. The worktree "
-                "may need a manual sweep if cleanup activities were skipped by termination."
+                "Cancel a task: kills its running Claude Code process, if any, and marks the "
+                "task as cancelled. Its worktree is swept later by the worktree disposer."
             ),
             inputSchema={
                 "type": "object",
@@ -209,176 +188,20 @@ def _tools() -> list[Tool]:
                 "required": ["task_id"],
             },
         ),
-        # ───────────────── chat-as-executor surface ─────────────────────
-        Tool(
-            name="orange_claim_next_task",
-            description=(
-                "CHAT-AS-EXECUTOR: Atomically claim the next ready task from the orange-ai "
-                "queue for the given role. Returns the task, the prompt to execute, the "
-                "worktree path to cd into, parent-task ids (deps), a claim_token to use on "
-                "subsequent calls, and the lease expiry. While holding the claim you MUST "
-                "call orange_heartbeat every ~30s or the orchestrator will reap your lease "
-                "and re-enqueue the task. Returns null if no task is available."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "role": {
-                        "type": "string",
-                        "description": "Agent role to claim a task for (e.g. dev, tester, planner).",
-                    },
-                    "worker_id": {
-                        "type": "string",
-                        "description": "Stable identifier for this chat session — used by the orchestrator to track lease ownership and to resume after restart.",
-                    },
-                },
-                "required": ["role", "worker_id"],
-            },
-        ),
-        Tool(
-            name="orange_heartbeat",
-            description=(
-                "CHAT-AS-EXECUTOR: Refresh the lease on a claim. Returns whether the "
-                "claim is still alive, whether the orchestrator has flagged it for "
-                "cancellation, and the new expiry. Call every ~30s while holding a claim. "
-                "If alive=false the lease was reaped; stop work and discard the token."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "claim_token": {"type": "string"},
-                },
-                "required": ["claim_token"],
-            },
-        ),
-        Tool(
-            name="orange_complete_task",
-            description=(
-                "CHAT-AS-EXECUTOR: Mark the claim's task as done. Releases the lease and "
-                "persists `summary` + `artifacts` on tasks.metadata so downstream "
-                "dependents can read them via orange_dep_artifacts.\n\n"
-                "Status routing:\n"
-                "  • `artifacts.pr_url` set → pr_open (caller opened a PR themselves)\n"
-                "  • else if `open_pr=true` OR GitHub is configured (auto) → orange attempts "
-                "to push + open a PR via GithubPrService. Success → pr_open + metadata stamped. "
-                "Failure → falls through to dev_ready with a pr_open_skipped event.\n"
-                "  • else → dev_ready (work done, no PR pending)."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "claim_token": {"type": "string"},
-                    "summary": {"type": "string"},
-                    "artifacts": {
-                        "type": "object",
-                        "description": "Arbitrary structured outputs from this run (file paths, URLs, key facts) — visible to downstream dependents. If you opened a PR yourself, include pr_url / pr_repo / pr_number here.",
-                    },
-                    "open_pr": {
-                        "type": "boolean",
-                        "description": "Force or skip the server-side auto-open-PR. Omit (default) to let orange decide based on its GitHub config.",
-                    },
-                },
-                "required": ["claim_token"],
-            },
-        ),
-        Tool(
-            name="orange_fail_task",
-            description=(
-                "CHAT-AS-EXECUTOR: Mark the claim as failed. If retryable=true and the "
-                "per-task attempt budget remains, the task is bounced back to ready for "
-                "another worker; otherwise the task is marked failed terminally. Releases "
-                "the lease."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "claim_token": {"type": "string"},
-                    "reason": {"type": "string"},
-                    "retryable": {"type": "boolean"},
-                },
-                "required": ["claim_token", "reason"],
-            },
-        ),
-        Tool(
-            name="orange_release_claim",
-            description=(
-                "CHAT-AS-EXECUTOR: Cooperative drop. Unlike orange_fail_task this does NOT "
-                "count against the retry budget — the task goes straight back to ready. Use "
-                "when the chat has to leave for reasons unrelated to the task itself."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "claim_token": {"type": "string"},
-                    "reason": {"type": "string"},
-                },
-                "required": ["claim_token"],
-            },
-        ),
-        Tool(
-            name="orange_submit_plan",
-            description=(
-                "CHAT-AS-EXECUTOR (planner): Save the {plan.json, architecture.md} pair "
-                "produced by an interactive planner chat and complete the planner claim. "
-                "PLAN-ONLY: this validates the DAG and stores it, but creates no tasks and "
-                "dispatches nothing — pipeline selection is a dispatch concern. Returns the "
-                "saved plan DAG and a planId; run it later with orange_dispatch(plan_id=…).\n\n"
-                "Each task in `plan.tasks[]` MAY specify per-task `pipeline` "
-                "(dev_only | dev_qa | dev_review_qa) and `overrides` "
-                "({skip_review, skip_test, requires_auth}); these are honored at dispatch."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "claim_token": {"type": "string"},
-                    "plan": {
-                        "type": "object",
-                        "description": (
-                            "Wire-format plan.json: "
-                            "{tasks: [{key,title,description,role,priority,pipeline?,overrides?}], "
-                            "edges: [{from,to}]}."
-                        ),
-                    },
-                    "architecture_md": {
-                        "type": "string",
-                        "description": "Optional architecture design-doc markdown body.",
-                    },
-                },
-                "required": ["claim_token", "plan"],
-            },
-        ),
-        Tool(
-            name="orange_dep_artifacts",
-            description=(
-                "CHAT-AS-EXECUTOR: Read the parent tasks' captured artifacts for a given "
-                "task id. Useful for a worker to peek at upstream results before deciding "
-                "how to attack its own task. Does not require a claim."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "task_id": {"type": "string"},
-                },
-                "required": ["task_id"],
-            },
-        ),
+        # ───────────────── live status ─────────────────────
         Tool(
             name="orange_status_live",
             description=(
                 "Aggregate 'what's happening right now' view: every in_progress task plus its "
                 "last few events. Use this to narrate parallel agent activity in chat without "
-                "fanning out to per-task orange_tail calls. Filter by role and/or pipeline."
+                "fanning out to per-task orange_tail calls. Filter by role."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "role": {
                         "type": "string",
-                        "description": "Filter to tasks claimed for this role (e.g. dev, tester, planner). Omit for all roles.",
-                    },
-                    "pipeline": {
-                        "type": "string",
-                        "description": "Filter to tasks on this pipeline (e.g. dev_qa, dev_review_qa). Omit for all pipelines.",
+                        "description": "Filter to tasks with this role (implementer or chore). Omit for all roles.",
                     },
                     "per_task_limit": {
                         "type": "integer",
@@ -390,8 +213,8 @@ def _tools() -> list[Tool]:
         Tool(
             name="orange_health",
             description=(
-                "One-shot system health summary: queue depths (ready / in_progress / pr_open / "
-                "dev_ready), env occupancy (total/leased/free), per-role concurrency usage. "
+                "One-shot system health summary: queue depths by task status, env occupancy "
+                "(total/leased/free) and spend. "
                 "Print this as a single status line when the user wants a 'how's it going' check."
             ),
             inputSchema={"type": "object", "properties": {}},
@@ -400,8 +223,7 @@ def _tools() -> list[Tool]:
             name="orange_envs",
             description=(
                 "List dev environments with current occupancy — who holds each env, ports, "
-                "status (free/leased/maintenance). Used by the orchestrator skill to show env "
-                "availability when planning the test stage."
+                "status (free/leased/maintenance). Dev envs are dormant until UI QA runs."
             ),
             inputSchema={"type": "object", "properties": {}},
         ),
@@ -409,7 +231,7 @@ def _tools() -> list[Tool]:
             name="orange_replay_task",
             description=(
                 "Create a fresh copy of an existing task on the ready queue. Same "
-                "title/description/role/pipeline; metadata.replayed_from points back. "
+                "title/description/role; metadata.replayed_from points back. "
                 "Original task is left untouched. Useful during testing for re-running a "
                 "flaky or otherwise interesting prior execution."
             ),
@@ -425,11 +247,9 @@ def _tools() -> list[Tool]:
         Tool(
             name="orange_reopen_task",
             description=(
-                "TRIAGE: reopen a FAILED or TEST_DONE task by transitioning it back to "
-                "READY with a reason attached as augmentation metadata. The next dev "
-                "agent that claims it will see your reason in the prompt. Use sparingly "
-                "and only after inspecting the failure context — this is the triage "
-                "agent's primary mutating tool."
+                "Reopen a failed task: move it back to READY with a reason attached as "
+                "metadata, so the next attempt can see it. Use sparingly and only after "
+                "inspecting the failure context."
             ),
             inputSchema={
                 "type": "object",
@@ -445,31 +265,6 @@ def _tools() -> list[Tool]:
                     },
                 },
                 "required": ["task_id", "reason"],
-            },
-        ),
-        Tool(
-            name="orange_concurrency",
-            description=(
-                "Per-role parallelism usage snapshot — for each role, how many tasks are "
-                "in_progress and what the configured cap is (null = unlimited). Use when the "
-                "user asks why a claim was refused or to surface bottlenecks during narration. "
-                "Roles with no cap configured are still shown so the operator sees the full picture."
-            ),
-            inputSchema={"type": "object", "properties": {}},
-        ),
-        Tool(
-            name="orange_my_active_claims",
-            description=(
-                "CHAT-AS-EXECUTOR: List the chat session's currently active claims by "
-                "worker_id. Use on chat resume after restart to figure out whether to keep "
-                "heartbeating an existing claim or call orange_claim_next_task."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "worker_id": {"type": "string"},
-                },
-                "required": ["worker_id"],
             },
         ),
     ]
@@ -500,30 +295,12 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return await _tail(arguments)
         if name == "orange_cancel":
             return await _cancel(arguments)
-        if name == "orange_claim_next_task":
-            return await _claim_next(arguments)
-        if name == "orange_heartbeat":
-            return await _heartbeat(arguments)
-        if name == "orange_complete_task":
-            return await _complete_task(arguments)
-        if name == "orange_fail_task":
-            return await _fail_task(arguments)
-        if name == "orange_release_claim":
-            return await _release_claim(arguments)
-        if name == "orange_submit_plan":
-            return await _submit_plan(arguments)
-        if name == "orange_dep_artifacts":
-            return await _dep_artifacts(arguments)
-        if name == "orange_my_active_claims":
-            return await _my_active_claims(arguments)
         if name == "orange_status_live":
             return await _status_live(arguments)
         if name == "orange_envs":
             return await _envs(arguments)
         if name == "orange_health":
             return await _health(arguments)
-        if name == "orange_concurrency":
-            return await _concurrency(arguments)
         if name == "orange_reopen_task":
             return await _reopen_task(arguments)
         if name == "orange_replay_task":
@@ -563,7 +340,7 @@ async def _dispatch(args: dict[str, Any]) -> list[TextContent]:
     plan = args.get("plan")
     if (plan_id is None) == (plan is None):
         return _err("provide exactly one of 'plan_id' or 'plan'")
-    body: dict[str, Any] = {"defaultPipeline": args.get("default_pipeline")}
+    body: dict[str, Any] = {}
     if plan_id:
         body["planId"] = plan_id
     else:
@@ -581,15 +358,14 @@ async def _dispatch(args: dict[str, Any]) -> list[TextContent]:
 
 async def _create_task(args: dict[str, Any]) -> list[TextContent]:
     body = {k: v for k, v in args.items() if v is not None}
-    body.setdefault("pipeline", "dev_only")
-    body.setdefault("role", "dev")
+    body.setdefault("role", "implementer")
     async with httpx.AsyncClient(timeout=30.0) as client:
         r = await client.post(f"{BASE_URL}/tasks", json=body)
         r.raise_for_status()
         payload = r.json()
     return _ok(
         f"Created task {payload['id']}: '{payload['title']}' "
-        f"(role={payload['role']}, pipeline={payload['pipeline']}, status={payload['status']}).",
+        f"(role={payload['role']}, status={payload['status']}).",
         payload,
     )
 
@@ -608,7 +384,7 @@ async def _list_tasks(args: dict[str, Any]) -> list[TextContent]:
     for row in rows:
         lines.append(
             f"  {row['id'][:8]}…  {row['status']:13}  {row['role']:8}  "
-            f"{row['pipeline']:12}  {row['title']}"
+            f"{row['title']}"
         )
     return _ok("\n".join(lines), rows)
 
@@ -623,7 +399,6 @@ async def _task(args: dict[str, Any]) -> list[TextContent]:
         f"  title:    {row['title']}\n"
         f"  status:   {row['status']}\n"
         f"  role:     {row['role']}\n"
-        f"  pipeline: {row['pipeline']}\n"
         f"  priority: {row['priority']}\n"
         f"  created:  {row['createdAt']}",
         row,
@@ -665,140 +440,13 @@ async def _cancel(args: dict[str, Any]) -> list[TextContent]:
     return _ok(f"cancelled task {row['id']} (was {row.get('status')})", row)
 
 
-# ─── chat-as-executor ───────────────────────────────────────────────────
-
-
-async def _claim_next(args: dict[str, Any]) -> list[TextContent]:
-    body = {"role": args["role"], "workerId": args["worker_id"]}
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.post(f"{BASE_URL}/claims/next", json=body)
-        if r.status_code == 204:
-            return _ok("no ready tasks for that role", None)
-        r.raise_for_status()
-        payload = r.json()
-    return _ok(
-        f"claimed task {payload['taskId']} (role={payload['role']}, "
-        f"attempt={payload['attempt']}, token={payload['claimToken']}, "
-        f"lease_expires={payload['leaseExpiresAt']})\n"
-        f"cwd: {payload['cwd']}\n"
-        f"deps: {payload['deps']}\n\n"
-        f"--- prompt ---\n{payload['prompt']}",
-        payload,
-    )
-
-
-async def _heartbeat(args: dict[str, Any]) -> list[TextContent]:
-    token = args["claim_token"]
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.post(f"{BASE_URL}/claims/{token}/heartbeat")
-        if r.status_code == 410:
-            payload = r.json()
-            return _ok("LEASE EXPIRED — stop work, your token is dead", payload)
-        r.raise_for_status()
-        payload = r.json()
-    flag = " (CANCEL REQUESTED)" if payload.get("cancelRequested") else ""
-    return _ok(
-        f"alive: lease_expires={payload['leaseExpiresAt']}{flag}",
-        payload,
-    )
-
-
-async def _complete_task(args: dict[str, Any]) -> list[TextContent]:
-    token = args["claim_token"]
-    body: dict[str, Any] = {}
-    if args.get("summary") is not None:
-        body["summary"] = args["summary"]
-    if args.get("artifacts") is not None:
-        body["artifacts"] = args["artifacts"]
-    if args.get("open_pr") is not None:
-        body["openPr"] = bool(args["open_pr"])
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.post(f"{BASE_URL}/claims/{token}/complete", json=body)
-        if r.status_code == 410:
-            payload = r.json()
-            return _err(f"claim already gone: {payload.get('reason')}")
-        r.raise_for_status()
-        payload = r.json()
-    return _ok(
-        f"task {payload['taskId']} → {payload['newStatus']}",
-        payload,
-    )
-
-
-async def _fail_task(args: dict[str, Any]) -> list[TextContent]:
-    token = args["claim_token"]
-    body = {
-        "reason": args.get("reason"),
-        "retryable": bool(args.get("retryable", False)),
-    }
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.post(f"{BASE_URL}/claims/{token}/fail", json=body)
-        if r.status_code == 410:
-            payload = r.json()
-            return _err(f"claim already gone: {payload.get('reason')}")
-        r.raise_for_status()
-        payload = r.json()
-    return _ok(
-        f"task {payload['taskId']} → {payload['newStatus']} (retryable={payload['retryable']})",
-        payload,
-    )
-
-
-async def _release_claim(args: dict[str, Any]) -> list[TextContent]:
-    token = args["claim_token"]
-    body = {"reason": args.get("reason")}
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.post(f"{BASE_URL}/claims/{token}/release", json=body)
-        if r.status_code == 410:
-            payload = r.json()
-            return _err(f"claim already gone: {payload.get('reason')}")
-        r.raise_for_status()
-        payload = r.json()
-    return _ok(
-        f"released task {payload['taskId']} back to {payload['newStatus']}",
-        payload,
-    )
-
-
-async def _submit_plan(args: dict[str, Any]) -> list[TextContent]:
-    token = args["claim_token"]
-    body = {
-        "claimToken": token,
-        "plan": args["plan"],
-        "architectureMd": args.get("architecture_md"),
-    }
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        r = await client.post(f"{BASE_URL}/claims/{token}/submit-plan", json=body)
-        if r.status_code == 422:
-            payload = r.json()
-            return _err(f"plan rejected: {payload.get('reason', 'unknown')}")
-        r.raise_for_status()
-        payload = r.json()
-    return _ok(_summarise_plan(payload), payload)
-
-
-async def _dep_artifacts(args: dict[str, Any]) -> list[TextContent]:
-    task_id = args["task_id"]
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        r = await client.get(f"{BASE_URL}/tasks/{task_id}/dep-artifacts")
-        r.raise_for_status()
-        payload = r.json()
-    if not payload:
-        return _ok("no dependencies", payload)
-    lines = [f"{len(payload)} parent(s):"]
-    for parent_id, art in payload.items():
-        title = art.get("title", "?") if isinstance(art, dict) else "?"
-        status = art.get("status", "?") if isinstance(art, dict) else "?"
-        lines.append(f"  {parent_id[:8]}…  {status:12}  {title}")
-    return _ok("\n".join(lines), payload)
+# ─── live status ────────────────────────────────────────────────────────
 
 
 async def _status_live(args: dict[str, Any]) -> list[TextContent]:
     params: dict[str, Any] = {}
     if args.get("role"):
         params["role"] = args["role"]
-    if args.get("pipeline"):
-        params["pipeline"] = args["pipeline"]
     if args.get("per_task_limit"):
         params["perTaskLimit"] = args["per_task_limit"]
     async with httpx.AsyncClient(timeout=15.0) as client:
@@ -815,7 +463,7 @@ async def _status_live(args: dict[str, Any]) -> list[TextContent]:
         )
         lines.append(
             f"  {row['taskId'][:8]}…  {row['role']:8}  "
-            f"by {row['claimedBy'] or '-':14}  {row['title'][:40]:40}  | last: {last_desc}"
+            f"{row['title'][:40]:40}  | last: {last_desc}"
         )
     return _ok("\n".join(lines), rows)
 
@@ -853,20 +501,6 @@ async def _reopen_task(args: dict[str, Any]) -> list[TextContent]:
     return _ok(f"reopened {payload['id']} → {payload['status']}", payload)
 
 
-async def _concurrency(_args: dict[str, Any]) -> list[TextContent]:
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.get(f"{BASE_URL}/concurrency")
-        r.raise_for_status()
-        rows = r.json()
-    lines = [f"role usage ({len(rows)} role(s)):"]
-    for row in rows:
-        cap = row.get("cap")
-        cap_str = str(cap) if cap is not None else "∞"
-        marker = " (AT CAP)" if row.get("atCap") else ""
-        lines.append(f"  {row['role']:10}  {row['inProgress']:>3}/{cap_str:<3}{marker}")
-    return _ok("\n".join(lines), rows)
-
-
 async def _health(_args: dict[str, Any]) -> list[TextContent]:
     async with httpx.AsyncClient(timeout=10.0) as client:
         r = await client.get(f"{BASE_URL}/health/aggregate")
@@ -901,24 +535,6 @@ async def _envs(_args: dict[str, Any]) -> list[TextContent]:
     return _ok("\n".join(lines), rows)
 
 
-async def _my_active_claims(args: dict[str, Any]) -> list[TextContent]:
-    params = {"workerId": args["worker_id"]}
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.get(f"{BASE_URL}/claims/active", params=params)
-        r.raise_for_status()
-        rows = r.json()
-    if not rows:
-        return _ok(f"no active claims for worker {args['worker_id']}", rows)
-    lines = [f"{len(rows)} active claim(s):"]
-    for row in rows:
-        flag = " (cancel-requested)" if row.get("cancelRequested") else ""
-        lines.append(
-            f"  task={row['taskId']}  token={row['claimToken']}  "
-            f"attempt={row['attempt']}  expires={row['leaseExpiresAt']}{flag}"
-        )
-    return _ok("\n".join(lines), rows)
-
-
 # ─────────────────────────── helpers ────────────────────────────────────
 
 
@@ -948,9 +564,8 @@ def _summarise_plan(payload: dict[str, Any]) -> str:
         # `or` (not get-default) so an explicit null in the JSON still renders sanely.
         key = t.get("key") or "?"
         role = t.get("role") or "dev"
-        pipeline = t.get("pipeline") or "(default)"
         title = t.get("title") or ""
-        lines.append(f"  {key:14}  role={role:8}  pipeline={pipeline:14}  {title}")
+        lines.append(f"  {key:14}  role={role:11}  {title}")
     if edges:
         lines.append("  edges: " + ", ".join(f"{e.get('from', '?')}→{e.get('to', '?')}" for e in edges))
     lines.append(f"\nplanId:    {payload.get('planId')}")
@@ -968,7 +583,7 @@ def _summarise_dispatch(payload: dict[str, Any]) -> str:
     lines = [f"dispatched: {len(tasks)} task(s) created (planId {payload.get('planId')})"]
     for t in tasks:
         lines.append(
-            f"  {t['status']:8}  role={t['role']:8}  pipeline={t['pipeline']:10}  {t['title']}"
+            f"  {t['status']:8}  role={t['role']:11}  {t['title']}"
         )
     return "\n".join(lines)
 

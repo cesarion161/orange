@@ -57,7 +57,6 @@ Restart Claude Code. Tools will appear as `orange_plan`, `orange_list_tasks`, et
 | Var | Default | Meaning |
 |---|---|---|
 | `ORANGE_BASE_URL` | `http://localhost:8080` | Orange-ai REST base URL |
-| `ORANGE_DEFAULT_PIPELINE` | `dev_qa` | Default pipeline when `orange_plan` omits one |
 
 ## Slash commands
 

@@ -2,7 +2,6 @@ package com.ai.orange.github;
 
 import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskRepository;
-import com.ai.orange.task.TaskService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.BufferedReader;
@@ -10,7 +9,6 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -34,15 +32,12 @@ public class GithubPrService {
     private final GithubClient client;
     private final GithubProperties props;
     private final TaskRepository tasks;
-    private final TaskService taskService;
     private final ObjectMapper mapper = new ObjectMapper();
 
-    public GithubPrService(GithubClient client, GithubProperties props,
-                           TaskRepository tasks, TaskService taskService) {
+    public GithubPrService(GithubClient client, GithubProperties props, TaskRepository tasks) {
         this.client = client;
         this.props = props;
         this.tasks = tasks;
-        this.taskService = taskService;
     }
 
     /**
@@ -55,17 +50,8 @@ public class GithubPrService {
                 .orElseThrow(() -> new IllegalStateException("task " + taskId + " not found"));
         String branch = "orange/" + taskId;
 
-        try {
-            pushBranch(worktreePath, branch);
-        } catch (PushConflictException conflict) {
-            // The branch's parent has moved on main. The dev agent's worktree is
-            // now diverged; reopening the dev task with the conflict log gives
-            // a triage agent a chance to decide who fixes it. We DO bubble the
-            // failure so the workflow marks the stage failed — the triage task
-            // is a side effect that lets the orchestrator self-heal.
-            enqueueConflictTriage(taskId, branch, conflict.output());
-            throw conflict;
-        }
+        // A non-fast-forward rejection surfaces as PushConflictException for the caller to handle.
+        pushBranch(worktreePath, branch);
 
         String title = task.title();
         String body = task.description() == null ? "" : task.description();
@@ -75,25 +61,6 @@ public class GithubPrService {
 
         persistPrMetadata(task, pr);
         return pr;
-    }
-
-    private void enqueueConflictTriage(UUID taskId, String branch, String pushOutput) {
-        try {
-            String description = "Git push for branch `" + branch + "` was rejected by the remote — "
-                    + "likely a non-fast-forward / merge conflict against the base branch.\n\n"
-                    + "Suspect task: " + taskId + "\n"
-                    + "Push output:\n" + tail(pushOutput);
-            taskService.createTriageTask("conflict", List.of(taskId), description);
-            log.info("conflict-triage task enqueued for {}", taskId);
-        } catch (Exception e) {
-            log.warn("could not enqueue conflict-triage task for {}: {}", taskId, e.getMessage());
-        }
-    }
-
-    private static String tail(String s) {
-        if (s == null) return "";
-        int max = 2048;
-        return s.length() <= max ? s : s.substring(s.length() - max);
     }
 
     private void pushBranch(Path worktreePath, String branch) throws IOException, InterruptedException {

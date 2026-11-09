@@ -15,32 +15,6 @@ services:
       timeout: 3s
       retries: 10
 
-  temporal:
-    image: 'temporalio/auto-setup:1.29.6.1'
-    environment:
-      - 'DB=postgres12'
-      - 'DB_PORT=5432'
-      - 'POSTGRES_USER=orange'
-      - 'POSTGRES_PWD=secret'
-      - 'POSTGRES_SEEDS=postgres'
-      - 'DBNAME=temporal'
-      - 'VISIBILITY_DBNAME=temporal_visibility'
-    ports:
-      - '7233:7233'
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-  temporal-ui:
-    image: 'temporalio/ui:latest'
-    environment:
-      - 'TEMPORAL_ADDRESS=temporal:7233'
-      - 'TEMPORAL_CORS_ORIGINS=http://localhost:3000'
-    ports:
-      - '8233:8080'
-    depends_on:
-      - temporal
-
   # ── LiteLLM gateway (only for routing tiers with auth: gateway) ──────────────────────
   # Not started by a plain `docker compose up`; use: docker compose --profile gateway up -d litellm
   litellm-db-init:

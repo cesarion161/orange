@@ -7,8 +7,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.ai.orange.TestcontainersConfiguration;
+import com.ai.orange.json.Json;
 import com.ai.orange.planner.PlanJson;
-import com.ai.orange.planner.PlannerService;
 import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskRepository;
 import com.ai.orange.task.TaskStatus;
@@ -30,9 +30,7 @@ import org.springframework.test.context.DynamicPropertySource;
 /**
  * Exercises the dispatcher: ingest a {@link PlanJson} (inline or by saved
  * {@code planId}) and check tasks + edges land in Postgres with the root marked
- * READY, per-task pipelines resolved, overrides persisted, and bad plans
- * rejected without partial inserts. {@code auto-start=false} so ingest can mark
- * roots READY without launching real workflows.
+ * READY, overrides persisted, and bad plans rejected without partial inserts.
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
@@ -41,7 +39,6 @@ class DispatchServiceIT {
     static Path plannerOutputRoot;
 
     @Autowired DispatchService dispatch;
-    @Autowired PlannerService planner;
     @Autowired TaskRepository taskRepo;
     @Autowired DSLContext dsl;
 
@@ -53,7 +50,6 @@ class DispatchServiceIT {
     @DynamicPropertySource
     static void registerProps(DynamicPropertyRegistry r) {
         r.add("orange.planner.output-root", () -> plannerOutputRoot.toString());
-        r.add("orange.workflow.auto-start", () -> "false");
     }
 
     @BeforeEach
@@ -64,19 +60,19 @@ class DispatchServiceIT {
     }
 
     @Test
-    void dispatch_inline_creates_graph_with_root_ready_and_persists_pipelines_and_overrides() throws Exception {
+    void dispatch_inline_creates_graph_with_root_ready_and_persists_overrides() throws Exception {
         PlanJson plan = new PlanJson(
                 List.of(
-                        new PlanJson.PlanTask("a", "Quick refactor", null, "dev", 100, "dev_only", null),
-                        new PlanJson.PlanTask("b", "Behavior change", null, "dev", 100, "dev_qa",
+                        new PlanJson.PlanTask("a", "Quick refactor", null, "dev", 100, null),
+                        new PlanJson.PlanTask("b", "Behavior change", null, "dev", 100,
                                 Map.of("skip_review", true)),
-                        new PlanJson.PlanTask("c", "Security-critical", null, "dev", 100, "dev_review_qa",
+                        new PlanJson.PlanTask("c", "Security-critical", null, "dev", 100,
                                 Map.of("requires_auth", true))),
                 List.of(
                         new PlanJson.PlanEdge("a", "b"),
                         new PlanJson.PlanEdge("b", "c")));
 
-        DispatchService.DispatchResult result = dispatch.dispatch(plan, "# arch", null);
+        DispatchService.DispatchResult result = dispatch.dispatch(plan, "# arch");
 
         assertThat(result.status()).isEqualTo("success");
         assertThat(result.planId()).isNotNull();
@@ -84,9 +80,6 @@ class DispatchServiceIT {
 
         var byTitle = result.createdTasks().stream()
                 .collect(java.util.stream.Collectors.toMap(Task::title, t -> t));
-        assertThat(byTitle.get("Quick refactor").pipeline()).isEqualTo("dev_only");
-        assertThat(byTitle.get("Behavior change").pipeline()).isEqualTo("dev_qa");
-        assertThat(byTitle.get("Security-critical").pipeline()).isEqualTo("dev_review_qa");
 
         // Root-of-DAG is the only READY task.
         assertThat(byTitle.get("Quick refactor").status()).isEqualTo(TaskStatus.READY);
@@ -103,64 +96,33 @@ class DispatchServiceIT {
     }
 
     @Test
-    void caller_default_applies_to_tasks_missing_an_explicit_pipeline() throws Exception {
+    void cyclic_plan_rejects_the_whole_plan() {
         PlanJson plan = new PlanJson(
-                List.of(
-                        new PlanJson.PlanTask("a", "Refactor", null, "dev", null, null, null),
-                        new PlanJson.PlanTask("b", "Feature", null, "dev", null, "dev_qa", null)),
-                List.of());
+                List.of(new PlanJson.PlanTask("a", "x", null, "dev", null, null),
+                        new PlanJson.PlanTask("b", "y", null, "dev", null, null)),
+                List.of(new PlanJson.PlanEdge("a", "b"), new PlanJson.PlanEdge("b", "a")));
 
-        DispatchService.DispatchResult result = dispatch.dispatch(plan, null, "dev_review_qa");
-
-        assertThat(result.status()).isEqualTo("success");
-        var byTitle = result.createdTasks().stream()
-                .collect(java.util.stream.Collectors.toMap(Task::title, t -> t));
-        assertThat(byTitle.get("Refactor").pipeline()).isEqualTo("dev_review_qa");
-        assertThat(byTitle.get("Feature").pipeline()).isEqualTo("dev_qa");
-    }
-
-    @Test
-    void unknown_pipeline_on_a_task_rejects_the_whole_plan() {
-        PlanJson plan = new PlanJson(
-                List.of(new PlanJson.PlanTask("a", "x", null, "dev", null, "bogus_pipeline", null)),
-                List.of());
-
-        assertThatThrownBy(() -> dispatch.dispatch(plan, null, null))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("bogus_pipeline");
-
-        assertThat(dsl.fetchCount(TASKS)).isZero();
-    }
-
-    @Test
-    void unknown_caller_default_rejects_the_plan() {
-        PlanJson plan = new PlanJson(
-                List.of(new PlanJson.PlanTask("a", "x", null, "dev", null, null, null)),
-                List.of());
-
-        assertThatThrownBy(() -> dispatch.dispatch(plan, null, "no_such_pipeline"))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("no_such_pipeline");
+        assertThatThrownBy(() -> dispatch.dispatch(plan, null)).isInstanceOf(RuntimeException.class);
 
         assertThat(dsl.fetchCount(TASKS)).isZero();
     }
 
     @Test
     void dispatch_by_plan_id_runs_a_plan_the_planner_saved() throws Exception {
-        // Stage a plan on disk through the planner's save path...
+        // A planner run leaves plan.json under <output-root>/<planId>/.
         PlanJson plan = new PlanJson(
                 List.of(
-                        new PlanJson.PlanTask("root", "Root task", null, "dev", null, "dev_only", null),
-                        new PlanJson.PlanTask("leaf", "Leaf task", null, "dev", null, "dev_only", null)),
+                        new PlanJson.PlanTask("root", "Root task", null, "dev", null, null),
+                        new PlanJson.PlanTask("leaf", "Leaf task", null, "dev", null, null)),
                 List.of(new PlanJson.PlanEdge("root", "leaf")));
-        PlannerService.PlanResult saved = planner.savePlan(plan, null);
-        assertThat(dsl.fetchCount(TASKS)).isZero(); // save creates nothing
+        UUID planId = UUID.randomUUID();
+        Path dir = Files.createDirectories(plannerOutputRoot.resolve(planId.toString()));
+        Files.writeString(dir.resolve("plan.json"), Json.mapper().writeValueAsString(plan));
 
-        // ...then dispatch it by id.
-        DispatchService.DispatchResult result = dispatch.dispatchByPlanId(saved.planId(), null);
+        DispatchService.DispatchResult result = dispatch.dispatchByPlanId(planId);
 
         assertThat(result.status()).isEqualTo("success");
-        assertThat(result.planId()).isEqualTo(saved.planId());
+        assertThat(result.planId()).isEqualTo(planId);
         assertThat(result.createdTasks()).hasSize(2);
         var byTitle = result.createdTasks().stream()
                 .collect(java.util.stream.Collectors.toMap(Task::title, t -> t));
@@ -170,7 +132,7 @@ class DispatchServiceIT {
 
     @Test
     void dispatch_by_unknown_plan_id_throws_plan_not_found() {
-        assertThatThrownBy(() -> dispatch.dispatchByPlanId(UUID.randomUUID(), null))
+        assertThatThrownBy(() -> dispatch.dispatchByPlanId(UUID.randomUUID()))
                 .isInstanceOf(PlanNotFoundException.class);
     }
 }

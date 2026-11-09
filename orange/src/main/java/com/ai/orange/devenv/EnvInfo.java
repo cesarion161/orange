@@ -1,15 +1,13 @@
-package com.ai.orange.workflow;
+package com.ai.orange.devenv;
 
 import com.ai.orange.json.Json;
-import com.ai.orange.devenv.DevEnv;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 
 /**
- * Snapshot of a leased {@code dev_env}, threaded from {@code acquireDevEnv}
- * through {@code runStage} into the agent's prompt. Temporal-serializable
- * (records + primitives + Map of strings/integers).
+ * Snapshot of a leased {@code dev_env}, handed to whoever leased it (records, primitives and a
+ * map of strings/integers). Dev-env leasing is dormant until UI QA runs (v2 plan, PR 8).
  *
  * <p>{@code ports} drives URL construction in the tester prompt — port keys
  * match the V3 seed convention ({@code web}, {@code api}, {@code db}) but

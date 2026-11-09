@@ -15,17 +15,6 @@ spring:
       maximum-pool-size: 30
   flyway:
     locations: classpath:db/migration
-  temporal:
-    connection:
-      target: ${TEMPORAL_TARGET:local}
-    namespace: ${TEMPORAL_NAMESPACE:default}
-    workers-auto-discovery:
-      packages:
-        - com.ai.orange.workflow
-    workers:
-      - task-queue: orange-pipelines
-        capacity:
-          max-concurrent-activity-executors: ${ORANGE_AGENTS_MAX_CONCURRENT:5}
 
 management:
   endpoints:
@@ -48,50 +37,18 @@ orange:
     max-count: ${WORKTREES_MAX_COUNT:20}
     disposer-delay: ${ORANGE_WORKTREE_DISPOSER_DELAY:5m}
     disposer-initial-delay: ${ORANGE_WORKTREE_DISPOSER_INITIAL_DELAY:1m}
-  post-merge:
-    # Command run in `orange.worktrees.base-repo` after each PR merge to
-    # verify the new tip of `main` still builds. Blank = skip the gate.
-    # Example: "./gradlew build"
-    build-command: ${ORANGE_POST_MERGE_BUILD_COMMAND:}
-    # Run the full regression suite every N successful builds. Blank command
-    # disables periodic regression entirely (and the every-counter is moot).
-    # Example: "./gradlew check -PfullSuite"
-    regression-command: ${ORANGE_POST_MERGE_REGRESSION_COMMAND:}
-    regression-every: ${ORANGE_POST_MERGE_REGRESSION_EVERY:5}
-    timeout: ${ORANGE_POST_MERGE_TIMEOUT:10m}
   github:
     webhook-secret: ${GITHUB_WEBHOOK_SECRET:}
     webhook-path: /webhooks/github
-  claims:
-    # How long a chat-driven worker has between heartbeats before the reaper
-    # claws the task back. Heartbeats refresh this to (now + lease-ttl).
-    lease-ttl: ${ORANGE_CLAIMS_LEASE_TTL:2m}
-    # Per-task attempt cap. Once a claim has been failed (or expired) this
-    # many times the next reap/fail flips the task to FAILED instead of
-    # bouncing it back to READY.
-    max-attempts: ${ORANGE_CLAIMS_MAX_ATTEMPTS:3}
-    reaper-delay: ${ORANGE_CLAIMS_REAPER_DELAY:30s}
-    reaper-initial-delay: ${ORANGE_CLAIMS_REAPER_INITIAL_DELAY:30s}
   envs:
-    # How long acquireDevEnv blocks on the dev_envs pool before failing the
-    # stage. Stays well under the Temporal activity timeout (35m).
-    acquire-timeout: ${ORANGE_ENV_ACQUIRE_TIMEOUT:30m}
-    # Compose template the orchestrator runs per leased env. Blank = skip
-    # (tester sees only port URLs in the prompt and brings up its own stack).
+    # Dev-env leasing is dormant until UI QA runs (v2 plan, PR 8).
+    # Compose template the orchestrator runs per leased env. Blank = skip.
     # Compose file should interpolate ORANGE_PORT_WEB / ORANGE_PORT_API /
     # ORANGE_PORT_DB / ORANGE_DATA_DIR / ORANGE_FIXTURE_SET /
     # ORANGE_AUTH_BYPASS_TOKEN env vars.
     compose-file: ${ORANGE_ENV_COMPOSE_FILE:}
     compose-start-timeout: ${ORANGE_ENV_COMPOSE_START_TIMEOUT:5m}
     compose-down-timeout: ${ORANGE_ENV_COMPOSE_DOWN_TIMEOUT:1m}
-  concurrency:
-    # Per-role parallelism caps for chat-as-executor claims. A missing key
-    # means unlimited. Approximate (no transactional lock around the count),
-    # which is fine as a throttle. Example:
-    #   per-role:
-    #     tester: 3
-    #     dev: 10
-    per-role: {}
   routing:
     # Spec §10. Tiers cheapest → most capable; escalation moves one step right.
     tier-order: [small, medium, large]
@@ -110,9 +67,6 @@ orange:
       - { role: implementer, difficulty: L, tier: large,  effort: high }
       - { role: implementer, difficulty: M, tier: medium, effort: high }
       - { role: implementer, difficulty: S, tier: medium, effort: medium }
-      # v1 pipeline roles, removed with the Temporal pipeline in PR 2.
-      - { role: tester,      tier: medium, effort: medium }
-      - { role: triage,      tier: medium, effort: medium }
     risk:
       min-tier: large
       min-effort: high
@@ -145,7 +99,3 @@ orange:
       claude-opus-5-5:   { input: 4.00,  output: 20.00, cache-read: 0.20, cache-write: 5.00 }
       claude-sonnet-5-5: { input: 2.00,  output: 10.00, cache-read: 0.20, cache-write: 2.50 }
       claude-haiku-5-5:  { input: 0.10,  output: 0.50,  cache-read: 0.01, cache-write: 0.125 }
-
-gg:
-  jte:
-    development-mode: true

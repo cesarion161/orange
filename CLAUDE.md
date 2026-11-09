@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository layout
 
-- **`orange/`** — Java 27 / Spring Boot 4 orchestrator. Owns persistence (Postgres + Flyway + jOOQ), workflow state (Temporal, until PR 2 of the v2 plan replaces it), GitHub webhooks, and the agent runs themselves: it starts Claude Code (`claude -p`) directly, one process per agent run.
+- **`orange/`** — Java 27 / Spring Boot 4 orchestrator. Owns persistence (Postgres + Flyway + jOOQ), task state, GitHub webhooks, and the agent runs themselves: it starts Claude Code (`claude -p`) directly, one process per agent run.
 - **`orange-mcp/`** — Python stdio MCP shim the Claude Code plugin uses to call orange's REST API.
 - **`plugin/`** — the Claude Code plugin (skills, slash commands).
 - **`docs/superpowers/`** — the v2 design spec and per-PR implementation plans.
@@ -21,11 +21,11 @@ Inside `orange/src/main/java/com/ai/orange/`:
 Run from `orange/`:
 - **Run app**: `./gradlew bootRun` — automatically loads `orange/.env` into the process env (see `parseDotEnv()` in `build.gradle.kts`). Copy `orange/.env.example` to start.
 - **jOOQ codegen**: runs automatically before `compileJava` via the `nu.studer.jooq` plugin. The `generateJooq` task spins up an embedded Postgres 18 (no Docker needed), runs all Flyway migrations against it, then generates Java sources under `build/generated/sources/jooq/main/java` in package `com.ai.orange.db.jooq`. To regenerate after editing a migration, just `./gradlew generateJooq`.
-- **All tests**: `./gradlew test` — JUnit 5 + Testcontainers (Postgres 18). The Spring context still connects to a Temporal server on `localhost:7233`, so run `docker compose up -d postgres temporal` first (until PR 2 removes Temporal).
+- **All tests**: `./gradlew test` — JUnit 5 + Testcontainers (Postgres 18). Needs a running Docker daemon and nothing else.
 - **Live tests** (tagged `live`, excluded from `test`): `./gradlew liveTest`. `ClaudeCliContractLiveIT` runs the installed `claude` with orange's full command line and an invalid token (no secret, no model call) — rerun it after Claude Code updates itself; `SubscriptionSmokeLiveIT` makes one tool-less Haiku call on the Max plan (needs `CLAUDE_CODE_OAUTH_TOKEN`); `LiteLlmGatewayLiveIT` exercises the virtual-key lifecycle against a running LiteLLM (needs `LITELLM_MASTER_KEY`), with no model calls.
 - **Single test class**: `./gradlew test --tests com.ai.orange.webhook.GithubWebhookHmacFilterTest`
 - **Build**: `./gradlew build`
-- **Local infra (Postgres + Temporal + Grafana LGTM)**: `docker compose up -d`. Spring Boot's `spring-boot-docker-compose` dev dependency also brings these up when running `bootRun` with the `dev` profile.
+- **Local infra (Postgres + Grafana LGTM)**: `docker compose up -d`. Spring Boot's `spring-boot-docker-compose` dev dependency also brings these up when running `bootRun` with the `dev` profile.
 - **LiteLLM gateway** (only for routing tiers with `auth: gateway`): `docker compose --profile gateway up -d litellm`. It refuses to start without `LITELLM_MASTER_KEY`; `litellm-db-init` creates its database on existing Postgres volumes.
 - **Run with Testcontainers-managed Postgres instead of compose**: `./gradlew bootTestRun` using `TestOrangeApplication`.
 - **Forward GitHub webhooks to localhost during dev**: `./scripts/forward-webhooks.sh` (requires `gh` + `gh-webhook` extension; reads `GITHUB_ORG` xor `GITHUB_REPO` and `GITHUB_WEBHOOK_SECRET` from `.env`).
@@ -48,7 +48,7 @@ Docker socket note: tests on macOS auto-detect `~/.docker/run/docker.sock` and s
 
 Isolation: in this process mode, Claude Code confines its file tools to the worktree but its Bash tool is not confined. Process mode is for local development; container isolation is the boundary for unattended runs (v2 plan, spec §16).
 
-Tests never call a model: `orange/src/test/resources/fake-claude/FakeClaude.java` is a single-file program that speaks real stream-json, launched via `com.ai.orange.harness.FakeClaude.command()` / `FakeClaude.register(...)`. Scenarios are picked by `[[fake:<name>]]` markers in the prompt or the agent's system prompt (`error`, `hang`, `expensive`, `plan-limit`, `auth-failed`, `tester-pass`, `tester-fail`, `review-fail`, `plan`).
+Tests never call a model: `orange/src/test/resources/fake-claude/FakeClaude.java` is a single-file program that speaks real stream-json, launched via `com.ai.orange.harness.FakeClaude.command()` / `FakeClaude.register(...)`. Scenarios are picked by `[[fake:<name>]]` markers in the prompt or the agent's system prompt (`error`, `hang`, `expensive`, `plan-limit`, `auth-failed`, `leak-env`, `plan`).
 
 ### Orange data model
 Flyway migrations live under `orange/src/main/resources/db/migration/` (immutable once merged; add `V<n+1>__…` files):
@@ -64,8 +64,6 @@ When adding or modifying tables, follow the existing patterns: `uuidv7()` PKs, `
 
 ### Spring config
 - App config lives in `orange/src/main/resources/application.yaml`. Notable knobs: `orange.routing` (tiers, rules, risk paths, escalation), `orange.harness` (run root, Claude Code command, env allowlist), `orange.billing` (subscription token, prices), `orange.gateway` (LiteLLM URL and master key), `orange.worktrees.root`, `orange.github.webhook-secret`. All take env-var overrides.
-- Temporal target defaults to `local` and discovers workers from package `com.ai.orange.workflow`.
-- JTE templates live in `orange/src/main/jte/`; precompiled in prod, hot-reloaded in dev (`gg.jte.development-mode=true`).
 
 ## Environment / secrets
 

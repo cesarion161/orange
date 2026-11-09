@@ -31,8 +31,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 
 /**
  * Covers the Phase 8 additions to the task REST surface: list with filter,
@@ -52,11 +50,6 @@ class TaskApiIT {
     @Autowired TaskRepository taskRepo;
     @Autowired TaskEventRepository eventRepo;
     @Autowired DSLContext dsl;
-
-    @DynamicPropertySource
-    static void disableAutoStart(DynamicPropertyRegistry r) {
-        r.add("orange.workflow.auto-start", () -> "false");
-    }
 
     @BeforeEach
     void clean() {

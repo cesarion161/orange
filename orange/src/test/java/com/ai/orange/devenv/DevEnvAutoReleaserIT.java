@@ -56,7 +56,6 @@ class DevEnvAutoReleaserIT {
 
     @DynamicPropertySource
     static void disableAutoStartAndScheduler(DynamicPropertyRegistry r) {
-        r.add("orange.workflow.auto-start", () -> "false");
         // Push the scheduled tick far out — the test triggers sweepOnce()
         // synchronously to assert behavior without racing the scheduler.
         r.add("orange.envs.auto-release-initial-delay", () -> "1h");

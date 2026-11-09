@@ -30,8 +30,6 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 
 /**
  * Drives {@link GithubPrService} end-to-end against a stubbed
@@ -53,11 +51,6 @@ class GithubPrServiceIT {
     @Autowired TaskRepository taskRepo;
     @Autowired DSLContext dsl;
 
-    @DynamicPropertySource
-    static void disableAutoStart(DynamicPropertyRegistry r) {
-        r.add("orange.workflow.auto-start", () -> "false");
-    }
-
     static boolean isGitAvailable() {
         try {
             return new ProcessBuilder("git", "--version").start().waitFor() == 0;
@@ -74,7 +67,7 @@ class GithubPrServiceIT {
     }
 
     @Test
-    void push_conflict_enqueues_a_triage_task_then_rethrows() throws Exception {
+    void push_conflict_rethrows_without_creating_tasks() throws Exception {
         Path bareRemote = temp.resolve("conflict-remote.git");
         Path worktreeA = temp.resolve("wtA");
         Path worktreeB = temp.resolve("wtB");
@@ -105,8 +98,8 @@ class GithubPrServiceIT {
                 prService.openPrForTask(task.id(), worktreeB))
                 .isInstanceOf(GithubPrService.PushConflictException.class);
 
-        int triageCount = dsl.fetchCount(TASKS, TASKS.ROLE.eq("triage"));
-        assertThat(triageCount).isEqualTo(1);
+        // No triage side task any more: the caller decides what a rejected push means.
+        assertThat(dsl.fetchCount(TASKS)).isEqualTo(1);
     }
 
     private void setupWorktree(Path wt, Path bareRemote) throws Exception {

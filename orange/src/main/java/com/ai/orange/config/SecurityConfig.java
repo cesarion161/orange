@@ -27,16 +27,13 @@ public class SecurityConfig {
                         .requestMatchers("/actuator/health", "/actuator/info", "/actuator/prometheus").permitAll()
                         .requestMatchers("/webhooks/github").permitAll()  // HMAC filter authenticates instead
                         .requestMatchers("/error").permitAll()             // Tomcat forwards here on sendError(); must not denyAll
-                        .requestMatchers("/", "/dashboard/**", "/htmx/**", "/static/**", "/webjars/**").permitAll()
                         .requestMatchers("/tasks", "/tasks/**").permitAll()  // operator-driven; auth lands later
                         .requestMatchers("/plans", "/plans/**").permitAll()  // operator-driven; auth lands later
                         .requestMatchers("/dispatch", "/dispatch/**").permitAll()  // operator-driven; auth lands later
-                        .requestMatchers("/claims", "/claims/**").permitAll()  // chat-as-executor; auth lands later
                         .requestMatchers("/events/**").permitAll()           // live narration feed
                         .requestMatchers("/dev-envs", "/dev-envs/**").permitAll()
-                        .requestMatchers("/concurrency").permitAll()
                         .requestMatchers("/health/**").permitAll()
-                        .requestMatchers("/api/status").permitAll()  // dev_qa pipeline smoke check
+                        .requestMatchers("/api/status").permitAll()  // status smoke check
                         .requestMatchers("/api/ready").permitAll()  // smoke / readiness probe
                         .anyRequest().denyAll()
                 )

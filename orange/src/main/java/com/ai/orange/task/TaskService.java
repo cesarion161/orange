@@ -159,31 +159,6 @@ public class TaskService {
         return created;
     }
 
-    /**
-     * Create a single-task triage workload. Used by the post-merge verifier
-     * when a regression is suspected — the new task lands on the {@code ready}
-     * queue and a triage agent picks it up via the normal claim flow.
-     *
-     * @param kind         "regression" or "conflict"
-     * @param relatedTaskIds tasks whose failure context the triage should examine
-     * @param description  free-text body of the prompt the triage agent receives
-     */
-    @Transactional
-    public Task createTriageTask(String kind, List<UUID> relatedTaskIds, String description) {
-        Map<String, Object> meta = new HashMap<>();
-        meta.put("triage_kind", kind);
-        meta.put("related_task_ids", relatedTaskIds.stream().map(UUID::toString).toList());
-        TaskDef def = new TaskDef(
-                "triage-" + UUID.randomUUID(),
-                "Triage: " + kind,
-                description,
-                "triage",
-                "dev_only",     // triage doesn't need its own review/test gate
-                10,             // higher priority so it jumps the queue
-                asJsonb(meta));
-        return createGraph(List.of(def), List.of()).get(0);
-    }
-
     private Map<String, Object> parseMetadata(JSONB meta) {
         if (meta == null) return new HashMap<>();
         try {

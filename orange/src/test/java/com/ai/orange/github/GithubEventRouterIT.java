@@ -21,8 +21,6 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 
 /**
  * Verifies {@link GithubEventRouter} translates incoming webhook payloads into
@@ -36,11 +34,6 @@ class GithubEventRouterIT {
     @Autowired TaskRepository taskRepo;
     @Autowired TaskService taskService;
     @Autowired DSLContext dsl;
-
-    @DynamicPropertySource
-    static void disableAutoStart(DynamicPropertyRegistry r) {
-        r.add("orange.workflow.auto-start", () -> "false");
-    }
 
     @BeforeEach
     void clean() {

@@ -66,19 +66,4 @@ class TaskReopenIT {
         assertThat(ok).isFalse();
         assertThat(repo.findById(id).orElseThrow().status()).isEqualTo(TaskStatus.CANCELLED);
     }
-
-    @Test
-    void createTriageTask_lands_on_ready_with_metadata() {
-        UUID failed = service.createGraph(
-                List.of(new TaskDef("f", "Failed thing", null, "dev", null, null, null)),
-                List.of()).get(0).id();
-
-        Task triage = service.createTriageTask("regression", List.of(failed),
-                "Build broke after merging task " + failed);
-        assertThat(triage.role()).isEqualTo("triage");
-        assertThat(triage.status()).isEqualTo(TaskStatus.READY);  // dep-free → ready
-        assertThat(triage.priority()).isEqualTo(10);
-        assertThat(triage.metadata().data())
-                .contains("triage_kind").contains("regression").contains("related_task_ids");
-    }
 }

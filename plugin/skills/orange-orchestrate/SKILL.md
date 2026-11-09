@@ -1,17 +1,16 @@
 ---
-description: Drive the orange-ai multi-agent feature factory end-to-end from chat — plan a feature into a task DAG, kick off parallel agents, narrate progress live. Triggers on intents like "build X", "implement feature Y", "ship Z", "let's plan and execute this project". Skips for single-file edits, typo fixes, one-off scripts.
+description: Drive the orange-ai multi-agent feature factory end-to-end from chat — plan a feature into a task DAG, dispatch it, narrate progress live. Triggers on intents like "build X", "implement feature Y", "ship Z", "let's plan and execute this project". Skips for single-file edits, typo fixes, one-off scripts.
 ---
 
 # orange-orchestrate
 
-You are the **chat orchestrator** in front of the orange-ai backend. Your job is to turn a user's product idea into a parallel multi-agent execution, supervised by the user, without dropping them into raw MCP calls.
+You are the **chat orchestrator** in front of the orange-ai coordinator. Your job is to turn a user's product idea into a reviewed task DAG and then watch the coordinator execute it. The coordinator runs every agent itself: for each ready task it starts an implement run, pushes the branch and opens the PR, then starts a review run on it. You plan, dispatch, watch and steer. You do not execute tasks in this chat.
 
 ## When to invoke this skill
 
 **Use it** when the user asks for:
 - "build / implement / ship a feature" that touches > 1 file or > 1 area
 - multi-day work with deliberate planning (architecture, dependencies)
-- anything where you'd want review or testing gates
 
 **Do NOT use it** for:
 - single-file edits, typo fixes, one-off scripts
@@ -25,45 +24,35 @@ When in doubt: ask the user "this looks like a multi-task project — should I p
 The full step-by-step playbook lives in `journey.md` (read it the first time you run this skill in a session). One-line skeleton:
 
 ```
-intent → server-check → follow-ups → plan → user review → dispatch → execute → narrate → post-merge
+intent → server-check → follow-ups → plan → user review → dispatch → narrate → merge
 ```
 
 Planning and dispatch are **independent**: planning produces a reviewable DAG and starts nothing; dispatch is a separate step that runs an approved plan. The review gate sits between them.
 
 1. **server-check** — confirm `http://localhost:8080/actuator/health` returns OK. If not, run `cd orange && ./gradlew bootRun` in the background and wait for "Started OrangeApplication".
-2. **follow-ups** — `AskUserQuestion` for: parallel-agents cap, review mode (none / agent / user-only / both), test mode (none / agent), gate order (review-before-test vs after), auth-required.
-3. **plan** — by default, you ARE the planner. Create a `planner` task with `orange_create_task`, claim it with `orange_claim_next_task(role=planner)`, draft `plan.json` + `architecture.md` in this chat, save via `orange_submit_plan` (plan-only — creates no tasks; returns a `planId`).
-4. **user review** — print the plan DAG + path; ask the user to open it and either approve or describe changes. Nothing is running yet. On change request, write a revised planner prompt and start fresh (planner is stateless — never carry plan state between iterations).
-5. **dispatch** — once approved, run the plan with `orange_dispatch(plan_id=…, default_pipeline=…)`. The default pipeline is derived from the follow-up answers (see `journey.md` for the mapping). This inserts the tasks and marks the roots ready — agents start here.
-6. **execute** — once dispatched, the tasks are in the DB and ready. If you're acting as the worker pool, claim tasks via `orange_claim_next_task(role=dev|tester|…)` and execute each one in this chat. If headless workers are running, just monitor.
-7. **narrate** — every ~30s while work is in flight, call `orange_status_live` for one-shot aggregate progress; emit one-line status updates per active task. Call `orange_envs` to surface env occupancy when a test stage is queued.
+2. **follow-ups** — `AskUserQuestion` only for what the request leaves open (scope, constraints, auth needs).
+3. **plan** — call `orange_plan(description)`. The coordinator runs the planner agent and returns a plan DAG plus a `planId`; nothing runs yet.
+4. **user review** — print the plan DAG + path; ask the user to approve or describe changes. On a change request, call `orange_plan` again with a prompt that includes the prior plan plus the requested delta (the planner is stateless).
+5. **dispatch** — once approved, `orange_dispatch(plan_id=…)`. This inserts the tasks and marks the roots ready; the coordinator starts implement runs for them.
+6. **narrate** — every ~30s while work is in flight, call `orange_status_live` for one-shot aggregate progress and emit one-line status updates per active task. Each task opens a PR and gets an agent review comment on it; the user merges, and merging is what unblocks dependent tasks.
 
 ## Critical rules
 
-- **Don't bypass the chat-as-executor contract.** When you claim a task, you MUST heartbeat every ~30s (`orange_heartbeat`) or the lease expires and the reaper bounces the task. On completion always call `orange_complete_task` / `orange_fail_task` / `orange_release_claim` — never just drop the claim.
-- **Honor `cwd` from the claim.** Each task hands you a worktree path; all edits go there. If you need to read repo state outside the worktree, do it before claiming, not during.
-- **Per-task pipeline lives in the plan.** When the user says "test everything" / "review only the auth tasks", you express that as `pipeline` per task in `plan.json`, not as a global flag. The dispatch endpoint will reject typos (422) — surface the error verbatim.
-- **Plan, then dispatch — never fused.** Saving/returning a plan creates no tasks; `orange_dispatch` is what starts work. Don't dispatch until the user has approved (or explicitly waived) review.
-- **Stateless planner.** If the user wants plan changes, build a new prompt that *includes the prior plan plus the requested delta* and submit again. Don't try to amend in place.
-- **Cancel hygiene.** If the user cancels mid-execution, call `orange_cancel(task_id)` for the relevant tasks. That flips `cancel_requested=true` on any active claim; your next heartbeat will see it and you should call `orange_release_claim`.
+- **Plan, then dispatch — never fused.** Returning a plan creates no tasks; `orange_dispatch` is what starts work. Don't dispatch until the user has approved (or explicitly waived) review.
+- **The user merges.** orange never merges a PR. A task is done when its PR is merged on GitHub.
+- **Cancel hygiene.** If the user cancels mid-execution, call `orange_cancel(task_id)` for the relevant tasks; it also kills the task's running agent.
 
 ## Tools you'll use (all via the orange MCP)
 
 | When | Tool |
 |------|------|
 | Check or start orange | Bash `curl localhost:8080/actuator/health` or `./gradlew bootRun` |
-| Create planner task | `orange_create_task(title, role="planner")` |
-| Become a worker | `orange_claim_next_task(role, worker_id)` |
-| Heartbeat | `orange_heartbeat(claim_token)` — every ~30s while holding a claim |
-| Done | `orange_complete_task(claim_token, summary, artifacts)` |
-| Save plan (plan-only) | `orange_submit_plan(claim_token, plan, architecture_md)` |
-| Run a plan | `orange_dispatch(plan_id \| plan, default_pipeline?)` |
-| Read upstream outputs | `orange_dep_artifacts(task_id)` |
-| Status during exec | `orange_status_live(role?, per_task_limit?)`, `orange_envs()` |
-| Why is a claim refused | `orange_concurrency()` — at-cap roles surface here |
-| Drill into one task | `orange_tail(task_id, since)` |
-| Triage (reopen a failed task) | `orange_reopen_task(task_id, reason)` — FAILED/TEST_DONE → READY only |
-| User cancel | `orange_cancel(task_id, reason)` |
-| Recover after restart | `orange_my_active_claims(worker_id)` |
+| Plan a feature (plan-only) | `orange_plan(description)` |
+| Run a plan | `orange_dispatch(plan_id \| plan)` |
+| One-off task | `orange_create_task(title, description, role?)` |
+| Status during exec | `orange_status_live(role?, per_task_limit?)`, `orange_health()` |
+| Drill into one task | `orange_task(task_id)`, `orange_tail(task_id, since)` |
+| Retry a failed task | `orange_reopen_task(task_id, reason)` |
+| User cancel | `orange_cancel(task_id)` |
 
-Reference: `journey.md` for the full playbook, plan-template for the planner prompt shape, and `~/.claude/.../memory/orchestrator_design.md` for why each decision was made.
+Reference: `journey.md` for the full playbook, `plan-template.md` for the plan shape.

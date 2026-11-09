@@ -15,7 +15,7 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 import org.springframework.test.context.DynamicPropertyRegistry;
 
-/** Shared wiring for the AgentRunService ITs: fake Claude Code, a private run root, no workflow auto-start. */
+/** Shared wiring for the AgentRunService ITs: fake Claude Code, a private run root. */
 final class AgentRunTestSupport {
 
     private AgentRunTestSupport() {}

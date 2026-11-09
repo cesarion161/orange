@@ -5,7 +5,6 @@ import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskEventRepository;
 import com.ai.orange.task.TaskRepository;
 import com.ai.orange.task.TaskStatus;
-import com.ai.orange.workflow.EnvInfo;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import java.io.IOException;
 import java.time.Duration;

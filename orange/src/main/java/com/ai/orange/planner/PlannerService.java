@@ -55,43 +55,6 @@ public class PlannerService {
         Files.createDirectories(Path.of(props.outputRoot()).toAbsolutePath());
     }
 
-    /**
-     * Persist a {@link PlanJson} produced by a chat-driven planner (one that did
-     * its thinking interactively rather than in a headless planner run):
-     * write the artifact files and validate the DAG. Does <b>not</b> create
-     * tasks — dispatch is a separate step.
-     *
-     * <p>Used by the chat-as-planner MCP surface: a planner chat session drafts
-     * the graph, then saves it through {@code orange_submit_plan}; a later
-     * {@code orange_dispatch} runs it.
-     */
-    public PlanResult savePlan(PlanJson parsed, String architectureMd) throws IOException {
-        if (parsed == null) throw new IllegalArgumentException("plan required");
-
-        UUID planId = UUID.randomUUID();
-        Path outputDir = Path.of(props.outputRoot()).toAbsolutePath().resolve(planId.toString());
-
-        if (parsed.tasks() == null || parsed.tasks().isEmpty()) {
-            return new PlanResult(planId, outputDir, "empty_plan", parsed, null, null);
-        }
-
-        // Validate BEFORE writing anything so a malformed plan leaves no stale
-        // artifacts on disk (and the caller can complete/fail the claim cleanly).
-        planGraph.validateAcyclic(parsed);
-
-        Files.createDirectories(outputDir);
-        Path planPath = outputDir.resolve("plan.json");
-        Files.writeString(planPath, Json.mapper().writerWithDefaultPrettyPrinter().writeValueAsString(parsed));
-        Path archPath = null;
-        if (architectureMd != null && !architectureMd.isBlank()) {
-            archPath = outputDir.resolve("architecture.md");
-            Files.writeString(archPath, architectureMd);
-        }
-
-        log.info("chat-planner {} saved {} tasks (not dispatched)", planId, parsed.tasks().size());
-        return new PlanResult(planId, outputDir, "success", parsed, archPath, planPath);
-    }
-
     public PlanResult plan(String description) throws IOException, InterruptedException {
         if (description == null || description.isBlank()) {
             throw new IllegalArgumentException("description required");

@@ -1,7 +1,5 @@
 package com.ai.orange.api;
 
-import com.ai.orange.concurrency.ConcurrencyGate;
-import com.ai.orange.concurrency.ConcurrencyGate.RoleUsage;
 import com.ai.orange.devenv.DevEnv;
 import com.ai.orange.devenv.DevEnvRepository;
 import com.ai.orange.devenv.DevEnvStatus;
@@ -38,29 +36,23 @@ public class StatusController {
     private final TaskRepository tasks;
     private final TaskEventRepository events;
     private final DevEnvRepository devEnvs;
-    private final ConcurrencyGate concurrency;
     private final org.jooq.DSLContext dsl;
 
     public StatusController(TaskRepository tasks,
                             TaskEventRepository events,
                             DevEnvRepository devEnvs,
-                            ConcurrencyGate concurrency,
                             org.jooq.DSLContext dsl) {
         this.tasks = tasks;
         this.events = events;
         this.devEnvs = devEnvs;
-        this.concurrency = concurrency;
         this.dsl = dsl;
     }
 
     @GetMapping("/events/live")
     public ResponseEntity<List<LiveTaskResponse>> live(
             @RequestParam(required = false) String role,
-            @RequestParam(required = false) String pipeline,
             @RequestParam(defaultValue = "3") int perTaskLimit) {
-        List<Task> active = tasks.findInProgress(role).stream()
-                .filter(t -> pipeline == null || pipeline.isBlank() || pipeline.equals(t.pipeline()))
-                .toList();
+        List<Task> active = tasks.findInProgress(role);
         int safeLimit = Math.min(Math.max(perTaskLimit, 1), 50);
         List<LiveTaskResponse> rows = active.stream()
                 .map(t -> {
@@ -72,9 +64,8 @@ public class StatusController {
     }
 
     /**
-     * One-shot aggregate health view: queue depths + env occupancy + per-role
-     * concurrency usage. Used by the chat orchestrator skill to print a system
-     * health one-liner without three separate calls.
+     * One-shot aggregate health view: queue depths, env occupancy and spend. Used by the chat
+     * orchestrator skill to print a system health one-liner without three separate calls.
      */
     @GetMapping("/health/aggregate")
     public ResponseEntity<Map<String, Object>> healthAggregate() {
@@ -95,9 +86,6 @@ public class StatusController {
                 "leased", leased,
                 "free", envs.size() - leased));
 
-        // Per-role concurrency usage
-        body.put("concurrency", concurrency.usage().values());
-
         // Aggregate spend from agent_runs.cost_usd
         java.math.BigDecimal allTime = (java.math.BigDecimal) dsl.fetchValue(
                 "SELECT COALESCE(SUM(cost_usd), 0)::numeric FROM agent_runs");
@@ -117,10 +105,5 @@ public class StatusController {
         return ResponseEntity.ok(devEnvs.findAll().stream()
                 .map(DevEnvResponse::of)
                 .toList());
-    }
-
-    @GetMapping("/concurrency")
-    public ResponseEntity<List<RoleUsage>> concurrency() {
-        return ResponseEntity.ok(concurrency.usage().values().stream().toList());
     }
 }

@@ -59,7 +59,6 @@ class DispatchApiIT {
     @DynamicPropertySource
     static void registerProps(DynamicPropertyRegistry r) {
         r.add("orange.planner.output-root", () -> plannerOutputRoot.toString());
-        r.add("orange.workflow.auto-start", () -> "false");
     }
 
     @BeforeEach
@@ -86,11 +85,13 @@ class DispatchApiIT {
 
     @Test
     void dispatch_by_saved_plan_id_creates_tasks_and_returns_201() throws Exception {
-        PlanJson plan = MAPPER.convertValue(twoTaskPlan(), PlanJson.class);
-        PlannerService.PlanResult saved = planner.savePlan(plan, null);
+        // A planner run leaves plan.json under <output-root>/<planId>/.
+        UUID planId = UUID.randomUUID();
+        Path dir = Files.createDirectories(plannerOutputRoot.resolve(planId.toString()));
+        Files.writeString(dir.resolve("plan.json"), MAPPER.writeValueAsString(twoTaskPlan()));
         assertThat(dsl.fetchCount(TASKS)).isZero();
 
-        HttpResponse<String> res = postJson("/dispatch", Map.of("planId", saved.planId().toString()));
+        HttpResponse<String> res = postJson("/dispatch", Map.of("planId", planId.toString()));
         assertThat(res.statusCode()).isEqualTo(201);
         assertThat(MAPPER.readTree(res.body()).get("tasks")).hasSize(2);
         assertThat(dsl.fetchCount(TASKS)).isEqualTo(2);
@@ -115,24 +116,13 @@ class DispatchApiIT {
     }
 
     @Test
-    void dispatch_inline_plan_with_unknown_pipeline_returns_422() throws Exception {
-        Map<String, Object> plan = Map.of(
-                "tasks", List.of(Map.of("key", "a", "title", "x", "role", "dev", "pipeline", "bogus_pipeline")),
-                "edges", List.of());
-        HttpResponse<String> res = postJson("/dispatch", Map.of("plan", plan));
-        assertThat(res.statusCode()).isEqualTo(422);
-        assertThat(MAPPER.readTree(res.body()).get("reason").asText()).contains("bogus_pipeline");
-        assertThat(dsl.fetchCount(TASKS)).isZero();
-    }
-
-    @Test
     void dispatch_inline_cyclic_plan_returns_422() throws Exception {
         // DagCycleException (a RuntimeException, not IllegalArgumentException) must be
         // caught by the controller and mapped to 422 — exercise that handler.
         Map<String, Object> plan = Map.of(
                 "tasks", List.of(
-                        Map.of("key", "a", "title", "A", "role", "dev", "pipeline", "dev_only"),
-                        Map.of("key", "b", "title", "B", "role", "dev", "pipeline", "dev_only")),
+                        Map.of("key", "a", "title", "A", "role", "dev"),
+                        Map.of("key", "b", "title", "B", "role", "dev")),
                 "edges", List.of(
                         Map.of("from", "a", "to", "b"),
                         Map.of("from", "b", "to", "a")));
@@ -152,8 +142,8 @@ class DispatchApiIT {
     private static Map<String, Object> twoTaskPlan() {
         return Map.of(
                 "tasks", List.of(
-                        Map.of("key", "root", "title", "Root task", "role", "dev", "pipeline", "dev_only"),
-                        Map.of("key", "leaf", "title", "Leaf task", "role", "dev", "pipeline", "dev_only")),
+                        Map.of("key", "root", "title", "Root task", "role", "dev"),
+                        Map.of("key", "leaf", "title", "Leaf task", "role", "dev")),
                 "edges", List.of(Map.of("from", "root", "to", "leaf")));
     }
 

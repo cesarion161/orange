@@ -77,7 +77,6 @@ class WorktreeDisposerIT {
 
     @DynamicPropertySource
     static void wire(DynamicPropertyRegistry r) {
-        r.add("orange.workflow.auto-start", () -> "false");
         r.add("orange.worktrees.base-repo", () -> baseRepo.toString());
         r.add("orange.worktrees.root", () -> worktreesRoot.toString());
         // Long initial delay so the @Scheduled run doesn't race the test.

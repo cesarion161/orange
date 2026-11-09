@@ -81,15 +81,6 @@ public class FakeClaude {
                 assistant("msg_1", model, "Reading the whole repository", 5_000_000, 100);
                 sleepForever();
             }
-            case "tester-pass" -> {
-                Files.writeString(cwd.resolve("report.md"), "VERDICT: PASS\n- ran the test suite: all green\n");
-                finishOk(model, session, "Tests pass.");
-            }
-            case "tester-fail" -> {
-                Files.writeString(cwd.resolve("report.md"), "VERDICT: FAIL\n- SnakeTest.moves failed: expected 2 but was 1\n");
-                finishOk(model, session, "Tests fail.");
-            }
-            case "review-fail" -> finishOk(model, session, "Found a missing null check in Board.java.\nVERDICT: FAIL");
             case "leak-env" -> {
                 // An agent that runs `env` while debugging: its credentials show up in a tool
                 // result, in its own text, in the final result and on stderr.

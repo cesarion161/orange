@@ -1,6 +1,5 @@
 package com.ai.orange.github;
 
-import com.ai.orange.postmerge.PostMergeVerifier;
 import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskRepository;
 import com.ai.orange.task.TaskStatus;
@@ -34,12 +33,10 @@ public class GithubEventRouter {
     private static final Logger log = LoggerFactory.getLogger(GithubEventRouter.class);
 
     private final TaskRepository tasks;
-    private final PostMergeVerifier postMergeVerifier;
     private final ObjectMapper mapper = new ObjectMapper();
 
-    public GithubEventRouter(TaskRepository tasks, PostMergeVerifier postMergeVerifier) {
+    public GithubEventRouter(TaskRepository tasks) {
         this.tasks = tasks;
-        this.postMergeVerifier = postMergeVerifier;
     }
 
     /**
@@ -85,16 +82,6 @@ public class GithubEventRouter {
         boolean ok = tasks.transitionStatus(task.id(), TaskStatus.PR_OPEN, TaskStatus.DEV_READY);
         if (ok) {
             log.info("task {} transitioned PR_OPEN → DEV_READY on PR merge", task.id());
-            // Build-on-main verification runs async so the webhook returns
-            // immediately. Outcome lands on task_events + tasks.metadata.
-            UUID taskId = task.id();
-            Thread.ofVirtual().name("post-merge-verify-" + taskId).start(() -> {
-                try {
-                    postMergeVerifier.verifyAfterMerge(taskId);
-                } catch (Exception e) {
-                    log.error("post-merge verify for task {} threw: {}", taskId, e.getMessage());
-                }
-            });
         } else {
             log.warn("task {} could not be transitioned (raced)", task.id());
         }

@@ -9,13 +9,11 @@ import java.util.UUID;
  * {@code planId} referencing a plan a planner already saved to disk. The
  * controller enforces the xor and maps a violation to 422.
  *
- * <p>{@code defaultPipeline} applies to any task without an explicit pipeline;
- * {@code architectureMd} (inline plans only) is persisted alongside the plan
+ * <p>{@code architectureMd} (inline plans only) is persisted alongside the plan
  * for auditability.
  */
 public record DispatchRequest(
         PlanJson plan,
         UUID planId,
-        String architectureMd,
-        String defaultPipeline) {
+        String architectureMd) {
 }
