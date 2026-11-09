@@ -1,5 +1,7 @@
 package com.ai.orange.api;
 
+import com.ai.orange.evidence.EvidenceRepository;
+import com.ai.orange.run.RunRepository;
 import com.ai.orange.run.WorkerRunner;
 import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskDef;
@@ -29,15 +31,37 @@ public class TaskController {
     private final TaskRepository taskRepo;
     private final TaskEventRepository eventRepo;
     private final WorkerRunner runner;
+    private final RunRepository runs;
+    private final EvidenceRepository evidence;
 
     public TaskController(TaskService service,
                           TaskRepository taskRepo,
                           TaskEventRepository eventRepo,
-                          WorkerRunner runner) {
+                          WorkerRunner runner,
+                          RunRepository runs,
+                          EvidenceRepository evidence) {
         this.service = service;
         this.taskRepo = taskRepo;
         this.eventRepo = eventRepo;
         this.runner = runner;
+        this.runs = runs;
+        this.evidence = evidence;
+    }
+
+    /** The task's runs, newest first. */
+    @GetMapping("/{id}/runs")
+    public ResponseEntity<List<RunResponse>> runs(@PathVariable UUID id) {
+        if (service.findById(id).isEmpty()) return ResponseEntity.notFound().build();
+        List<RunResponse> rows = new java.util.ArrayList<>(runs.findByTask(id).stream().map(RunResponse::of).toList());
+        java.util.Collections.reverse(rows);
+        return ResponseEntity.ok(rows);
+    }
+
+    /** Everything orange checked on the task's heads, newest first. */
+    @GetMapping("/{id}/evidence")
+    public ResponseEntity<List<EvidenceResponse>> evidence(@PathVariable UUID id) {
+        if (service.findById(id).isEmpty()) return ResponseEntity.notFound().build();
+        return ResponseEntity.ok(evidence.findByTask(id).stream().map(EvidenceResponse::of).toList());
     }
 
     @PostMapping
@@ -137,10 +161,15 @@ public class TaskController {
             return ResponseEntity.status(409).body(TaskResponse.of(task));
         }
 
-        // Kill the task's running Claude Code process, if any.
+        // Queued runs never start; a running agent is killed and its run ends cancelled.
+        runs.cancelQueued(id);
         runner.cancel(id);
 
-        taskRepo.transitionStatus(id, task.status(), TaskStatus.CANCELLED);
+        // A run finishing at this moment may move the task first; cancel from wherever it is now.
+        for (int attempt = 0; attempt < 5 && !task.status().isTerminal(); attempt++) {
+            if (taskRepo.transitionStatus(id, task.status(), TaskStatus.CANCELLED)) break;
+            task = service.findById(id).orElseThrow();
+        }
         Task updated = service.findById(id).orElseThrow();
         return ResponseEntity.ok(TaskResponse.of(updated));
     }

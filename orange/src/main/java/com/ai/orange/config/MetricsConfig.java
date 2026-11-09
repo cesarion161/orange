@@ -2,6 +2,10 @@ package com.ai.orange.config;
 
 import com.ai.orange.devenv.DevEnvRepository;
 import com.ai.orange.devenv.DevEnvStatus;
+import com.ai.orange.run.RunKind;
+import com.ai.orange.run.RunRepository;
+import com.ai.orange.run.RunStatus;
+import com.ai.orange.run.SchedulerPause;
 import com.ai.orange.task.TaskRepository;
 import com.ai.orange.task.TaskStatus;
 import io.micrometer.core.instrument.Gauge;
@@ -10,8 +14,8 @@ import jakarta.annotation.PostConstruct;
 import org.springframework.stereotype.Component;
 
 /**
- * Custom Prometheus gauges exposed via {@code /actuator/prometheus}: queue
- * depths, dev_env occupancy, in-flight workers by role. Each gauge is a
+ * Custom Prometheus gauges exposed via {@code /actuator/prometheus}: tasks per
+ * status, runs per kind and status, the scheduler pause, and dev_env occupancy. Each gauge is a
  * {@link Gauge} backed by a {@code Supplier<Number>} so the value is computed
  * lazily on scrape — no scheduled refresh thread, no stale cache.
  *
@@ -24,13 +28,19 @@ public class MetricsConfig {
     private final MeterRegistry registry;
     private final TaskRepository tasks;
     private final DevEnvRepository devEnvs;
+    private final RunRepository runs;
+    private final SchedulerPause pause;
 
     public MetricsConfig(MeterRegistry registry,
                          TaskRepository tasks,
-                         DevEnvRepository devEnvs) {
+                         DevEnvRepository devEnvs,
+                         RunRepository runs,
+                         SchedulerPause pause) {
         this.registry = registry;
         this.tasks = tasks;
         this.devEnvs = devEnvs;
+        this.runs = runs;
+        this.pause = pause;
     }
 
     @PostConstruct
@@ -43,6 +53,20 @@ public class MetricsConfig {
                     .description("Tasks currently in this status")
                     .register(registry);
         }
+
+        // Runs queued and running, per kind.
+        for (RunKind kind : RunKind.values()) {
+            for (RunStatus status : new RunStatus[]{RunStatus.QUEUED, RunStatus.RUNNING}) {
+                Gauge.builder("orange.runs", runs, r -> r.countByStatus(kind, status))
+                        .tag("kind", kind.dbValue())
+                        .tag("status", status.dbValue())
+                        .description("Runs currently in this status")
+                        .register(registry);
+            }
+        }
+        Gauge.builder("orange.scheduler.paused", pause, p -> p.current().isPresent() ? 1 : 0)
+                .description("1 while the scheduler is paused")
+                .register(registry);
 
         // Dev-env occupancy.
         Gauge.builder("orange.dev_envs.total", devEnvs, d -> d.findAll().size())

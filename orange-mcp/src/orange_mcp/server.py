@@ -156,10 +156,10 @@ def _tools() -> list[Tool]:
         Tool(
             name="orange_tail",
             description=(
-                "Tail recent task_events from a task's stream — assistant messages, "
-                "tool calls, hook decisions, etc. Useful for narrating what an agent "
-                "is doing right now. Returns oldest-first, after the optional `since` "
-                "event id watermark."
+                "Tail a task: its task_events (runs queued, started and finished, verification, "
+                "review gaps, needs_human, integration), oldest-first after the optional `since` "
+                "event id watermark, then the latest run's own events (assistant messages, tool "
+                "calls). Useful for narrating what an agent is doing right now."
             ),
             inputSchema={
                 "type": "object",
@@ -192,20 +192,24 @@ def _tools() -> list[Tool]:
         Tool(
             name="orange_status_live",
             description=(
-                "Aggregate 'what's happening right now' view: every running task plus its "
-                "last few events. Use this to narrate parallel agent activity in chat without "
-                "fanning out to per-task orange_tail calls. Filter by role."
+                "Aggregate 'what's happening right now' view: every running run (implement, "
+                "fix, verify, review, integrate) with its task and its last few events. Use this "
+                "to narrate parallel agent activity in chat without fanning out to per-task "
+                "orange_tail calls. Filter by role."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "role": {
                         "type": "string",
-                        "description": "Filter to tasks with this role (implementer or chore). Omit for all roles.",
+                        "description": (
+                            "Filter to runs with this role (implementer, chore, ci_fixer, reviewer, "
+                            "planner, orange). Omit for all."
+                        ),
                     },
                     "per_task_limit": {
                         "type": "integer",
-                        "description": "How many recent events to return per task. Default 3, clamped to 50.",
+                        "description": "How many recent events to return per run. Default 3, clamped to 50.",
                     },
                 },
             },
@@ -213,8 +217,8 @@ def _tools() -> list[Tool]:
         Tool(
             name="orange_health",
             description=(
-                "One-shot system health summary: queue depths by task status, env occupancy "
-                "(total/leased/free) and spend. "
+                "One-shot system health summary: tasks by status, runs queued and running, "
+                "whether the scheduler is paused (and why), env occupancy and spend. "
                 "Print this as a single status line when the user wants a 'how's it going' check."
             ),
             inputSchema={"type": "object", "properties": {}},
@@ -413,19 +417,28 @@ async def _tail(args: dict[str, Any]) -> list[TextContent]:
         r = await client.get(f"{BASE_URL}/tasks/{args['task_id']}/events", params=params)
         r.raise_for_status()
         rows = r.json()
-    if not rows:
-        return _ok("no new events", rows)
-    lines = [f"{len(rows)} event(s):"]
+        runs = await client.get(f"{BASE_URL}/tasks/{args['task_id']}/runs")
+        runs.raise_for_status()
+        run_rows = runs.json()
+        latest = run_rows[0] if run_rows else None
+        run_events: list[dict[str, Any]] = []
+        if latest:
+            ev = await client.get(f"{BASE_URL}/runs/{latest['id']}/events", params={"since": 0, "limit": 500})
+            ev.raise_for_status()
+            run_events = ev.json()[-20:]
+    lines = [f"{len(rows)} task event(s):" if rows else "no new task events"]
     for row in rows:
-        # Keep the payload preview short — full payload is in the structured part.
-        payload_preview = json.dumps(row["payload"])
-        if len(payload_preview) > 200:
-            payload_preview = payload_preview[:200] + "…"
         lines.append(
-            f"  [{row['id']}] {row['createdAt']}  {row['eventType']:18} "
-            f"by {row['actor']}: {payload_preview}"
+            f"  [{row['id']}] {row['createdAt']}  {row['eventType']:20} by {row['actor']}: {_preview(row['payload'])}"
         )
-    return _ok("\n".join(lines), rows)
+    if latest:
+        lines.append(
+            f"latest run {latest['id'][:8]}… {latest['kind']} {latest['status']}"
+            f" ({latest.get('model') or '-'}, ${latest.get('cost_usd') or 0}), last {len(run_events)} event(s):"
+        )
+        for e in run_events:
+            lines.append(f"  #{e['seq']:<4} {e['type']:12} {_preview(e['payload'])}")
+    return _ok("\n".join(lines), {"task_events": rows, "latest_run": latest, "run_events": run_events})
 
 
 async def _cancel(args: dict[str, Any]) -> list[TextContent]:
@@ -448,23 +461,20 @@ async def _status_live(args: dict[str, Any]) -> list[TextContent]:
     if args.get("role"):
         params["role"] = args["role"]
     if args.get("per_task_limit"):
-        params["perTaskLimit"] = args["per_task_limit"]
+        params["limit"] = args["per_task_limit"]
     async with httpx.AsyncClient(timeout=15.0) as client:
         r = await client.get(f"{BASE_URL}/events/live", params=params)
         r.raise_for_status()
         rows = r.json()
     if not rows:
-        return _ok("no in-flight tasks", rows)
-    lines = [f"{len(rows)} active task(s):"]
+        return _ok("no runs in flight", rows)
+    lines = [f"{len(rows)} run(s) in flight:"]
     for row in rows:
-        last = row["recentEvents"][0] if row["recentEvents"] else None
-        last_desc = (
-            f"{last['eventType']}: {json.dumps(last['payload'])[:120]}" if last else "(no events yet)"
-        )
-        lines.append(
-            f"  {row['taskId'][:8]}…  {row['role']:8}  "
-            f"{row['title'][:40]:40}  | last: {last_desc}"
-        )
+        last = row["recent"][0] if row.get("recent") else None
+        last_desc = f"{last['type']}: {_preview(last['payload'], 120)}" if last else "(no events yet)"
+        task = (row.get("task_id") or "-")[:8]
+        title = (row.get("task_title") or "(no task)")[:40]
+        lines.append(f"  {task}…  {row['kind']:11}  {title:40}  | last: {last_desc}")
     return _ok("\n".join(lines), rows)
 
 
@@ -509,10 +519,20 @@ async def _health(_args: dict[str, Any]) -> list[TextContent]:
     q = payload.get("queues", {})
     e = payload.get("envs", {})
     c = payload.get("cost", {})
+    runs = payload.get("runs", {})
+    running = sum(k.get("running", 0) for k in runs.values())
+    queued = sum(k.get("queued", 0) for k in runs.values())
+    paused = payload.get("paused")
+    pause_desc = (
+        f"PAUSED ({paused.get('reason')}{', until ' + paused['until'] if paused.get('until') else ''})"
+        if paused
+        else "scheduler running"
+    )
     line = (
-        f"queues: ready={q.get('ready', 0)} running={q.get('running', 0)} "
+        f"tasks: ready={q.get('ready', 0)} running={q.get('running', 0)} "
         f"verifying={q.get('verifying', 0)} verified={q.get('verified', 0)} "
         f"needs_human={q.get('needs_human', 0)}  |  "
+        f"runs: {running} running, {queued} queued  |  {pause_desc}  |  "
         f"envs: {e.get('leased', 0)}/{e.get('total', 0)} leased  |  "
         f"spend: ${c.get('last_24h_usd', 0)}/24h (total ${c.get('total_usd', 0)})"
     )
@@ -550,6 +570,12 @@ def _ok(human: str, structured: Any) -> list[TextContent]:
 
 def _err(msg: str) -> list[TextContent]:
     return [TextContent(type="text", text=f"ERROR: {msg}")]
+
+
+def _preview(payload: Any, limit: int = 200) -> str:
+    """A one-line preview of an event payload; the full payload is in the structured part."""
+    text = json.dumps(payload)
+    return text if len(text) <= limit else text[:limit] + "…"
 
 
 def _summarise_plan(payload: dict[str, Any]) -> str:

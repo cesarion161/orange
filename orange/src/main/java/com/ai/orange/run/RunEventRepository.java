@@ -41,6 +41,17 @@ public class RunEventRepository {
                 .map(RunEventRepository::toDomain);
     }
 
+    /** The run's last {@code limit} events (clamped to 1..500), newest first. */
+    public List<RunEventRow> findLatestByRun(UUID runId, int limit) {
+        int safeLimit = Math.min(Math.max(limit, 1), MAX_PAGE);
+        return dsl.selectFrom(RUN_EVENTS)
+                .where(RUN_EVENTS.RUN_ID.eq(runId))
+                .orderBy(RUN_EVENTS.SEQ.desc())
+                .limit(safeLimit)
+                .fetch()
+                .map(RunEventRepository::toDomain);
+    }
+
     /** The latest event of {@code type} in {@code runId}, e.g. a run's last assistant message. */
     public Optional<RunEventRow> findLastByType(UUID runId, String type) {
         return dsl.selectFrom(RUN_EVENTS)

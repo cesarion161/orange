@@ -7,6 +7,10 @@ import static com.ai.orange.db.jooq.Tables.TASK_EVENTS;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.ai.orange.TestcontainersConfiguration;
+import com.ai.orange.run.Run;
+import com.ai.orange.run.RunKind;
+import com.ai.orange.run.RunRepository;
+import com.ai.orange.run.RunStatus;
 import com.ai.orange.task.EdgeKey;
 import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskDef;
@@ -48,6 +52,7 @@ class TaskApiIT {
 
     @Autowired TaskService taskService;
     @Autowired TaskRepository taskRepo;
+    @Autowired RunRepository runs;
     @Autowired TaskEventRepository eventRepo;
     @Autowired DSLContext dsl;
 
@@ -125,6 +130,35 @@ class TaskApiIT {
 
         HttpResponse<String> res = post("/tasks/" + t.id() + "/cancel");
         assertThat(res.statusCode()).isEqualTo(409);
+    }
+
+    @Test
+    void cancelCancelsQueuedRuns() throws Exception {
+        Task t = createTask("queued-work");
+        taskRepo.transitionStatus(t.id(), TaskStatus.READY, TaskStatus.RUNNING);
+        Run queued = runs.queue(t.id(), RunKind.IMPLEMENT, "implementer", 100, JSONB.valueOf("{}")).orElseThrow();
+
+        HttpResponse<String> res = post("/tasks/" + t.id() + "/cancel");
+
+        assertThat(res.statusCode()).isEqualTo(200);
+        Run after = runs.findById(queued.id()).orElseThrow();
+        assertThat(after.status()).isEqualTo(RunStatus.CANCELLED);
+        assertThat(after.error()).isEqualTo("cancelled");
+        assertThat(taskRepo.findById(t.id()).orElseThrow().status()).isEqualTo(TaskStatus.CANCELLED);
+    }
+
+    @Test
+    void cancelOfIntegratedTaskIs409() throws Exception {
+        Task t = createTask("landed");
+        taskRepo.transitionStatus(t.id(), TaskStatus.READY, TaskStatus.RUNNING);
+        taskRepo.transitionStatus(t.id(), TaskStatus.RUNNING, TaskStatus.VERIFYING);
+        taskRepo.transitionStatus(t.id(), TaskStatus.VERIFYING, TaskStatus.VERIFIED);
+        taskRepo.transitionStatus(t.id(), TaskStatus.VERIFIED, TaskStatus.INTEGRATED);
+
+        HttpResponse<String> res = post("/tasks/" + t.id() + "/cancel");
+
+        assertThat(res.statusCode()).isEqualTo(409);
+        assertThat(taskRepo.findById(t.id()).orElseThrow().status()).isEqualTo(TaskStatus.INTEGRATED);
     }
 
     @Test

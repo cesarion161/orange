@@ -32,6 +32,7 @@ public class SecurityConfig {
                         .requestMatchers("/plans", "/plans/**").permitAll()  // operator-driven; auth lands later
                         .requestMatchers("/dispatch", "/dispatch/**").permitAll()  // operator-driven; auth lands later
                         .requestMatchers("/scheduler", "/scheduler/**").permitAll()  // operator-driven; auth lands later
+                        .requestMatchers("/runs/**").permitAll()  // operator-driven; auth lands later
                         .requestMatchers("/events/**").permitAll()           // live narration feed
                         .requestMatchers("/dev-envs", "/dev-envs/**").permitAll()
                         .requestMatchers("/health/**").permitAll()

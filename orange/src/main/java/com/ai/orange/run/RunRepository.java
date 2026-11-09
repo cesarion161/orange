@@ -203,6 +203,14 @@ public class RunRepository {
                 .fetchOptional().map(RunRepository::toDomain);
     }
 
+    /** Every running run, oldest start first. */
+    public List<Run> findRunning() {
+        return dsl.selectFrom(RUNS)
+                .where(RUNS.STATUS.eq(RunStatus.RUNNING.dbValue()))
+                .orderBy(RUNS.STARTED_AT.asc(), RUNS.ID.asc())
+                .fetch().map(RunRepository::toDomain);
+    }
+
     public List<Run> findExpiredLeases(OffsetDateTime now) {
         return dsl.selectFrom(RUNS)
                 .where(RUNS.STATUS.eq(RunStatus.RUNNING.dbValue()).and(RUNS.LEASE_EXPIRES_AT.lessThan(now)))

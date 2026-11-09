@@ -79,14 +79,14 @@ A task whose runs keep failing, or whose agent asks a question, moves to `needs_
 
 ## Step 7 — Narrate progress
 
-Every 30-60s while there's work in flight, print a one-line per-task summary via `orange_status_live`:
+Every 30-60s while there's work in flight, print a one-line per-run summary via `orange_status_live`:
 
 ```
 orange_status_live(role=null, per_task_limit=3)
-  → [{ taskId, title, role, status, recentEvents: [...] }, ...]
+  → [{ run_id, task_id, task_title, kind, role, model, started_at, recent: [{seq, type, payload}, ...] }, ...]
 ```
 
-Render one line per task: truncated title + status + last event. Track the latest event id per task; on the next poll, only narrate tasks that moved. Use `orange_health()` for a one-line system summary.
+Render one line per running run: truncated task title + run kind (implement, ci_fix, verify, diff_review, integrate) + its last event (`recent` is newest first). Track the latest `seq` per run; on the next poll, only narrate runs that moved. Use `orange_health()` for a one-line system summary; it also says when the scheduler is paused and why.
 
 If nothing is in flight and nothing is ready, report which PRs are waiting for the user's merge.
 
