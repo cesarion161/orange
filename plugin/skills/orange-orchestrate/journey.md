@@ -88,7 +88,7 @@ orange_status_live(role=null, per_task_limit=3)
 
 Render one line per running run: truncated task title + run kind (implement, ci_fix, verify, diff_review, integrate) + its last event (`recent` is newest first). Track the latest `seq` per run; on the next poll, only narrate runs that moved. Use `orange_health()` for a one-line system summary; it also says when the scheduler is paused and why.
 
-If nothing is in flight and nothing is ready, report which PRs are waiting for the user's merge.
+If nothing is in flight and nothing is ready, report what has been integrated, which tasks wait for the user (`needs_human`), and whether the scheduler is paused (`orange_health()`).
 
 ## Failure modes & recovery
 
@@ -99,6 +99,7 @@ If nothing is in flight and nothing is ready, report which PRs are waiting for t
 | A task is `needs_human` | `orange_tail(task_id)` shows why. Relay it to the user; retry with `orange_reopen_task` once they decide. |
 | A task is `failed` | Same: inspect, then `orange_reopen_task` if the user wants another attempt. |
 | Server unreachable | Tell the user and offer to restart `./gradlew bootRun`. Runs left behind are failed and retried on restart. |
+| Nothing moves; `orange_health()` says `PAUSED` | Orange paused itself on a failure that would recur at once. A plan limit resumes on its own at the reset time; a rejected or missing token, a missing `claude` binary or a broken base repo needs the user to fix it (`orange/.env` changes need a restart), then `curl -X POST localhost:8080/scheduler/resume`. |
 | User asked to cancel | `orange_cancel(task_id)` for each in-flight task; it kills the running agent too. |
 
 ## What goes in the plan

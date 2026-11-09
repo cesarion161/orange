@@ -54,5 +54,6 @@ Planning and dispatch are **independent**: planning produces a reviewable DAG an
 | Drill into one task | `orange_task(task_id)`, `orange_tail(task_id, since)` |
 | Retry a failed task | `orange_reopen_task(task_id, reason)` |
 | User cancel | `orange_cancel(task_id)` |
+| Scheduler paused (`orange_health()` says why) | Fix the cause, then `curl -X POST localhost:8080/scheduler/resume`; a plan limit resumes by itself |
 
 Reference: `journey.md` for the full playbook, `plan-template.md` for the plan shape.

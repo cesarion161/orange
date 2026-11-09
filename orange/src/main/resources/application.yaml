@@ -95,6 +95,9 @@ orange:
     reaper-sweep: 30s
     # Finished runs' directories under orange.harness.run-root are deleted after this long.
     retention: 14d
+  mcp:
+    # Where agents reach /mcp/worker. Blank = http://127.0.0.1:<server port>/mcp/worker.
+    worker-url: ${ORANGE_MCP_WORKER_URL:}
   events:
     # The inbox (webhooks today): stored first, then processed one per transaction in id order.
     processing-enabled: ${ORANGE_EVENTS_PROCESSING_ENABLED:true}
