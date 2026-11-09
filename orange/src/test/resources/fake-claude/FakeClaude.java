@@ -59,6 +59,18 @@ public class FakeClaude {
                         "Claude usage limit reached. Your limit will reset at 5pm (Europe/Berlin).", null, session);
                 System.exit(1);
             }
+            case "auth-failed" -> {
+                // What Claude Code 2.1.319 prints for a rejected token (ClaudeCliContractLiveIT checks the real one).
+                for (int attempt = 1; attempt <= 2; attempt++) {
+                    emit("{\"type\":\"system\",\"subtype\":\"api_retry\",\"attempt\":" + attempt + ",\"max_retries\":10,"
+                            + "\"retry_delay_ms\":600,\"error_status\":401,\"error\":\"authentication_failed\","
+                            + "\"session_id\":" + q(session) + "}");
+                }
+                String text = "Failed to authenticate. API Error: 401 OAuth access token is invalid.";
+                assistant("msg_1", "<synthetic>", text, 0, 0);
+                result(true, "success", text, "0", session);
+                System.exit(1);
+            }
             case "hang" -> {
                 Process child = new ProcessBuilder("sleep", "600").start();
                 Files.writeString(configDir.resolve("child.pid"), Long.toString(child.pid()));

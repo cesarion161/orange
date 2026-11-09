@@ -174,6 +174,21 @@ class AgentRunServiceIT {
     }
 
     @Test
+    void rejectedCredentialsAreAuthFailuresAndDoNotEscalateTheTier() throws Exception {
+        Task task = AgentRunTestSupport.newTask(taskService);
+        AgentRunResult first = run(task, "[[fake:auth-failed]]", Duration.ofSeconds(60));
+        run(task, "[[fake:auth-failed]]", Duration.ofSeconds(60));
+        AgentRunResult third = run(task, "Write the output file.", Duration.ofSeconds(60));
+
+        assertThat(first.status()).isEqualTo("failure");
+        assertThat(first.failureReason()).isEqualTo("auth_failed");
+        // An expired or revoked token is not the model failing: no escalation to Opus.
+        var meta = AgentRunTestSupport.json(agentRuns.findById(third.agentRunId()).orElseThrow().metadata());
+        assertThat(meta.path("tier").asText()).isEqualTo("medium");
+        assertThat(meta.path("model").asText()).isEqualTo("claude-sonnet-5-5");
+    }
+
+    @Test
     void plannerRunsWithoutATaskRow() throws Exception {
         Agent planner = agents.findEnabledByRole("planner").getFirst();
         Path cwd = Files.createTempDirectory("planner-cwd-");

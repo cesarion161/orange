@@ -3,6 +3,7 @@ package com.ai.orange.agent;
 import com.ai.orange.billing.BillingProperties;
 import com.ai.orange.billing.CostEstimator;
 import com.ai.orange.billing.PlanLimit;
+import com.ai.orange.harness.claude.AuthFailure;
 import com.ai.orange.gateway.GatewayClient;
 import com.ai.orange.gateway.GatewayProperties;
 import com.ai.orange.gateway.VirtualKey;
@@ -230,6 +231,7 @@ public class AgentRunService {
         if (exit.killReason() != null) return exit.killReason();
         if (exit.exitCode() == 0 && r != null && !r.isError()) return null;
         if ((r != null && PlanLimit.matches(r.text())) || PlanLimit.matches(lastAssistant)) return "plan_limit";
+        if (r != null && r.isError() && AuthFailure.matches(r.text())) return "auth_failed";
         if (r == null) return "no_result";
         if (r.isError()) return "error_result";
         return "exit_" + exit.exitCode();

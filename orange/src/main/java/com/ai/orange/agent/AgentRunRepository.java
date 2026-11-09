@@ -46,7 +46,8 @@ public class AgentRunRepository {
      * They are not counted towards escalation.
      */
     static final java.util.List<String> NOT_MODEL_FAILURES = java.util.List.of(
-            "subscription_token_missing", "gateway_unavailable", "start_failed", "plan_limit", "cancelled");
+            "subscription_token_missing", "gateway_unavailable", "start_failed", "plan_limit", "auth_failed",
+            "cancelled");
 
     /** Failed attempts on a task that count towards escalation (see {@link #NOT_MODEL_FAILURES}). */
     public int countFailed(UUID taskId) {
