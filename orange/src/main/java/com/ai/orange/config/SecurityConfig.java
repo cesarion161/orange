@@ -2,6 +2,11 @@ package com.ai.orange.config;
 
 import com.ai.orange.github.GithubProperties;
 import com.ai.orange.webhook.GithubWebhookHmacFilter;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import java.io.IOException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -12,6 +17,7 @@ import org.springframework.security.config.annotation.web.configuration.EnableWe
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.intercept.RequestAuthorizationContext;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.web.filter.OncePerRequestFilter;
 
 @Configuration
 @EnableWebSecurity
@@ -30,7 +36,8 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http,
                                                    GithubWebhookHmacFilter hmacFilter,
-                                                   ApiToken apiToken) throws Exception {
+                                                   ApiToken apiToken,
+                                                   RunNetworkGuard runNetworkGuard) throws Exception {
         // Decided inside the chain, on the path Spring Security matched, so no spelling of the path
         // (percent-encoding, a trailing slash) gets around the token.
         AuthorizationManager<RequestAuthorizationContext> hasApiToken =
@@ -60,9 +67,32 @@ public class SecurityConfig {
                         .requestMatchers("/api/ready").permitAll()  // smoke / readiness probe
                         .anyRequest().denyAll()
                 )
+                // First of the two: a run's request is refused before anything else looks at it.
+                .addFilterBefore(runsReachOnlyTheWorkerMcp(runNetworkGuard), UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(hmacFilter, UsernamePasswordAuthenticationFilter.class)
                 .httpBasic(httpBasic -> httpBasic.disable())
                 .formLogin(formLogin -> formLogin.disable());
         return http.build();
+    }
+
+    /**
+     * A contained run's requests end here unless they ask for {@code /mcp/worker}, before any of the
+     * open operator endpoints above is matched. Built here and not a bean, so Boot does not register
+     * it a second time as a servlet filter of its own.
+     */
+    private static OncePerRequestFilter runsReachOnlyTheWorkerMcp(RunNetworkGuard guard) {
+        return new OncePerRequestFilter() {
+            @Override
+            protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
+                                            FilterChain chain) throws ServletException, IOException {
+                if (guard.refuses(request)) {
+                    response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+                    response.setContentType("application/json");
+                    response.getWriter().write("{\"error\":\"runs reach only /mcp/worker\"}");
+                    return;
+                }
+                chain.doFilter(request, response);
+            }
+        };
     }
 }

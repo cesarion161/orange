@@ -1,5 +1,6 @@
 package com.ai.orange.run;
 
+import com.ai.orange.harness.container.ContainerRuntime;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -15,6 +16,10 @@ import org.springframework.stereotype.Component;
  * Ends runs nobody is supervising: leases that ran out, and runs a previous coordinator instance
  * left running (their harness process is killed first). Neither counts against the task; the
  * reactor then queues a fresh run.
+ *
+ * <p>In container mode the run's containers go too, found by the {@code orange.run} label of the
+ * rows this database calls expired or orphaned: another coordinator may share the Docker daemon,
+ * and the run id is the only name that is surely ours.
  */
 @Component
 public class RunReaper {
@@ -26,15 +31,18 @@ public class RunReaper {
 
     private final RunRepository runs;
     private final RunsProperties props;
+    private final ContainerRuntime containers;
 
-    public RunReaper(RunRepository runs, RunsProperties props) {
+    public RunReaper(RunRepository runs, RunsProperties props, ContainerRuntime containers) {
         this.runs = runs;
         this.props = props;
+        this.containers = containers;
     }
 
     /** Fails every running run whose lease has expired. */
     public void reapExpired() {
         for (Run r : runs.findExpiredLeases(OffsetDateTime.now())) {
+            removeContainers(r);
             if (runs.finish(r.id(), RunStatus.FAILED, "lease_expired", r.costUsd(), 0, 0, 0, null)) {
                 log.warn("run {} ({}, task {}) lost its lease at {}; failed it", r.id(), r.kind().dbValue(),
                         r.taskId(), r.leaseExpiresAt());
@@ -45,12 +53,21 @@ public class RunReaper {
     /** Fails every running run another instance started, killing its process if it is still alive. */
     public void failOrphans() {
         for (Run r : runs.findRunningNotOwnedBy(props.workerId())) {
+            // For a contained run the pid is the docker client's; the container outlives it.
             if (r.pid() != null) killIfItsHarness(r);
+            removeContainers(r);
             if (runs.finish(r.id(), RunStatus.FAILED, "coordinator_restart", r.costUsd(), 0, 0, 0, null)) {
                 log.warn("run {} ({}, task {}) was left running by {}; failed it", r.id(), r.kind().dbValue(),
                         r.taskId(), r.workerId());
             }
         }
+    }
+
+    /** Before the row is finished: the task's next run must not find the old one's containers still at work. */
+    private void removeContainers(Run r) {
+        if (!containers.enabled()) return;
+        int removed = containers.removeByRun(r.id());
+        if (removed > 0) log.warn("run {}: removed its {} container(s)", r.id(), removed);
     }
 
     /** Pids get reused: only a process that started around the run's own start is killed. */

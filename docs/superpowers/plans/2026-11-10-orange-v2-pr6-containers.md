@@ -11,7 +11,7 @@ and is untouched.
 
 - [x] **C1. The container runtime: settings, the docker command, the test image.**
 - [x] **C2. Agent runs in containers: the launcher, the clone, the way home.**
-- [ ] **C3. Evidence commands, the reaper, the network guard, the loop end to end.**
+- [x] **C3. Evidence commands, the reaper, the network guard, the loop end to end.**
 - [ ] **C4. The worker image, the docs, the live checks' code.**
 - [ ] **C5. Live gate** (one real implement run in a container; recorded below).
 
@@ -215,6 +215,13 @@ Claude Code 2.1.322 is what this laptop runs):
   `docker: Error response from daemon: No such image: …` and then, as its last stderr line,
   `Run 'docker run --help' for more information`; the fake starts in a container in about a
   second, an export takes about half a second.
+- While building C3: a contained evidence command takes about a second and a half with its clone
+  (the fake's JVM is not in it); the whole loop in containers (implement, verify, diff review,
+  integrate, the dependent promoted) takes about seven seconds with the fake; `docker rm -f` of a
+  command's container ends its client at once, and a second removal of a container that is gone
+  exits 0; `InetAddress.ofLiteral` reads `172.18.0` and a bare number as IPv4 addresses, so the
+  guard asks for a dotted quad first; a `MockHttpServletRequest` with a remote address in the run
+  network's subnet goes through the real `springSecurityFilterChain` and is refused there.
 - Not checked: source addresses on a Linux bridge; the installer inside a Linux image; Claude
   Code in a container (C4 and C5).
 
@@ -361,24 +368,34 @@ and on the full one; the test constructor (a host environment, no session checks
 `EvidenceRunnerIT` uses, keeps its signature and passes null for both.
 
 - `verify(run, head)`: the stale and dirty checks stay on the task's worktree. When
-  `containers != null && containers.enabled()`: `where = workspaces.cloneOf(run.taskId(), runDir)`
-  (`runDir = harnessProps.runRoot().resolve(run.id().toString())`), the commands run there, and a
-  `finally` discards it. A session's verify (`verifySession`) is not touched.
-- `runCommand` starts through one of two small methods returning
+  `containers != null && containers.enabled()` and there is at least one command:
+  `where = workspaces.cloneOf(run.taskId(), runDir)`
+  (`runDir = harnessProps.runRoot().resolve(run.id().toString())`, made absolute), the commands
+  run there, and a `finally` discards it. The clone's head must be the queued head (the worktree
+  is on the task's branch, so it is; anything else ends the run `workspace_failed`), and the lease
+  is renewed once after the clone. A session's verify (`verifySession`) is not touched.
+- `runCommand(run, dir, command, timeout, container)` (`container` = the container's name, null
+  on the host) starts through one of two small methods returning
   `record Started(Process process, Runnable kill)`; `live` becomes a set of `Started`:
   - host: today's `sh -c` with the pass-through environment;
   - contained: `containers.command(new ContainerSpec(runName + "-c" + n, labels(run, "verify"), dir, [dir writable], {HOME}, {}, true, ["sh", "-c", command]))`
-    with stderr merged; `kill` = `containers.remove(name)` then the client's process tree.
-- A contained command that ends with exit code 125, or a `ContainerUnavailableException`, is no
-  evidence: the run ends `container_unavailable`, with no row for that command (a private
-  exception caught in `execute`, next to `LeaseLost`). 126 and 127 stay evidence here: `sh`
-  returns them for the user's own command.
+    with stderr merged; `kill` = `containers.remove(name)` then the client's process tree. A
+    contained command that was killed (its timeout, a lost lease, a shutdown) has its container
+    removed once more after the client has gone, at most 5 s later: the kill may have come before
+    the daemon created the container.
+- A contained command that ends with exit code 125, or whose docker client cannot be started (a
+  `ContainerUnavailableException` or any other `IOException`), is no evidence: the run ends
+  `container_unavailable`, with no row for that command and none for the commands after it (a
+  private exception caught in `execute`, next to `LeaseLost`, logged at ERROR with docker's last
+  line and the image). 126 and 127 stay evidence here: `sh` returns them for the user's own
+  command.
 
 ### `RunReaper`
 
-New parameter `ContainerRuntime containers`. In `failOrphans` and in `reapExpired`, before the row
-is finished: `if (containers.enabled()) containers.removeByRun(r.id())`. The pid kill stays; for a
-contained run the pid is the docker client's.
+New parameter `ContainerRuntime containers`. In `failOrphans` (after the pid kill) and in
+`reapExpired`, before the row is finished: `if (containers.enabled()) containers.removeByRun(r.id())`,
+with one WARN line when something was removed. The pid kill stays; for a contained run the pid is
+the docker client's.
 
 ### The network
 
@@ -389,13 +406,20 @@ Built:
   `--add-host host.docker.internal:host-gateway`. No host network, no socket.
 - The worker MCP URL and a gateway's base URL are rewritten for contained runs when they name the
   loopback address; a URL that names anything else is used as it is.
-- `config/RunNetworkGuard` (a bean): `boolean fromRunNetwork(String remoteAddr)`, true when the
-  address lies in one of `containers.subnets()` (IPv4 and IPv6 CIDR; false when there are none or
-  the address does not parse). In `SecurityConfig` a `OncePerRequestFilter` built there (not a
-  bean, so Boot does not register it twice), added before `UsernamePasswordAuthenticationFilter`:
-  a request from the run network whose `getRequestURI()` is not exactly `WorkerMcpConfig.PATH`
-  gets 403 `{"error":"runs reach only /mcp/worker"}`. Equality on the raw URI: any other spelling
-  is refused. At start, in container mode with `orange.api.token` blank, the guard logs one WARN.
+- `config/RunNetworkGuard` (a bean; a second constructor takes a `Supplier<List<String>>` of
+  subnets for tests): `boolean fromRunNetwork(String remoteAddr)`, true when the address lies in
+  one of `containers.subnets()` (IPv4 and IPv6 CIDR; false in process mode, when there are none or
+  when the address does not parse), and `boolean refuses(HttpServletRequest)`: from the run
+  network, and `getRequestURI()` is not exactly `WorkerMcpConfig.PATH`. Addresses are parsed as
+  literals only (`InetAddress.ofLiteral`, never a name lookup), an IPv4 address must be a dotted
+  quad, and an IPv4-mapped IPv6 address counts as its IPv4 address. A subnet that is not CIDR
+  notation is left out with a WARN. In `SecurityConfig` a `OncePerRequestFilter` built there (not
+  a bean, so Boot does not register it twice), added before `UsernamePasswordAuthenticationFilter`
+  and ahead of the HMAC filter: a request the guard refuses gets 403
+  `{"error":"runs reach only /mcp/worker"}`. Equality on the raw URI: any other spelling is
+  refused. The address is the connection's (`getRemoteAddr()`); orange sets no
+  `server.forward-headers-strategy`, and must not without revisiting this. At start, in container
+  mode with `orange.api.token` blank, the guard logs one WARN.
 
 Not built: an allowlist for the internet (known limits).
 
@@ -500,12 +524,12 @@ also logs `POST <url>` to `fake-mcp.log`, before the replies.
 | `DockerCommandTest` | unit | the exact argv of a coding run; a secret's value appears nowhere; a read-only mount; `--network none` without `--add-host` and without volumes; limits only when set; never `--privileged`, never a socket; a mount path or a variable name that would split its argument is refused; `dockerFailed` |
 | `RunnerPropertiesTest` | unit | defaults (bare, and as the shipped `application.yaml` binds them, also with its variables empty); `host` and `container:` networks, a `docker.sock` volume, a root user and an image that reads as an option are refused |
 | `ContainerUrlsTest` | unit | loopback spellings are rewritten, port and path kept; other hosts untouched |
-| `RunNetworkGuardTest` | unit | inside and outside a subnet, IPv6, no subnets, an unparsable address |
+| `RunNetworkGuardTest` | unit | inside and outside a subnet, a prefix that ends inside a byte, IPv6, an IPv4-mapped address, no subnets, an unparsable address or subnet, subnets that change; only `/mcp/worker` for a run, every other spelling refused, everyone else untouched |
 | `ToolPolicyTest` (2 more) | unit | `inContainer()`: implement and ci_fix get `bypassPermissions`, a review keeps `dontAsk` |
 | `ContainerFailureTest` | unit | `failureReason`: exit 125/126/127 with no result is `container_unavailable` only when contained, never when there is a result or a kill reason; the reason pauses open-ended and does not count |
 | `ContainerRuntimeIT` | Docker | `run` as the caller's uid with `HOME=/home/agent`, a secret from the client's environment and nothing of the host's; the file it wrote is the caller's; the network exists afterwards (a bridge, icc off) and `subnets()` is not empty; an offline container has no route; the exit code and the end of the output; the timeout removes the container; `removeByRun` removes a run's containers and no other run's; a missing image is exit 125, a missing command 127; a missing docker binary is `ContainerUnavailableException` and never a failed start |
 | `ContainerAdapterIT` | Docker | the adapter with a sandbox: Init … Result, exit 0, the fake's commit in the mounted repo by `orange[bot]`, its cwd the repo's own path; `fake-env.json` has the token and `HOME=/home/agent`, and nothing of a host environment that holds `ORANGE_GITHUB_TOKEN` (no `DOCKER_HOST`, `USER`, `TMPDIR`, not the host's `PATH`); the token the agent echoes is redacted; `kill` during `[[fake:hang]]` ends the run and leaves no container, also when it comes before the container exists; a read-only sandbox cannot write its cwd; a missing image is exit 125 with docker's reason on stderr; a sandbox without a runtime is refused |
-| `ContainerRunIT` | Spring + Docker | see C2 and C3; also `RunWorkspaces` by itself: what the clone holds, what `bringHome` refuses, what `discard` deletes |
+| `ContainerRunIT` | Spring + Docker | see C2 and C3; also `RunWorkspaces` by itself (what the clone holds, what `bringHome` refuses, what `discard` deletes) and the security chain with a request from the run network's subnet |
 | `RunLoopE2EIT.InContainers` | Spring + Docker | ready → integrated → dependent promoted, all in containers, with an evidence command that fails if it can see a host file |
 | `ContainerLiveIT` | live | the real image: see C4 |
 
@@ -609,17 +633,33 @@ Tests:
 
 - `RunNetworkGuardTest`.
 - `ContainerRunIT`, with `orange.evidence.commands[0]` =
-  `test -f hello.txt && test ! -e <canary> && touch built.marker` (kind `tests`):
-  6. a verify run of `verifyingTask(…, "hello.txt", …)` passes with a passing `tests` row; the
+  `test -f hello.txt && test ! -e <canary> && touch built.marker` (kind `tests`); the numbers go
+  on from C2's eight:
+  9. a verify run of `verifyingTask(…, "hello.txt", …)` passes with a passing `tests` row; the
      task's worktree has no `built.marker`; no container and no clone are left;
-  7. a run row owned by `previous-instance`, with a container started by hand
-     (`docker run -d --label orange.run=<id> <test image> sleep 600`): `reaper.failOrphans()`
-     removes the container and fails the run `coordinator_restart`; the same for an expired lease
-     and `reapExpired()`.
-- `e2e/RunLoopE2EIT`: `HappyPath`'s body moves into `Loop.readyToIntegrated(String title)`; a
-  third nested class `InContainers` registers like `HappyPath` plus `ContainerTestSupport.register`,
-  with the evidence command `test -f orange-fake.txt && test ! -e <canary>`, and calls it. `CAP`
-  becomes 120 s.
+  10. a run row owned by `previous-instance`, with two containers started by hand
+      (`docker run -d --rm --network none --label orange.run=<id> <test image> sleep 600`):
+      `reaper.failOrphans()` removes them and fails the run `coordinator_restart`; the same for
+      an expired lease and `reapExpired()` (two tests). In both, the container of a run this
+      coordinator still supervises stays;
+  11. (added, with an `EvidenceRunner` built by hand around its own commands) a command's uid is
+      not 0, its cwd is the clone, its `HOME` is `/home/agent` and no variable of the test JVM
+      reaches it with its value; exit 3 and `sh`'s own 127 are gaps with evidence rows, and the
+      task goes back counted;
+  12. (added) a command that hangs is a gap at its timeout and leaves no container; `shutdown()`
+      ends a running command `coordinator_restart`, with no evidence and no container;
+  13. (added) a runtime with a missing image, and one with a missing docker binary: the run ends
+      `container_unavailable`, with no evidence row and nothing counted, the task stays
+      `verifying`, and the scheduler is paused open-ended;
+  14. (added) the application's security chain (`springSecurityFilterChain`) with a request whose
+      remote address lies in the run network's subnet: `/tasks`, `/scheduler/resume`,
+      `/sessions`, `/mcp/steering`, `/actuator/health` and `/mcp/worker/` get 403 with the guard's
+      body and go no further; `/mcp/worker` passes, and so does `/tasks` from 127.0.0.1.
+- `e2e/RunLoopE2EIT`: `HappyPath`'s body moves into `Loop.readyToIntegrated(String title)` (it
+  returns A, integrated); a third nested class `InContainers` registers like `HappyPath` plus
+  `ContainerTestSupport.register`, with the evidence command
+  `test -f orange-fake.txt && test ! -e <canary>`, calls it, and then asserts that none of A's
+  runs has a container left. `CAP` becomes 120 s.
 
 Run: `./gradlew test --tests '*RunLoopE2EIT' --tests '*ContainerRunIT' --tests '*RunReaperIT' --tests '*EvidenceRunnerIT' --tests '*RunNetworkGuardTest'`, then `./gradlew test`.
 
@@ -768,6 +808,9 @@ that had to change.
 - The guard on Linux rests on Docker's routing (a container's request arrives from the run
   network's subnet). A unit test covers the rule; the routing is to be checked on the VPS in
   Phase V.
+- An evidence command of a task that itself exits 125 reads as docker failing to start its
+  container: the run ends `container_unavailable` and the scheduler pauses, every time. (125 is
+  what `docker run` returns for its own errors; `git bisect run` and `timeout` use it too.)
 - Evidence commands that need Docker cannot run: no socket in the container. orange's own
   `./gradlew test` (Testcontainers) is such a command.
 - One image per deployment: tasks on two repos with different toolchains need one image holding

@@ -1,6 +1,7 @@
 package com.ai.orange.run;
 
 import static com.ai.orange.harness.container.ContainerTestSupport.containersOf;
+import static com.ai.orange.harness.container.ContainerTestSupport.docker;
 import static com.ai.orange.run.RunTestSupport.git;
 import static com.ai.orange.run.RunTestSupport.headInput;
 import static com.ai.orange.run.RunTestSupport.runEventsText;
@@ -11,8 +12,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.ai.orange.TestcontainersConfiguration;
+import com.ai.orange.evidence.Evidence;
+import com.ai.orange.evidence.EvidenceProperties;
 import com.ai.orange.evidence.EvidenceRepository;
+import com.ai.orange.harness.HarnessProperties;
+import com.ai.orange.harness.container.ContainerRuntime;
 import com.ai.orange.harness.container.ContainerTestSupport;
+import com.ai.orange.harness.container.RunnerProperties;
 import com.ai.orange.json.Json;
 import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskRepository;
@@ -21,9 +27,11 @@ import com.ai.orange.task.TaskStatus;
 import com.ai.orange.worktree.WorktreeService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import jakarta.servlet.Filter;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.math.BigDecimal;
+import java.net.InetAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
@@ -33,18 +41,27 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import org.jooq.JSONB;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Import;
+import org.springframework.mock.web.MockFilterChain;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 /**
- * A task's agent runs in container mode: the fake Claude Code runs in a container from the test
- * image, on a clone of the task's branch, and its commits come home as a bundle. Real Docker, no
+ * A task's runs in container mode: the fake Claude Code runs in a container from the test image,
+ * on a clone of the task's branch, and its commits come home as a bundle; the evidence commands
+ * run in containers on a clone of the head; the reaper removes what nobody supervises; and the
+ * run network reaches nothing of the coordinator but the worker MCP endpoint. Real Docker, no
  * model.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -56,12 +73,16 @@ class ContainerRunIT {
     static final Path WORKTREES = RunTestSupport.tempDir("container-run-it-wt-");
     /** A file of the host, in a directory no run is given. */
     static final Path CANARY = canary();
+    static final String EVIDENCE_COMMAND = "test -f hello.txt && test ! -e " + CANARY + " && touch built.marker";
 
     @DynamicPropertySource
     static void props(DynamicPropertyRegistry r) {
         RunTestSupport.register(r, RUN_ROOT, BASE_REPO, WORKTREES);
         ContainerTestSupport.register(r);
         r.add("orange.runs.timeouts.ci_fix", () -> "6s");
+        // Passes only where the host's canary is not: in a container. And it writes where it runs.
+        r.add("orange.evidence.commands[0].kind", () -> "tests");
+        r.add("orange.evidence.commands[0].command", () -> EVIDENCE_COMMAND);
     }
 
     @LocalServerPort int port;
@@ -75,6 +96,12 @@ class ContainerRunIT {
     @Autowired TaskRepository tasks;
     @Autowired WorktreeService worktrees;
     @Autowired SchedulerPause pause;
+    @Autowired EvidenceRunner evidenceRunner;
+    @Autowired RunReaper reaper;
+    @Autowired ContainerRuntime containers;
+    @Autowired HarnessProperties harnessProps;
+    @Autowired RunLifecycle lifecycle;
+    @Autowired @Qualifier("springSecurityFilterChain") Filter securityChain;
 
     @BeforeEach
     void unpause() {
@@ -367,6 +394,294 @@ class ContainerRunIT {
         assertThat(runDir.resolve("stream.jsonl")).as("the run's own files stay").exists();
         assertThat(CANARY).exists();
     }
+
+    // ─────────────────────────── evidence commands ───────────────────────────
+
+    /** A runner with its own commands, and its own runtime when one is given. */
+    EvidenceRunner evidenceRunner(ContainerRuntime runtime, EvidenceProperties.Command... commands) {
+        return new EvidenceRunner(runs, evidence, worktrees, new EvidenceProperties(List.of(commands), 4000),
+                harnessProps, props, lifecycle, System::getenv, null, runtime, new RunWorkspaces(worktrees, runtime, props));
+    }
+
+    static EvidenceProperties.Command command(String kind, String command) {
+        return new EvidenceProperties.Command(kind, command, Duration.ofSeconds(60));
+    }
+
+    Task taskWithHello() {
+        return verifyingTask(taskService, tasks, worktrees, "Print hello.", "hello.txt", "hello\n");
+    }
+
+    Run verifyRun(Task task) {
+        return start(runs, props, task.id(), RunKind.VERIFY, "orange", headInput(task.headSha()));
+    }
+
+    @Test
+    void evidenceCommandsRunInAContainerOnACloneOfTheHead() {
+        Task task = taskWithHello();
+        Path wt = worktrees.resolve(task.id());
+        assertThat(CANARY).as("on the host the command would fail").exists();
+
+        RunResult result = evidenceRunner.execute(verifyRun(task));
+
+        assertThat(result.status()).as(String.valueOf(result.reason())).isEqualTo(RunStatus.SUCCEEDED);
+        assertThat(evidence.findByTaskAndHead(task.id(), task.headSha())).singleElement().satisfies(e -> {
+            assertThat(e.kind()).isEqualTo("tests");
+            assertThat(e.command()).isEqualTo(EVIDENCE_COMMAND);
+            assertThat(e.passed()).as(e.outputTail()).isTrue();
+            assertThat(e.exitCode()).isZero();
+            assertThat(e.runId()).isEqualTo(result.runId());
+        });
+        assertThat(result.outcome()).isEqualTo(new RunOutcome.Verification(false, true, List.of()));
+
+        // What the command wrote went into its clone: the worktree orange runs git in is as it was.
+        assertThat(wt.resolve("built.marker")).doesNotExist();
+        assertThat(git(wt, "status", "--porcelain")).isEmpty();
+        assertThat(git(wt, "rev-parse", "HEAD")).isEqualTo(task.headSha());
+        assertThat(RUN_ROOT.resolve(result.runId().toString()).resolve("workspace")).doesNotExist();
+        assertThat(containersOf(result.runId())).isEmpty();
+        assertThat(runs.findById(result.runId()).orElseThrow().pid()).as("the docker client's, for the reaper").isNotNull();
+        Task after = tasks.findById(task.id()).orElseThrow();
+        assertThat(after.status()).isEqualTo(TaskStatus.VERIFYING);
+        assertThat(after.failures()).isZero();
+        assertThat(pause.current()).isEmpty();
+    }
+
+    @Test
+    void whatACommandSeesIsItsCloneAndWhatItReturnsIsEvidence() {
+        Task task = taskWithHello();
+        Run run = verifyRun(task);
+        Path clone = RUN_ROOT.resolve(run.id().toString()).resolve("workspace");
+
+        RunResult result = evidenceRunner(containers, command("custom", "id -u; pwd; ls; env"),
+                command("tests", "echo 'FooTest > bar FAILED'; exit 3"),
+                // sh's own "not found" is the repo's failure, not Docker's.
+                command("build", "no-such-command-of-this-repo")).execute(run);
+
+        assertThat(result.status()).as(String.valueOf(result.reason())).isEqualTo(RunStatus.SUCCEEDED);
+        RunOutcome.Verification v = (RunOutcome.Verification) result.outcome();
+        assertThat(v.passed()).isFalse();
+        assertThat(v.gaps()).extracting(EvidenceGap::source).containsExactly("tests", "build");
+        assertThat(v.gaps()).extracting(EvidenceGap::exitCode).containsExactly(3, 127);
+        assertThat(v.gaps().getFirst().outputTail()).contains("FooTest > bar FAILED");
+        List<Evidence> rows = evidence.findByTaskAndHead(task.id(), task.headSha());
+        assertThat(rows).extracting(Evidence::kind).containsExactlyInAnyOrder("custom", "tests", "build");
+
+        List<String> seen = rows.stream().filter(e -> e.kind().equals("custom")).findFirst().orElseThrow()
+                .outputTail().lines().toList();
+        assertThat(seen.get(0)).as("the uid it ran as").matches("\\d+").isNotEqualTo("0");
+        assertThat(seen.get(1)).as("its working directory").isEqualTo(clone.toString());
+        assertThat(seen).contains("hello.txt", "README.md", "HOME=/home/agent");
+        // Nothing of orange's environment, not even the allowlisted part.
+        Map<String, String> env = new java.util.HashMap<>();
+        seen.stream().filter(l -> l.contains("=")).forEach(l -> env.put(l.substring(0, l.indexOf('=')), l.substring(l.indexOf('=') + 1)));
+        // The image's locale and the shell's own bookkeeping may be the host's too.
+        Set<String> itsOwn = Set.of("LANG", "LC_ALL", "LANGUAGE", "SHLVL", "PWD", "OLDPWD", "_");
+        List<String> inherited = new ArrayList<>();
+        for (Map.Entry<String, String> host : System.getenv().entrySet()) {
+            if (itsOwn.contains(host.getKey())) continue;
+            // Names only: a value here may be a credential of whoever runs the tests.
+            if (host.getValue().equals(env.get(host.getKey()))) inherited.add(host.getKey());
+        }
+        assertThat(inherited).as("host variables that reached the command with their value").isEmpty();
+        assertThat(env).doesNotContainKeys("DOCKER_HOST", "USER", "TMPDIR", "CLAUDE_CODE_OAUTH_TOKEN");
+
+        // A failed check sends the task back and counts, as on the host.
+        Task after = tasks.findById(task.id()).orElseThrow();
+        assertThat(after.status()).isEqualTo(TaskStatus.RUNNING);
+        assertThat(after.failures()).isEqualTo(1);
+        assertThat(clone).doesNotExist();
+        assertThat(containersOf(run.id())).isEmpty();
+        assertThat(pause.current()).isEmpty();
+    }
+
+    @Test
+    void aCommandThatHangsIsKilledAtItsTimeoutWithItsContainer() {
+        Task task = taskWithHello();
+        Run run = verifyRun(task);
+        long started = System.nanoTime();
+
+        RunResult result = evidenceRunner(containers,
+                new EvidenceProperties.Command("tests", "echo started; sleep 600", Duration.ofSeconds(4))).execute(run);
+
+        assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(60));
+        RunOutcome.Verification v = (RunOutcome.Verification) result.outcome();
+        assertThat(v.gaps()).singleElement().satisfies(g -> {
+            assertThat(g.exitCode()).isEqualTo(-1);
+            assertThat(g.outputTail()).contains("started").contains("timed out");
+        });
+        assertThat(containersOf(run.id())).isEmpty();
+        assertThat(RUN_ROOT.resolve(run.id().toString()).resolve("workspace")).doesNotExist();
+        assertThat(tasks.findById(task.id()).orElseThrow().failures()).isEqualTo(1);
+    }
+
+    @Test
+    void stoppingKillsARunningCommandAndItsContainer() throws Exception {
+        Task task = taskWithHello();
+        Run run = verifyRun(task);
+        EvidenceRunner runner = evidenceRunner(containers,
+                new EvidenceProperties.Command("tests", "sleep 600", Duration.ofMinutes(10)));
+        CompletableFuture<RunResult> verifying = CompletableFuture.supplyAsync(() -> runner.execute(run));
+        long deadline = System.nanoTime() + Duration.ofSeconds(60).toNanos();
+        while (runner.liveCommands() == 0 || containersOf(run.id()).isEmpty()) {
+            assertThat(System.nanoTime()).as("the command's container never started").isLessThan(deadline);
+            Thread.sleep(100);
+        }
+
+        runner.shutdown();
+
+        RunResult result = verifying.get(30, TimeUnit.SECONDS);
+        assertThat(result.reason()).isEqualTo("coordinator_restart");
+        assertThat(containersOf(run.id())).isEmpty();
+        assertThat(evidence.findByTask(task.id())).as("a killed command is no verdict on the work").isEmpty();
+        assertThat(tasks.findById(task.id()).orElseThrow().failures()).isZero();
+        assertThat(RUN_ROOT.resolve(run.id().toString()).resolve("workspace")).doesNotExist();
+    }
+
+    @Test
+    void aMissingImageIsNoEvidenceAndPausesTheScheduler() {
+        RunnerProperties.Container d = containers.settings();
+        // docker run answers 125: there is no such image, and orange never pulls one.
+        dockerCannotRunTheCommand(new RunnerProperties.Container(d.docker(), "orange-worker-test-missing:nope",
+                d.claudeCommand(), d.network(), d.user(), d.home(), d.memory(), d.cpus(), d.pidsLimit(), d.volumes()));
+    }
+
+    @Test
+    void aMissingDockerIsNoEvidenceAndPausesTheScheduler() {
+        RunnerProperties.Container d = containers.settings();
+        dockerCannotRunTheCommand(new RunnerProperties.Container(List.of(RUN_ROOT.resolve("no-such-docker").toString()),
+                d.image(), d.claudeCommand(), d.network(), d.user(), d.home(), d.memory(), d.cpus(), d.pidsLimit(),
+                d.volumes()));
+    }
+
+    private void dockerCannotRunTheCommand(RunnerProperties.Container settings) {
+        Task task = taskWithHello();
+        Run run = verifyRun(task);
+        ContainerRuntime broken = new ContainerRuntime(new RunnerProperties(RunnerProperties.Isolation.CONTAINER, settings));
+        try {
+            // The second command is never tried: the run ends with the first.
+            RunResult result = evidenceRunner(broken, command("tests", "true"), command("build", "true")).execute(run);
+
+            assertThat(result.status()).isEqualTo(RunStatus.FAILED);
+            assertThat(result.reason()).isEqualTo("container_unavailable");
+            // Docker's failure says nothing about the work: no row, no gap, nothing counted.
+            assertThat(evidence.findByTask(task.id())).isEmpty();
+            Task after = tasks.findById(task.id()).orElseThrow();
+            assertThat(after.status()).isEqualTo(TaskStatus.VERIFYING);
+            assertThat(after.failures()).isZero();
+            // The next run would fail the same way: a person builds the image or starts Docker, then resumes.
+            assertThat(pause.current()).hasValueSatisfying(p -> {
+                assertThat(p.reason()).isEqualTo("container_unavailable");
+                assertThat(p.until()).isNull();
+            });
+            assertThat(RUN_ROOT.resolve(run.id().toString()).resolve("workspace")).doesNotExist();
+            assertThat(containersOf(run.id())).isEmpty();
+        } finally {
+            pause.resume();
+        }
+    }
+
+    // ─────────────────────────── the reaper ───────────────────────────
+
+    /** What a coordinator that died left behind: a container with the run's label and nobody waiting for it. */
+    static String leftoverContainer(UUID runId) {
+        return docker("run", "-d", "--rm", "--network", "none", "--label", "orange.run=" + runId,
+                ContainerTestSupport.image(), "sleep", "600").strip();
+    }
+
+    @Test
+    void theReaperRemovesAnOrphansContainers() {
+        Task task = runningTask(taskService, tasks, "x");
+        Task own = runningTask(taskService, tasks, "y");
+        Run orphan = runs.insertRunning(RunKind.IMPLEMENT, "implementer", task.id(), "previous-instance",
+                Duration.ofMinutes(5), JSONB.valueOf("{}"));
+        Run mine = start(runs, props, own.id(), RunKind.IMPLEMENT, "implementer", "{}");
+        try {
+            leftoverContainer(orphan.id());
+            leftoverContainer(orphan.id());
+            leftoverContainer(mine.id());
+            assertThat(containersOf(orphan.id())).hasSize(2);
+
+            reaper.failOrphans();
+
+            assertThat(containersOf(orphan.id())).isEmpty();
+            Run failed = runs.findById(orphan.id()).orElseThrow();
+            assertThat(failed.status()).isEqualTo(RunStatus.FAILED);
+            assertThat(failed.error()).isEqualTo("coordinator_restart");
+            assertThat(tasks.findById(task.id()).orElseThrow().failures()).isZero();
+            // A run this coordinator supervises keeps its container.
+            assertThat(containersOf(mine.id())).hasSize(1);
+            assertThat(runs.findById(mine.id()).orElseThrow().status()).isEqualTo(RunStatus.RUNNING);
+        } finally {
+            containers.removeByRun(orphan.id());
+            containers.removeByRun(mine.id());
+            runs.finish(mine.id(), RunStatus.FAILED, "cancelled", BigDecimal.ZERO, 0, 0, 0, null);
+        }
+    }
+
+    @Test
+    void theReaperRemovesTheContainersOfAnExpiredLease() {
+        Task task = runningTask(taskService, tasks, "x");
+        Task live = runningTask(taskService, tasks, "y");
+        Run expired = runs.insertRunning(RunKind.VERIFY, "orange", task.id(), props.workerId(), Duration.ofSeconds(-5),
+                JSONB.valueOf("{}"));
+        Run mine = start(runs, props, live.id(), RunKind.IMPLEMENT, "implementer", "{}");
+        try {
+            leftoverContainer(expired.id());
+            leftoverContainer(mine.id());
+
+            reaper.reapExpired();
+
+            assertThat(containersOf(expired.id())).isEmpty();
+            Run failed = runs.findById(expired.id()).orElseThrow();
+            assertThat(failed.status()).isEqualTo(RunStatus.FAILED);
+            assertThat(failed.error()).isEqualTo("lease_expired");
+            assertThat(tasks.findById(task.id()).orElseThrow().failures()).isZero();
+            assertThat(containersOf(mine.id())).as("a live lease keeps its container").hasSize(1);
+            assertThat(runs.findById(mine.id()).orElseThrow().status()).isEqualTo(RunStatus.RUNNING);
+        } finally {
+            containers.removeByRun(expired.id());
+            containers.removeByRun(mine.id());
+            runs.finish(mine.id(), RunStatus.FAILED, "cancelled", BigDecimal.ZERO, 0, 0, 0, null);
+        }
+    }
+
+    // ─────────────────────────── the network guard ───────────────────────────
+
+    @Test
+    void aRequestFromTheRunNetworkReachesOnlyTheWorkerMcp() throws Exception {
+        // The coordinator looked at the run network when it started.
+        String subnet = containers.subnets().stream().filter(s -> s.contains(".")).findFirst().orElseThrow();
+        byte[] address = InetAddress.ofLiteral(subnet.substring(0, subnet.indexOf('/'))).getAddress();
+        address[3] |= 2;
+        String aRun = InetAddress.getByAddress(address).getHostAddress();
+
+        for (String[] call : new String[][]{{"GET", "/tasks"}, {"POST", "/scheduler/resume"}, {"GET", "/sessions"},
+                {"POST", "/mcp/steering"}, {"GET", "/actuator/health"}, {"POST", "/mcp/worker/"}}) {
+            MockHttpServletResponse refused = new MockHttpServletResponse();
+            MockFilterChain behind = new MockFilterChain();
+            securityChain.doFilter(request(call[0], call[1], aRun), refused, behind);
+            assertThat(refused.getStatus()).as(call[1]).isEqualTo(403);
+            assertThat(refused.getContentAsString()).as(call[1]).isEqualTo("{\"error\":\"runs reach only /mcp/worker\"}");
+            assertThat(behind.getRequest()).as(call[1] + " went no further").isNull();
+        }
+
+        // Its own endpoint is open to it (the run's token is checked behind the chain) ...
+        MockFilterChain worker = new MockFilterChain();
+        securityChain.doFilter(request("POST", "/mcp/worker", aRun), new MockHttpServletResponse(), worker);
+        assertThat(worker.getRequest()).isNotNull();
+        // ... and everyone else gets what they got before.
+        MockFilterChain operator = new MockFilterChain();
+        securityChain.doFilter(request("GET", "/tasks", "127.0.0.1"), new MockHttpServletResponse(), operator);
+        assertThat(operator.getRequest()).isNotNull();
+    }
+
+    static MockHttpServletRequest request(String method, String uri, String remoteAddr) {
+        MockHttpServletRequest request = new MockHttpServletRequest(method, uri);
+        request.setRemoteAddr(remoteAddr);
+        return request;
+    }
+
+    // ─────────────────────────── helpers ───────────────────────────
 
     /** A file the fake wrote under the run's {@code CLAUDE_CONFIG_DIR}; empty when it is not there. */
     static String runFile(RunResult result, String name) {

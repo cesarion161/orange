@@ -4,6 +4,9 @@ import com.ai.orange.evidence.EvidenceProperties;
 import com.ai.orange.evidence.EvidenceRepository;
 import com.ai.orange.harness.HarnessProperties;
 import com.ai.orange.harness.claude.ClaudeCodeCommand;
+import com.ai.orange.harness.container.ContainerRuntime;
+import com.ai.orange.harness.container.ContainerSpec;
+import com.ai.orange.harness.container.DockerCommand;
 import com.ai.orange.json.Json;
 import com.ai.orange.worktree.Git;
 import com.ai.orange.worktree.WorktreeService;
@@ -37,6 +40,11 @@ import org.springframework.stereotype.Component;
  *
  * <p>Commands run as {@code sh -c} in the worktree with only the harness's allowlisted
  * environment, so they never see the coordinator's own secrets.
+ *
+ * <p>In container mode a task's commands execute what its agent wrote, so each runs in a container
+ * of its own, on a clone of the head under the run's directory: the task's worktree, in which
+ * orange runs git, is never written by them. A session's commands stay on the host; they are the
+ * user's own, on the user's own code.
  */
 @Component
 public class EvidenceRunner implements RunExecutor {
@@ -45,6 +53,10 @@ public class EvidenceRunner implements RunExecutor {
     static final String STATUS_COMMAND = "git status --porcelain";
     /** How long a killed command gets to release its output pipe. */
     private static final long DRAIN_MILLIS = 2_000;
+    /** How long a removed container's client gets to end before the container is removed once more. */
+    private static final long CLIENT_EXIT_MILLIS = 5_000;
+    /** docker's own exit code when it could not create or start a container. */
+    private static final int DOCKER_ERROR = 125;
 
     private final RunRepository runs;
     private final EvidenceRepository evidence;
@@ -55,27 +67,33 @@ public class EvidenceRunner implements RunExecutor {
     private final RunLifecycle lifecycle;
     private final Supplier<Map<String, String>> hostEnv;
     private final SessionChecks sessionChecks;
-    private final Set<Process> live = ConcurrentHashMap.newKeySet();
+    private final ContainerRuntime containers;
+    private final RunWorkspaces workspaces;
+    private final Set<Started> live = ConcurrentHashMap.newKeySet();
     private volatile boolean stopping;
 
     @Autowired
     public EvidenceRunner(RunRepository runs, EvidenceRepository evidence, WorktreeService worktrees,
                           EvidenceProperties props, HarnessProperties harnessProps, RunsProperties runsProps,
-                          RunLifecycle lifecycle, SessionChecks sessionChecks) {
-        this(runs, evidence, worktrees, props, harnessProps, runsProps, lifecycle, System::getenv, sessionChecks);
+                          RunLifecycle lifecycle, SessionChecks sessionChecks, ContainerRuntime containers,
+                          RunWorkspaces workspaces) {
+        this(runs, evidence, worktrees, props, harnessProps, runsProps, lifecycle, System::getenv, sessionChecks,
+                containers, workspaces);
     }
 
     public EvidenceRunner(RunRepository runs, EvidenceRepository evidence, WorktreeService worktrees,
                           EvidenceProperties props, HarnessProperties harnessProps, RunsProperties runsProps,
                           RunLifecycle lifecycle, Supplier<Map<String, String>> hostEnv) {
-        this(runs, evidence, worktrees, props, harnessProps, runsProps, lifecycle, hostEnv, null);
+        this(runs, evidence, worktrees, props, harnessProps, runsProps, lifecycle, hostEnv, null, null, null);
     }
 
     public EvidenceRunner(RunRepository runs, EvidenceRepository evidence, WorktreeService worktrees,
                           EvidenceProperties props, HarnessProperties harnessProps, RunsProperties runsProps,
                           RunLifecycle lifecycle, Supplier<Map<String, String>> hostEnv,
-                          SessionChecks sessionChecks) {
+                          SessionChecks sessionChecks, ContainerRuntime containers, RunWorkspaces workspaces) {
         this.sessionChecks = sessionChecks;
+        this.containers = containers;
+        this.workspaces = workspaces;
         this.runs = runs;
         this.evidence = evidence;
         this.worktrees = worktrees;
@@ -105,7 +123,7 @@ public class EvidenceRunner implements RunExecutor {
         stopping = true;
         if (live.isEmpty()) return;
         log.warn("stopping: killing {} running evidence command(s)", live.size());
-        live.forEach(EvidenceRunner::kill);
+        live.forEach(s -> s.kill().run());
         long deadline = System.nanoTime() + WorkerRunner.SHUTDOWN_GRACE.toNanos();
         while (!live.isEmpty() && System.nanoTime() < deadline) {
             try {
@@ -134,6 +152,12 @@ public class EvidenceRunner implements RunExecutor {
             return lifecycle.fromRow(run.id());
         } catch (Interrupted e) {
             return lifecycle.finish(run, RunResult.failed(run.id(), "coordinator_restart"));
+        } catch (NoContainer e) {
+            // No verdict on the work: nothing is recorded for the command, and nothing counts.
+            log.error("verify run {}: docker could not run an evidence command: {}. Is the image {} built "
+                    + "(orange/worker/build.sh) and the Docker daemon running?", run.id(), e.getMessage(),
+                    containers.settings().image());
+            return lifecycle.finish(run, RunResult.failed(run.id(), "container_unavailable"));
         } catch (RuntimeException e) {
             log.error("verify run {} failed: {}", run.id(), e.toString());
             return lifecycle.finish(run, RunResult.failed(run.id(), "workspace_failed"));
@@ -145,7 +169,7 @@ public class EvidenceRunner implements RunExecutor {
         if (sessionChecks == null) throw new IllegalStateException("this runner does not check sessions");
         long deadline = System.nanoTime() + runsProps.timeout(RunKind.VERIFY).toNanos();
         RunOutcome.SessionCheck outcome = sessionChecks.check(run, (dir, command, budget) -> {
-            CommandResult r = runCommand(run, dir, command, budget);
+            CommandResult r = runCommand(run, dir, command, budget, null);
             return new SessionChecks.Commands.Result(r.exitCode(), r.outputTail());
         }, deadline);
         runs.recordOutcome(run.id(), outcome.toJsonb());
@@ -175,14 +199,47 @@ public class EvidenceRunner implements RunExecutor {
         }
 
         long deadline = System.nanoTime() + runsProps.timeout(RunKind.VERIFY).toNanos();
-        for (EvidenceProperties.Command c : props.commands()) {
-            Duration budget = Duration.ofNanos(Math.max(0, Math.min(c.timeout().toNanos(), deadline - System.nanoTime())));
-            CommandResult r = runCommand(run, wt, c.command(), budget);
-            boolean passed = r.exitCode() == 0;
-            evidence.record(run.taskId(), run.id(), head, c.kind(), c.command(), r.exitCode(), r.outputTail(), passed);
-            if (!passed) gaps.add(new EvidenceGap(c.kind(), c.command(), r.exitCode(), r.outputTail()));
+        boolean contained = containers != null && containers.enabled();
+        Path runDir = harnessProps.runRoot().resolve(run.id().toString()).toAbsolutePath();
+        Path where = wt;
+        try {
+            if (contained && !props.commands().isEmpty()) {
+                // The commands execute what the agent wrote: they get a copy of the head, never the
+                // worktree orange runs git in.
+                where = cloneOf(run, head, runDir);
+                // A big branch takes its time to clone, and the first command's first beat is a heartbeat away.
+                if (Boolean.FALSE.equals(lifecycle.renewLease(run))) throw new LeaseLost();
+            }
+            int n = 0;
+            for (EvidenceProperties.Command c : props.commands()) {
+                n++;
+                Duration budget = Duration.ofNanos(Math.max(0, Math.min(c.timeout().toNanos(), deadline - System.nanoTime())));
+                CommandResult r = runCommand(run, where, c.command(), budget,
+                        contained ? DockerCommand.runName(run.id()) + "-c" + n : null);
+                boolean passed = r.exitCode() == 0;
+                evidence.record(run.taskId(), run.id(), head, c.kind(), c.command(), r.exitCode(), r.outputTail(), passed);
+                if (!passed) gaps.add(new EvidenceGap(c.kind(), c.command(), r.exitCode(), r.outputTail()));
+            }
+        } finally {
+            if (contained) workspaces.discard(runDir);
         }
         return conclude(run, new RunOutcome.Verification(false, gaps.isEmpty(), gaps));
+    }
+
+    /** {@code <runDir>/workspace}: a clone of the task's branch, which must be at {@code head} like the worktree. */
+    private Path cloneOf(Run run, String head, Path runDir) {
+        Path clone;
+        try {
+            clone = workspaces.cloneOf(run.taskId(), runDir);
+        } catch (IOException e) {
+            throw new IllegalStateException("could not clone the task's branch: " + e.getMessage(), e);
+        }
+        // Nothing but orange's own git has touched the clone yet.
+        String cloned = Git.head(clone);
+        if (!cloned.equals(head)) {
+            throw new IllegalStateException("the task's branch is at " + cloned + ", but its worktree at " + head);
+        }
+        return clone;
     }
 
     /** {@code input.head_sha}, or "" when the run has none. */
@@ -203,19 +260,23 @@ public class EvidenceRunner implements RunExecutor {
 
     private record CommandResult(int exitCode, String outputTail) {}
 
-    private CommandResult runCommand(Run run, Path wt, String command, Duration timeout) {
-        ProcessBuilder pb = new ProcessBuilder("sh", "-c", command).directory(wt.toFile()).redirectErrorStream(true);
-        pb.environment().clear();
-        pb.environment().putAll(ClaudeCodeCommand.passThrough(hostEnv.get(), harnessProps.claudeCode().passEnv()));
+    /**
+     * Runs one command to its end, its timeout, or the end of the run's lease.
+     *
+     * @param container the name of the container the command gets; null = a process on the host
+     */
+    private CommandResult runCommand(Run run, Path dir, String command, Duration timeout, String container) {
         if (stopping) throw new Interrupted();
-        Process p;
+        Started s;
         try {
-            p = pb.start();
-            p.getOutputStream().close();
+            s = container == null ? startOnHost(dir, command) : startInContainer(run, container, dir, command);
         } catch (IOException e) {
+            // ContainerUnavailableException included: no docker binary, no daemon, no run network.
+            if (container != null) throw new NoContainer(e.getMessage());
             return new CommandResult(-1, "could not start sh: " + e.getMessage());
         }
-        live.add(p);
+        Process p = s.process();
+        live.add(s);
         try {
             // So the reaper of the next coordinator can kill it if this one dies mid-command.
             runs.recordPid(run.id(), p.pid());
@@ -226,18 +287,21 @@ public class EvidenceRunner implements RunExecutor {
         Thread reader = Thread.ofVirtual().start(() -> tail.readAll(p.getInputStream()));
         long deadline = System.nanoTime() + timeout.toNanos();
         long nextBeat = System.nanoTime() + runsProps.heartbeat().toNanos();
+        boolean killed = false;
         try {
             while (true) {
                 long now = System.nanoTime();
                 if (now >= deadline) {
-                    kill(p);
+                    killed = true;
+                    s.kill().run();
                     reader.join(DRAIN_MILLIS);
                     return new CommandResult(-1, tail.withNote("[orange: timed out after " + timeout + "]"));
                 }
                 if (now >= nextBeat) {
                     nextBeat = now + runsProps.heartbeat().toNanos();
                     if (Boolean.FALSE.equals(lifecycle.renewLease(run))) {
-                        kill(p);
+                        killed = true;
+                        s.kill().run();
                         throw new LeaseLost();
                     }
                 }
@@ -245,21 +309,73 @@ public class EvidenceRunner implements RunExecutor {
                     // Killed by a shutdown: that is no verdict on the work.
                     if (stopping) throw new Interrupted();
                     reader.join(DRAIN_MILLIS);
+                    // docker's own exit code for "the container could not be created or started": the
+                    // command never ran. 126 and 127 are also what sh says of the user's own command.
+                    if (container != null && p.exitValue() == DOCKER_ERROR) throw new NoContainer(dockersReason(tail.text()));
                     return new CommandResult(p.exitValue(), tail.text());
                 }
             }
         } catch (InterruptedException e) {
-            kill(p);
+            killed = true;
+            s.kill().run();
             Thread.currentThread().interrupt();
             throw new Interrupted();
         } finally {
-            live.remove(p);
+            // A kill can arrive while the daemon is still creating the container: once more, now that the client is gone.
+            if (container != null && (killed || stopping)) removeAgain(p, container);
+            live.remove(s);
         }
+    }
+
+    /** A command that was started, and how to stop it with everything it started. */
+    private record Started(Process process, Runnable kill) {}
+
+    private Started startOnHost(Path dir, String command) throws IOException {
+        ProcessBuilder pb = new ProcessBuilder("sh", "-c", command).directory(dir.toFile()).redirectErrorStream(true);
+        pb.environment().clear();
+        pb.environment().putAll(ClaudeCodeCommand.passThrough(hostEnv.get(), harnessProps.claudeCode().passEnv()));
+        Process p = pb.start();
+        p.getOutputStream().close();
+        return new Started(p, () -> kill(p));
+    }
+
+    /**
+     * The command in a container that holds {@code dir} and nothing else of the host: none of
+     * orange's environment, not even the allowlisted part. The process is the docker client.
+     */
+    private Started startInContainer(Run run, String name, Path dir, String command) throws IOException {
+        ContainerSpec spec = new ContainerSpec(name,
+                DockerCommand.labels(run.id(), run.kind().dbValue(), runsProps.workerId()), dir,
+                List.of(new ContainerSpec.Mount(dir, false)), Map.of("HOME", containers.settings().home()), Map.of(),
+                true, List.of("sh", "-c", command));
+        Process p = containers.command(spec).redirectErrorStream(true).start();
+        p.getOutputStream().close();
+        return new Started(p, () -> {
+            containers.remove(name);
+            kill(p);
+        });
+    }
+
+    private void removeAgain(Process client, String container) {
+        boolean interrupted = Thread.interrupted();
+        try {
+            client.waitFor(CLIENT_EXIT_MILLIS, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            interrupted = true;
+        }
+        containers.remove(container);
+        if (interrupted) Thread.currentThread().interrupt();
     }
 
     private static void kill(Process p) {
         p.descendants().forEach(ProcessHandle::destroyForcibly);
         p.destroyForcibly();
+    }
+
+    /** docker's reason: its last line that is not the pointer to its own help, which comes after. */
+    private static String dockersReason(String output) {
+        return output.lines().map(String::strip).filter(l -> !l.isEmpty() && !l.startsWith("Run 'docker "))
+                .reduce((a, b) -> b).orElse("");
     }
 
     private String tail(String text) {
@@ -276,6 +392,13 @@ public class EvidenceRunner implements RunExecutor {
     private static final class Interrupted extends RuntimeException {
         Interrupted() {
             super(null, null, false, false);
+        }
+    }
+
+    /** Docker could not run a command's container; the message is docker's reason. */
+    private static final class NoContainer extends RuntimeException {
+        NoContainer(String why) {
+            super(why, null, false, false);
         }
     }
 
