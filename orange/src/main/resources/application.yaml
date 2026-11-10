@@ -210,6 +210,29 @@ orange:
       command: [claude]
       # The only host variables a run inherits. Credentials are dropped even if listed here.
       pass-env: [PATH, LANG, LC_ALL, TERM, TMPDIR, HOME, USER]
+  runner:
+    # process   = an agent is a child process of orange: its Bash is not confined (development).
+    # container = every run of a task (the agent, the review of its diff, its evidence commands)
+    #             runs in a container that holds one directory and none of orange's environment.
+    isolation: ${ORANGE_RUNNER_ISOLATION:process}
+    container:
+      docker: [docker]
+      # Built on this host with orange/worker/build.sh. orange never pulls it.
+      image: ${ORANGE_WORKER_IMAGE:orange-worker:local}
+      # How the image starts Claude Code.
+      claude-command: [claude]
+      # Created when missing: a bridge without traffic between containers.
+      network: ${ORANGE_RUNNER_NETWORK:orange-runs}
+      # uid:gid inside the container. Blank = orange's own, so what a run writes is orange's to read.
+      user: ${ORANGE_RUNNER_USER:}
+      home: /home/agent
+      # Per container, e.g. 6g and 2. Blank = no limit.
+      memory: ${ORANGE_RUNNER_MEMORY:}
+      cpus: ${ORANGE_RUNNER_CPUS:}
+      pids-limit: 4096
+      # Extra mounts for agent and evidence containers, "source:target[:ro]", e.g. a named volume
+      # for a dependency cache. Whatever is mounted here is shared by every run.
+      volumes: []
   gateway:
     # LiteLLM proxy for tiers with auth: gateway (start with: docker compose --profile gateway up -d litellm).
     base-url: ${LITELLM_BASE_URL:http://localhost:4000}
