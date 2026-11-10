@@ -103,8 +103,9 @@ orange:
     # Where agents reach /mcp/worker. Blank = http://127.0.0.1:<server port>/mcp/worker.
     worker-url: ${ORANGE_MCP_WORKER_URL:}
   api:
-    # Bearer token for /sessions, /attention and /mcp/steering (session reporters and steering
-    # clients). Blank = open, which is only right while orange listens on localhost.
+    # Bearer token for /sessions, /attention, /mcp/steering and /brief (session reporters, steering
+    # clients, the latest brief's page; one brief's page also opens with its own key). Blank = open,
+    # which is only right while orange listens on localhost.
     token: ${ORANGE_API_TOKEN:}
   attention:
     # Rule-based attention on the user's own sessions (project-space spec, Phase A).
@@ -162,6 +163,8 @@ orange:
       # No pushes while the url is blank. On a public server the topic's name is the secret.
       url: ${ORANGE_NTFY_URL:}
       attention-topic: ${ORANGE_NTFY_ATTENTION_TOPIC:attention}
+      # The focus brief goes to a topic of its own, so the phone can ring differently for it.
+      brief-topic: ${ORANGE_NTFY_BRIEF_TOPIC:brief}
       token: ${ORANGE_NTFY_TOKEN:}
   conventions:
     # Global defaults of the conventions (project-space spec §8). A project's space and a session's

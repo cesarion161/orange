@@ -33,10 +33,18 @@ public record NotifyProperties(@DefaultValue("true") boolean enabled,
     /**
      * @param url            base URL of the ntfy server, e.g. {@code https://ntfy.sh} or the VPS's own
      * @param attentionTopic topic for urgent and critical attention items; on a public server its name is the secret
+     * @param briefTopic     topic for the focus brief, so the phone can treat it differently from what needs the user now
      * @param token          ntfy access token, when the server wants one
      */
-    public record Ntfy(String url, @DefaultValue("attention") String attentionTopic, String token,
+    public record Ntfy(String url, @DefaultValue("attention") String attentionTopic,
+                       @DefaultValue("brief") String briefTopic, String token,
                        @DefaultValue("5s") Duration connectTimeout, @DefaultValue("15s") Duration readTimeout) {
+
+        public Ntfy {
+            // An empty variable in .env binds as an empty string, which must not mean an empty topic.
+            attentionTopic = attentionTopic == null || attentionTopic.isBlank() ? "attention" : attentionTopic.strip();
+            briefTopic = briefTopic == null || briefTopic.isBlank() ? "brief" : briefTopic.strip();
+        }
 
         public boolean configured() {
             return url != null && !url.isBlank();

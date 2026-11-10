@@ -15,6 +15,7 @@ import com.ai.orange.brief.BriefService.Focus;
 import com.ai.orange.brief.BriefSnapshot.ProjectFacts;
 import com.ai.orange.harness.FakeClaude;
 import com.ai.orange.json.Json;
+import com.ai.orange.notify.AttentionNotifier;
 import com.ai.orange.notify.NotifyProperties;
 import com.ai.orange.project.Project;
 import com.ai.orange.project.ProjectService;
@@ -31,9 +32,13 @@ import com.ai.orange.run.SchedulerPause;
 import com.ai.orange.session.NeutralEvent;
 import com.ai.orange.session.Session;
 import com.ai.orange.session.SessionService;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.math.BigDecimal;
+import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.OffsetDateTime;
@@ -43,10 +48,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import org.jooq.DSLContext;
 import org.jooq.JSONB;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -56,22 +64,54 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 /**
- * A brief from its brief time to its row, with a fake {@code claude}: the facts are read, a brief
- * run adds the words, and whatever the run does (fails, says nothing, names a project that is
- * not there, is not started at all) the brief is still written from the facts.
+ * A brief from its brief time to the phone, with a fake {@code claude} and a fake ntfy: the facts
+ * are read, a brief run adds the words, and whatever the run does (fails, says nothing, names a
+ * project that is not there, is not started at all) the brief is still written from the facts.
+ * Then it is pushed once.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-        properties = "orange.brief.first-window=72h")
+        properties = {"orange.brief.first-window=72h", "orange.notify.ntfy.brief-topic=my-brief",
+                "orange.brief.public-url=https://orange.example"})
 @Import(TestcontainersConfiguration.class)
 class BriefIT {
 
     static final Path RUN_ROOT = RunTestSupport.tempDir("brief-it-");
     static final Pattern PROJECT_LINE = Pattern.compile("(?m)^## Project: (.+)$");
 
+    /** What the fake ntfy took, and the status it answers with. */
+    static final List<JsonNode> PUBLISHED = new CopyOnWriteArrayList<>();
+    static final AtomicInteger STATUS = new AtomicInteger(200);
+    static final HttpServer NTFY = startNtfy();
+
+    static HttpServer startNtfy() {
+        try {
+            HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            server.createContext("/", exchange -> {
+                byte[] body = exchange.getRequestBody().readAllBytes();
+                if (STATUS.get() == 200) PUBLISHED.add(Json.mapper().readTree(body));
+                exchange.sendResponseHeaders(STATUS.get(), -1);
+                exchange.close();
+            });
+            server.start();
+            return server;
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
     @DynamicPropertySource
     static void props(DynamicPropertyRegistry r) {
         FakeClaude.register(r, RUN_ROOT);
+        r.add("orange.notify.ntfy.url", () -> "http://127.0.0.1:" + NTFY.getAddress().getPort());
     }
+
+    @AfterAll
+    static void stop() {
+        NTFY.stop(0);
+    }
+
+    @Autowired BriefDelivery delivery;
+    @Autowired AttentionNotifier attentionNotifier;
 
     @Autowired BriefScheduler scheduler;
     @Autowired BriefService service;
@@ -96,6 +136,8 @@ class BriefIT {
     @BeforeEach
     void fresh() {
         clean();
+        PUBLISHED.clear();
+        STATUS.set(200);
         now = ZonedDateTime.now(notify.zoneId()).plusDays(1).withHour(9).withMinute(5).truncatedTo(ChronoUnit.MINUTES);
         afternoon = now.withHour(14);
     }
@@ -199,7 +241,7 @@ class BriefIT {
         assertThat(b.runId()).isEqualTo(run.id());
         assertThat(b.note()).isNull();
         assertThat(b.pushable()).as("the first brief always has something new").isTrue();
-        assertThat(b.deliveredAt()).isNull();
+        assertThat(b.deliveredAt()).as("the same tick pushed it").isNotNull();
         assertThat(b.pageKey()).isNotBlank();
         assertThat(content(b).projects()).singleElement().satisfies(line -> {
             assertThat(line.project()).isEqualTo("alpha");
@@ -543,5 +585,117 @@ class BriefIT {
         assertThat(scheduled.pushable()).isTrue();
         assertThat(content(scheduled).projects()).hasSize(1);
         assertThat(briefRuns()).hasSize(2);
+    }
+
+    // ─────────────────────────── to the phone ───────────────────────────
+
+    @Test
+    void aBriefIsPushedOnce() {
+        working("alpha", null);
+
+        scheduler.tick(now);
+
+        Brief b = brief();
+        assertThat(PUBLISHED).singleElement().satisfies(m -> {
+            assertThat(m.path("topic").asText()).isEqualTo("my-brief");
+            assertThat(m.path("priority").asInt()).isEqualTo(3);
+            assertThat(m.path("title").asText()).startsWith("orange brief").isEqualTo(BriefText.title(b));
+            assertThat(m.path("message").asText()).contains("alpha").isEqualTo(BriefText.push(b));
+            assertThat(m.path("click").asText()).startsWith("https://orange.example/brief/").contains("?k=")
+                    .isEqualTo("https://orange.example/brief/" + b.id() + "?k=" + b.pageKey());
+        });
+        assertThat(b.deliveredAt().toInstant()).isEqualTo(now.toInstant());
+
+        scheduler.tick(now);
+        scheduler.tick(now.plusMinutes(30));
+        assertThat(delivery.deliver(now.plusMinutes(31))).isZero();
+        assertThat(PUBLISHED).as("a brief goes out once").hasSize(1);
+        assertThat(attentionItems.findUnpushed()).isEmpty();
+    }
+
+    @Test
+    void aFailedPushIsTriedAgainThenDropped() {
+        working("alpha", null);
+        STATUS.set(500);
+
+        scheduler.tick(now);
+
+        assertThat(brief().deliveredAt()).as("ntfy did not take it").isNull();
+        assertThat(PUBLISHED).isEmpty();
+        assertThat(delivery.deliver(now.plusSeconds(30))).isZero();
+        assertThat(brief().deliveredAt()).isNull();
+
+        STATUS.set(200);
+        assertThat(delivery.deliver(now.plusMinutes(1))).isEqualTo(1);
+        assertThat(PUBLISHED).hasSize(1);
+        assertThat(brief().deliveredAt().toInstant()).isEqualTo(now.plusMinutes(1).toInstant());
+
+        // A brief ntfy has not taken by the end of the catch-up time stays on the page only.
+        clean();
+        PUBLISHED.clear();
+        working("beta", null);
+        STATUS.set(500);
+        scheduler.tick(now);
+        STATUS.set(200);
+        assertThat(brief().pushable()).isTrue();
+        assertThat(delivery.deliver(now.plusHours(3))).isZero();
+        assertThat(PUBLISHED).isEmpty();
+        assertThat(brief().deliveredAt()).isNull();
+    }
+
+    @Test
+    void aNothingNewBriefAndAnOnDemandBriefAreNotPushed() {
+        working("alpha", null);
+        scheduler.tick(now);
+        assertThat(PUBLISHED).hasSize(1);
+        PUBLISHED.clear();
+
+        scheduler.tick(afternoon);
+
+        assertThat(allBriefs()).hasSize(2);
+        assertThat(allBriefs().getLast().pushable()).isFalse();
+        assertThat(PUBLISHED).as("nothing new: nothing on the phone").isEmpty();
+
+        Focus asked = service.focus(true, afternoon.plusMinutes(20));
+        assertThat(asked.state()).isEqualTo(Focus.READY);
+        assertThat(asked.brief().scheduled()).isFalse();
+        assertThat(delivery.deliver(afternoon.plusMinutes(21))).isZero();
+        scheduler.tick(afternoon.plusMinutes(22));
+        assertThat(PUBLISHED).isEmpty();
+        assertThat(allBriefs()).hasSize(3).filteredOn(b -> b.deliveredAt() != null).hasSize(1);
+    }
+
+    @Test
+    void anUrgentEntryIsNotPushedOnItsOwn() {
+        working("alpha", "brief-urgent");
+
+        scheduler.tick(now);
+
+        assertThat(urgentItems()).hasSize(1);
+        assertThat(attentionNotifier.flush(now)).as("the model's urgent entry is a normal item").isZero();
+        assertThat(attentionNotifier.flush(now.plusMinutes(30))).isZero();
+        assertThat(PUBLISHED).singleElement().satisfies(m -> {
+            assertThat(m.path("topic").asText()).isEqualTo("my-brief");
+            assertThat(m.path("priority").asInt()).as("an urgent entry does not change how the phone rings").isEqualTo(3);
+            assertThat(m.path("message").asText()).contains("! alpha: The milestone is close with nothing closed");
+        });
+        assertThat(urgentItems().getFirst().pushedAt()).isNull();
+    }
+
+    @Test
+    void oldBriefsAreDeleted() {
+        working("alpha", null);
+        scheduler.tick(now);
+        Brief b = brief();
+
+        scheduler.tick(now.plusMinutes(1));
+        assertThat(allBriefs()).as("a young brief stays").hasSize(1);
+
+        dsl.update(BRIEFS).set(BRIEFS.CREATED_AT, now.minusDays(31).toOffsetDateTime()).where(BRIEFS.ID.eq(b.id()))
+                .execute();
+        scheduler.tick(now.plusMinutes(2));
+
+        assertThat(allBriefs()).isEmpty();
+        assertThat(briefRuns()).as("its run stays; only the brief goes").hasSize(1);
     }
 }

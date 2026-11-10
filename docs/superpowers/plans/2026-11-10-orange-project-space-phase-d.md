@@ -13,7 +13,7 @@ skipped or refused run costs the words, never the brief: the facts are always or
 - [x] **D3. `submit_brief` and the brief run's wiring.**
 - [x] **D4. The prompt and the text (pure).**
 - [x] **D5. Writing a brief: the service, the tick and the fake.**
-- [ ] **D6. Delivery and the page.**
+- [x] **D6. Delivery and the page.**
 - [ ] **D7. `orange_focus`, the plugin README, the docs and the live check.**
 
 ## Builder's rulings

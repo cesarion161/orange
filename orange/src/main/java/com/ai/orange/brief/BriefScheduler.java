@@ -9,8 +9,8 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
- * The brief's clock: every sweep it writes the brief that is due, if any, and deletes briefs past
- * their retention. A brief run can take minutes, so a tick runs on a thread of its own and never
+ * The brief's clock: every sweep it writes the brief that is due, if any, pushes the one the phone
+ * has not had, and deletes briefs past their retention. A brief run can take minutes, so a tick runs on a thread of its own and never
  * holds another scheduled job; while one runs, later sweeps do nothing.
  */
 @Component
@@ -19,14 +19,16 @@ public class BriefScheduler {
     private static final Logger log = LoggerFactory.getLogger(BriefScheduler.class);
 
     private final BriefService service;
+    private final BriefDelivery delivery;
     private final BriefRepository briefs;
     private final BriefProperties props;
     private final NotifyProperties notify;
     private final AtomicBoolean ticking = new AtomicBoolean();
 
-    public BriefScheduler(BriefService service, BriefRepository briefs, BriefProperties props,
-                          NotifyProperties notify) {
+    public BriefScheduler(BriefService service, BriefDelivery delivery, BriefRepository briefs,
+                          BriefProperties props, NotifyProperties notify) {
         this.service = service;
+        this.delivery = delivery;
         this.briefs = briefs;
         this.props = props;
         this.notify = notify;
@@ -57,6 +59,11 @@ public class BriefScheduler {
             service.scheduled(at);
         } catch (RuntimeException e) {
             log.warn("writing the scheduled brief failed: {}", e.toString());
+        }
+        try {
+            delivery.deliver(at);
+        } catch (RuntimeException e) {
+            log.warn("pushing the brief failed: {}", e.toString());
         }
         try {
             int deleted = briefs.deleteOlderThan(at.toOffsetDateTime().minus(props.retention()));

@@ -30,8 +30,18 @@ public class NtfyClient {
      * @throws NotifyException when the server cannot be reached or refuses the message
      */
     public void publish(String topic, String title, String message, int priority) {
+        publish(topic, title, message, priority, null);
+    }
+
+    /**
+     * @param priority    ntfy's 1 (min) to 5 (max)
+     * @param clickOrNull the link a tap on the push opens; null or blank = none
+     * @throws NotifyException when the server cannot be reached or refuses the message
+     */
+    public void publish(String topic, String title, String message, int priority, String clickOrNull) {
         ObjectNode body = Json.mapper().createObjectNode()
                 .put("topic", topic).put("title", title).put("message", message).put("priority", priority);
+        if (clickOrNull != null && !clickOrNull.isBlank()) body.put("click", clickOrNull);
         HttpRequest.Builder req = HttpRequest.newBuilder(URI.create(props.url().strip()))
                 .timeout(props.readTimeout())
                 .header("Content-Type", "application/json")
