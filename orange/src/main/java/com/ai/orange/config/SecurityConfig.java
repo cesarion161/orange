@@ -85,10 +85,11 @@ public class SecurityConfig {
             @Override
             protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
                                             FilterChain chain) throws ServletException, IOException {
-                if (guard.refuses(request)) {
+                String refusal = guard.refusal(request);
+                if (refusal != null) {
                     response.setStatus(HttpServletResponse.SC_FORBIDDEN);
                     response.setContentType("application/json");
-                    response.getWriter().write("{\"error\":\"runs reach only /mcp/worker\"}");
+                    response.getWriter().write("{\"error\":\"" + refusal + "\"}");
                     return;
                 }
                 chain.doFilter(request, response);

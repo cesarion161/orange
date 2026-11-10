@@ -32,6 +32,10 @@ import java.util.regex.Pattern;
  * (indented or not) it writes {@code <path>=visible} or {@code <path>=hidden} to
  * {@code fake-probe.txt} under {@code $CLAUDE_CONFIG_DIR}, then implements like the default.
  *
+ * <p>{@code commit-hang} implements like the default, writes {@code fake-committed.txt} under
+ * {@code $CLAUDE_CONFIG_DIR} and then hangs without reporting. {@code rewind} resets its branch
+ * to the commit before the one it started from and reports {@code done}.
+ *
  * <p>Every scenario records its arguments, environment and prompt as {@code fake-args.json},
  * {@code fake-env.json} and {@code fake-prompt.txt} under {@code $CLAUDE_CONFIG_DIR}; MCP replies
  * go to {@code fake-mcp.log}, after a {@code POST <url>} line per tool call.
@@ -219,6 +223,19 @@ public class FakeClaude {
                 Files.writeString(configDir.resolve("child.pid"), Long.toString(child.pid()));
                 assistant("msg_1", model, "Running a long command", 100, 20);
                 sleepForever();
+            }
+            case "commit-hang" -> {
+                // Work that is committed, and then a command that never ends: what a kill finds.
+                implement(cwd, prompt, firstLine);
+                Files.writeString(configDir.resolve("fake-committed.txt"), "committed\n");
+                assistant("msg_1", model, "Committed; now running a long command", 100, 20);
+                sleepForever();
+            }
+            case "rewind" -> {
+                // An agent that throws away the commit it started from and says it is done.
+                run(cwd, "git", "reset", "-q", "--hard", "HEAD~1");
+                callTool("report_result", "{\"status\":\"done\",\"summary\":\"Started over.\"}");
+                finishOk(model, session, "Done.");
             }
             case "expensive" -> {
                 assistant("msg_1", model, "Reading the whole repository", 5_000_000, 100);

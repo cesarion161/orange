@@ -10,6 +10,7 @@ import com.ai.orange.worktree.WorktreeService;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
 import java.time.Duration;
@@ -162,20 +163,46 @@ public class RunWorkspaces {
         }
     }
 
-    /** Deletes {@code <runDir>/workspace} and {@code <runDir>/export}. Never throws. */
+    /**
+     * Deletes the run's clone and export once none of the run's containers is left: whatever still
+     * carries its label is removed first. When docker cannot say that they are gone, the
+     * directories stay for {@link RunRetention}: orange walks no tree that a container may still
+     * be writing, where a directory can turn into a link between two looks. Never throws.
+     *
+     * @return false when the directories were left
+     */
+    public boolean discard(UUID runId, Path runDir) {
+        if (containers.removeByRun(runId) < 0) {
+            log.warn("run {}: docker cannot say that its containers are gone; its clone under {} stays until the "
+                    + "run's directory is deleted", runId, runDir);
+            return false;
+        }
+        discard(runDir);
+        return true;
+    }
+
+    /**
+     * Deletes {@code <runDir>/workspace} and {@code <runDir>/export}. Only for directories no
+     * container holds; a run's own go through {@link #discard(UUID, Path)}. Never throws.
+     */
     public void discard(Path runDir) {
         for (String name : List.of(WORKSPACE, EXPORT)) {
             Path dir = runDir.toAbsolutePath().resolve(name);
             try {
-                try {
-                    deleteTree(dir, false);
-                } catch (IOException refused) {
-                    // Build tools leave read-only trees behind.
-                    deleteTree(dir, true);
-                }
+                delete(dir);
             } catch (IOException | RuntimeException e) {
                 log.warn("could not delete {}: {}", dir, e.toString());
             }
+        }
+    }
+
+    /** Deletes {@code root} and everything below it without following links, read-only directories included. */
+    static void delete(Path root) throws IOException {
+        try {
+            deleteTree(root, false);
+        } catch (IOException refused) {
+            // Build tools leave read-only trees behind.
+            deleteTree(root, true);
         }
     }
 
@@ -201,10 +228,12 @@ public class RunWorkspaces {
                 }
                 try (Stream<Path> list = Files.list(p)) {
                     entries = list.toList();
+                } catch (NoSuchFileException gone) {
+                    // Someone else deleted it meanwhile (the reaper and the run's own executor may both discard).
                 }
             }
             if (entries.isEmpty()) {
-                Files.delete(p);
+                Files.deleteIfExists(p);
                 pending.pop();
             } else {
                 // The directory stays below its entries and is looked at again when they are gone.

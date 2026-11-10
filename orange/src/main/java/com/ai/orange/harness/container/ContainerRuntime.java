@@ -2,6 +2,7 @@ package com.ai.orange.harness.container;
 
 import com.ai.orange.harness.claude.ClaudeCodeCommand;
 import com.sun.security.auth.module.UnixSystem;
+import jakarta.annotation.PostConstruct;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -17,6 +18,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
@@ -42,6 +44,8 @@ public class ContainerRuntime {
     private final RunnerProperties props;
     private final Supplier<Map<String, String>> hostEnv;
     private volatile List<String> subnets = List.of();
+    /** Whether docker has answered for the run network since this coordinator started. */
+    private volatile boolean networkSeen;
 
     @Autowired
     public ContainerRuntime(RunnerProperties props) {
@@ -114,6 +118,8 @@ public class ContainerRuntime {
             Thread.currentThread().interrupt();
             return new Result(-1, out.text());
         }
+        // The client's end is not always the container's (a client that was killed, or lost its daemon).
+        remove(c.name());
         return new Result(client.exitValue(), out.text());
     }
 
@@ -123,7 +129,8 @@ public class ContainerRuntime {
         boolean interrupted = Thread.interrupted();
         try {
             Ran removed = exec(DockerCommand.remove(settings().docker(), List.of(name)), SHORT);
-            if (removed.exitCode() != 0) {
+            // A container that is gone is exit code 0; one that --rm is taking away right now is as good as gone.
+            if (removed.exitCode() != 0 && !removed.lastStderrLine().contains("is already in progress")) {
                 log.warn("could not remove container {}: {}", name, removed.lastStderrLine());
             }
         } catch (IOException | RuntimeException e) {
@@ -136,7 +143,8 @@ public class ContainerRuntime {
     /**
      * Removes every container that carries the run's label, running or not. Never throws.
      *
-     * @return how many were removed; 0 when docker cannot be reached
+     * @return how many were removed (0: there was none); -1 when docker could not be asked or could
+     *         not remove them, so that a container of the run may still be at work
      */
     public int removeByRun(UUID runId) {
         boolean interrupted = Thread.interrupted();
@@ -144,19 +152,23 @@ public class ContainerRuntime {
             Ran listed = exec(DockerCommand.listByRun(settings().docker(), runId), SHORT);
             if (listed.exitCode() != 0) {
                 log.warn("could not list the containers of run {}: {}", runId, listed.lastStderrLine());
-                return 0;
+                return -1;
             }
             List<String> ids = lines(listed.stdout());
             if (ids.isEmpty()) return 0;
             Ran removed = exec(DockerCommand.remove(settings().docker(), ids), SHORT);
             if (removed.exitCode() != 0) {
-                log.warn("could not remove the containers of run {}: {}", runId, removed.lastStderrLine());
-                return 0;
+                // One of them may have gone by itself in between (--rm): what counts is that none is left.
+                Ran left = exec(DockerCommand.listByRun(settings().docker(), runId), SHORT);
+                if (left.exitCode() != 0 || !lines(left.stdout()).isEmpty()) {
+                    log.warn("could not remove the containers of run {}: {}", runId, removed.lastStderrLine());
+                    return -1;
+                }
             }
             return ids.size();
         } catch (IOException | RuntimeException e) {
             log.warn("could not remove the containers of run {}: {}", runId, e.toString());
-            return 0;
+            return -1;
         } finally {
             if (interrupted) Thread.currentThread().interrupt();
         }
@@ -168,20 +180,50 @@ public class ContainerRuntime {
     }
 
     /**
+     * Whether docker has said which subnets the run network has. Until then nobody knows which
+     * requests come from a run's container ({@code RunNetworkGuard} lets only this host through).
+     */
+    public boolean networkSeen() {
+        return networkSeen;
+    }
+
+    /**
      * @param exitCode the command's, or docker's own (125, 126, 127: {@link DockerCommand#dockerFailed}); -1 at the timeout
      * @param output   the last 64 KiB of stdout and stderr
      */
     public record Result(int exitCode, String output) {}
 
-    @EventListener(ApplicationReadyEvent.class)
-    void onReady() {
+    /**
+     * Looks at the run network before the web server takes its first request: a container that
+     * outlived the previous coordinator may be calling already, and the guard has to know where
+     * from. A failure is a warning, never a failed start; {@link #lookAgain} keeps trying.
+     */
+    @PostConstruct
+    void lookAtNetwork() {
         if (!enabled()) return;
         try {
             ensureNetwork();
         } catch (ContainerUnavailableException e) {
-            log.warn("container mode, but Docker is not usable yet: {}. Runs of tasks will pause the scheduler until it is.",
-                    e.getMessage());
+            log.warn("container mode, but Docker is not usable yet: {}. Runs of tasks will pause the scheduler until "
+                    + "it is, and until the run network is known only this host itself reaches orange's API.", e.getMessage());
         }
+    }
+
+    /** Docker did not answer at the start: until it does, the guard cannot tell a run's request from anyone's. */
+    @Scheduled(fixedDelayString = "30s", initialDelayString = "30s")
+    void lookAgain() {
+        if (!enabled() || networkSeen) return;
+        try {
+            ensureNetwork();
+            log.info("Docker answers: the run network {} is {}", settings().network(), subnets);
+        } catch (ContainerUnavailableException e) {
+            log.debug("the run network is still unknown: {}", e.getMessage());
+        }
+    }
+
+    @EventListener(ApplicationReadyEvent.class)
+    void onReady() {
+        if (!enabled()) return;
         String image = settings().image();
         try {
             Ran inspected = exec(docker("image", "inspect", "--format", "{{.Id}}", image), SHORT);
@@ -218,6 +260,7 @@ public class ContainerRuntime {
                 }
             }
             subnets = lines(seen.stdout());
+            networkSeen = true;
         } catch (ContainerUnavailableException e) {
             throw e;
         } catch (IOException e) {

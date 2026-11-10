@@ -22,6 +22,8 @@ import java.util.UUID;
  * @param redact             secrets besides the credentials to mask in everything the run
  *                           writes to disk or turns into events, e.g. the run's MCP token
  * @param sandbox            the container the run's process lives in; null = a child process of orange
+ * @param projectSettings    whether the harness loads the settings its working directory carries
+ *                           (hooks included); false for a run that reads a tree someone else wrote
  */
 public record RunSpec(
         UUID runId,
@@ -39,18 +41,19 @@ public record RunSpec(
         Credentials credentials,
         Duration timeout,
         List<String> redact,
-        Sandbox sandbox) {
+        Sandbox sandbox,
+        boolean projectSettings) {
 
     public RunSpec {
         redact = redact == null ? List.of() : List.copyOf(redact);
     }
 
-    /** A run on the host with nothing to redact beyond its credentials. */
+    /** A run on the host with nothing to redact beyond its credentials, and its directory's own settings. */
     public RunSpec(UUID runId, String prompt, String appendSystemPrompt, String model, String smallModel,
                    Effort effort, Path cwd, List<String> tools, List<String> allowedTools,
                    List<String> disallowedTools, String permissionMode, Path mcpConfig, Credentials credentials,
                    Duration timeout) {
         this(runId, prompt, appendSystemPrompt, model, smallModel, effort, cwd, tools, allowedTools, disallowedTools,
-                permissionMode, mcpConfig, credentials, timeout, List.of(), null);
+                permissionMode, mcpConfig, credentials, timeout, List.of(), null, true);
     }
 }

@@ -26,8 +26,10 @@ import org.slf4j.LoggerFactory;
  * keeps raw copies of stdout and stderr in the run directory, and kills the whole process tree
  * on request.
  *
- * <p>For a run in a container the process is the docker client. Killing the client does not end
- * the container, so such a handle is started with an {@code alsoKill} that removes it.
+ * <p>For a run in a container the process is the docker client. The client's end is not the
+ * container's (a kill of the client, a client that lost its daemon or its stdout), so such a
+ * handle is started with an {@code alsoKill} that removes the container: at every kill, and
+ * whenever the process has ended, before its exit is reported.
  */
 public final class ProcessRunHandle implements RunHandle {
 
@@ -67,10 +69,11 @@ public final class ProcessRunHandle implements RunHandle {
      * As {@link #start(ProcessBuilder, String, Path, Function, Consumer, UnaryOperator)}, for a
      * process whose work outlives it when it is killed (a docker client and its container).
      *
-     * @param alsoKill ends what killing the process tree does not; may be null. It runs at every
-     *                 {@link #kill}, once more when the killed process has exited, and a last time
-     *                 a few seconds later: a kill can arrive before the work has started. It must
-     *                 be safe to repeat
+     * @param alsoKill ends what the end of the process does not; may be null. It runs at every
+     *                 {@link #kill} and whenever the process has exited, killed or not (a docker
+     *                 client can end without its container), and after a kill a last time a few
+     *                 seconds later: a kill can arrive before the work has started. It must be
+     *                 safe to repeat, and to run when there is nothing left to end
      */
     public static ProcessRunHandle start(ProcessBuilder pb, String stdin, Path runDir,
                                          Function<String, List<RunEvent>> parser,
@@ -101,8 +104,10 @@ public final class ProcessRunHandle implements RunHandle {
         Thread.ofVirtual().name("run-wait-" + process.pid()).start(() -> {
             try {
                 int code = process.waitFor();
-                // Before the exit is reported: whoever waits for it may read what the run left behind.
+                // Before the exit is reported: whoever waits for it reads what the run left behind, and
+                // then deletes it. However the process ended, nothing it started may still be at work there.
                 if (killReason.get() != null) alsoKillAgain();
+                else alsoKill();
                 stdout.join(TimeUnit.SECONDS.toMillis(DRAIN_TIMEOUT_SECONDS));
                 stderr.join(TimeUnit.SECONDS.toMillis(DRAIN_TIMEOUT_SECONDS));
                 exit.complete(new RunExit(code, killReason.get(), lastResult.get()));

@@ -345,11 +345,11 @@ public class WorkerRunner implements RunExecutor {
             RunSpec spec = new RunSpec(run.id(), prep.prompt(), systemPrompt, route.model(), routingProps.smallModel(),
                     route.effort(), cwd, policy.tools(), policy.allowedTools(), List.of(),
                     policy.permissionMode(), mcpConfig, credentials, timeout,
-                    mcpToken == null ? List.of() : List.of(mcpToken), sandbox);
+                    mcpToken == null ? List.of() : List.of(mcpToken), sandbox, policy.projectSettings());
             return supervise(run, route, spec, key, timeout, runDir, startSha);
         } finally {
             secrets.forget(run.id());
-            if (ownClone) workspaces.discard(runDir);
+            if (ownClone) workspaces.discard(run.id(), runDir);
             if (key != null) {
                 try {
                     gateway.block(key.key());
@@ -404,6 +404,7 @@ public class WorkerRunner implements RunExecutor {
         RunEvent.Result result = exit.result();
         boolean contained = spec.sandbox() != null;
         String reason = failureReason(exit, watch.lastAssistant, contained);
+        RunWorkspaces.Home home = null;
         if ("container_unavailable".equals(reason)) {
             log.error("run {}: docker could not start its container (exit {}): {}. Is the image {} built "
                     + "(orange/worker/build.sh) and the Docker daemon running?", run.id(), exit.exitCode(),
@@ -412,7 +413,7 @@ public class WorkerRunner implements RunExecutor {
             // Commits come home from runs that failed, timed out or went over budget, as they stay
             // in the worktree in process mode. Not from a cancelled run, a lost lease or a stopping coordinator.
             long exporting = System.nanoTime();
-            RunWorkspaces.Home home = workspaces.bringHome(run, spec.cwd(), runDir, startSha);
+            home = workspaces.bringHome(run, spec.cwd(), runDir, startSha);
             log.info("run {}: its commits: {} ({} ms)", run.id(), home.name().toLowerCase(Locale.ROOT),
                     TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - exporting));
             if (home == RunWorkspaces.Home.CONTAINER_UNAVAILABLE && reason == null) reason = "container_unavailable";
@@ -423,6 +424,11 @@ public class WorkerRunner implements RunExecutor {
                 reason = "no_outcome";
             } else if (outcome instanceof RunOutcome.Result r && "failed".equals(r.status())) {
                 reason = "reported_failed";
+            } else if (home == RunWorkspaces.Home.UNREADABLE && outcome instanceof RunOutcome.Result r
+                    && "done".equals(r.status())) {
+                // Whatever it committed did not come home. The branch may hold an earlier attempt's
+                // commits, and that old head must not go to verification as this run's work.
+                reason = "no_commits";
             }
         }
         RunResult runResult = new RunResult(run.id(), statusFor(reason), reason, outcome, watch.lastAssistant,

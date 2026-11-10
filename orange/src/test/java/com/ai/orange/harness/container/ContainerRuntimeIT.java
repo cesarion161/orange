@@ -12,6 +12,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -216,10 +218,49 @@ class ContainerRuntimeIT {
         assertThatThrownBy(() -> noDocker.command(spec(true, Map.of(), "true")))
                 .isInstanceOf(ContainerUnavailableException.class);
         noDocker.remove(DockerCommand.runName(runId));
-        assertThat(noDocker.removeByRun(runId)).isZero();
-        assertThat(noDocker.subnets()).isEmpty();
-        // At the start it is a warning, never a failed start.
+        assertThat(noDocker.removeByRun(runId)).as("nobody can say that the run's containers are gone").isEqualTo(-1);
+        // At the start it is a warning, never a failed start, and the network stays unknown.
+        noDocker.lookAtNetwork();
+        noDocker.lookAgain();
         noDocker.onReady();
+        assertThat(noDocker.subnets()).isEmpty();
+        assertThat(noDocker.networkSeen()).isFalse();
+    }
+
+    @Test
+    void theRunNetworkIsLookedAtBeforeTheFirstRequest() {
+        ContainerRuntime fresh = new ContainerRuntime(new RunnerProperties(Isolation.CONTAINER, ContainerTestSupport.settings()));
+        assertThat(fresh.networkSeen()).isFalse();
+
+        // What Spring calls while the context is built, before the web server opens its port.
+        fresh.lookAtNetwork();
+
+        assertThat(fresh.networkSeen()).isTrue();
+        assertThat(fresh.subnets()).isNotEmpty();
+    }
+
+    @Test
+    void theClientsEndIsNotTheContainersSoRunRemovesIt() throws Exception {
+        // A client that is killed (the OOM killer, a lost daemon connection) leaves its container running.
+        ContainerSpec hanging = spec(false, Map.of(), "sh", "-c", "echo started; sleep 300");
+        CompletableFuture<ContainerRuntime.Result> running = CompletableFuture.supplyAsync(() -> {
+            try {
+                return runtime.run(hanging, Duration.ofMinutes(2));
+            } catch (ContainerUnavailableException e) {
+                throw new IllegalStateException(e);
+            }
+        });
+        long deadline = System.nanoTime() + Duration.ofSeconds(60).toNanos();
+        while (ContainerTestSupport.docker("ps", "-q", "--filter", "label=" + DockerCommand.LABEL_RUN + "=" + runId).isBlank()) {
+            assertThat(System.nanoTime()).as("the container never started").isLessThan(deadline);
+            Thread.sleep(100);
+        }
+
+        ContainerTestSupport.clientOf(hanging.name()).destroyForcibly();
+
+        ContainerRuntime.Result r = running.get(60, TimeUnit.SECONDS);
+        assertThat(r.exitCode()).as("the client was killed").isEqualTo(137);
+        assertThat(ContainerTestSupport.containersOf(runId)).isEmpty();
     }
 
     @Test
@@ -227,7 +268,10 @@ class ContainerRuntimeIT {
         ContainerRuntime process = new ContainerRuntime(new RunnerProperties(Isolation.PROCESS, null));
 
         assertThat(process.enabled()).isFalse();
+        process.lookAtNetwork();
+        process.lookAgain();
         process.onReady();
         assertThat(process.subnets()).isEmpty();
+        assertThat(process.networkSeen()).isFalse();
     }
 }

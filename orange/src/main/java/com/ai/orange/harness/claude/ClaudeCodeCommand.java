@@ -57,8 +57,11 @@ public final class ClaudeCodeCommand {
         // a second, unredacted one on disk.
         a.add("--no-session-persistence");
         // Only the repo's own settings apply; the user's ~/.claude settings, hooks and plugins don't.
+        // A run that must not load the repo's either (a diff review: the settings and their hooks are
+        // the reviewed agent's) names the user's alone, and CLAUDE_CONFIG_DIR is a directory of the
+        // run's own with none in it.
         a.add("--setting-sources");
-        a.add("project,local");
+        a.add(s.projectSettings() ? "project,local" : "user");
         a.add("--strict-mcp-config");
         if (s.permissionMode() != null && !s.permissionMode().isBlank()) {
             a.add("--permission-mode");

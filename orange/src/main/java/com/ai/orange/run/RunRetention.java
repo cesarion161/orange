@@ -6,8 +6,6 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.OffsetDateTime;
-import java.util.Comparator;
-import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -40,7 +38,8 @@ public class RunRetention {
             Path dir = root.resolve(run.id().toString());
             if (!Files.isDirectory(dir)) continue;
             try {
-                deleteRecursively(dir);
+                // What a contained run left when its clone could not be discarded may hold read-only directories.
+                RunWorkspaces.delete(dir);
                 deleted++;
             } catch (IOException | UncheckedIOException e) {
                 log.warn("could not delete run dir {}: {}", dir, e.getMessage());
@@ -52,13 +51,5 @@ public class RunRetention {
     @Scheduled(fixedDelayString = "6h", initialDelayString = "10m")
     void scheduled() {
         if (props.loopEnabled()) sweep();
-    }
-
-    private static void deleteRecursively(Path dir) throws IOException {
-        try (Stream<Path> walk = Files.walk(dir)) {
-            for (Path p : walk.sorted(Comparator.reverseOrder()).toList()) {
-                Files.deleteIfExists(p);
-            }
-        }
     }
 }

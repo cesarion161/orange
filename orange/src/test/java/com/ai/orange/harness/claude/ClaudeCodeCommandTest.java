@@ -48,6 +48,27 @@ class ClaudeCodeCommandTest {
     }
 
     @Test
+    void aRunThatMustNotLoadItsDirectorysSettingsNamesOnlyTheUsers() {
+        RunSpec host = spec(List.of("Read"), List.of("Read"), List.of(), null, Path.of("/runs/x/mcp.json"),
+                new Credentials.Subscription("tok"));
+        RunSpec review = new RunSpec(host.runId(), host.prompt(), host.appendSystemPrompt(), host.model(),
+                host.smallModel(), host.effort(), host.cwd(), host.tools(), host.allowedTools(), host.disallowedTools(),
+                "dontAsk", host.mcpConfig(), host.credentials(), host.timeout(), List.of(), null, false);
+
+        List<String> argv = ClaudeCodeCommand.argv(review, List.of("claude"));
+
+        // CLAUDE_CONFIG_DIR is the run's own empty directory, so "user" loads nothing: no hook of the
+        // tree the run reads, and none of the person's.
+        assertThat(argv).containsSequence("--setting-sources", "user", "--strict-mcp-config");
+        assertThat(argv).doesNotContain("project,local", "project", "local");
+        // What orange itself gives the run is on the command line and stays.
+        assertThat(argv).containsSequence("--tools", "Read");
+        assertThat(argv).containsSequence("--allowedTools", "Read");
+        assertThat(argv).containsSequence("--mcp-config", "/runs/x/mcp.json");
+        assertThat(ClaudeCodeCommand.argv(host, List.of("claude"))).containsSequence("--setting-sources", "project,local");
+    }
+
+    @Test
     void promptIsNeverAnArgument() {
         // The prompt goes to stdin: a leading "-" would parse as a flag, and Linux caps one
         // argument at 128 KiB (fix-run prompts carry CI logs).

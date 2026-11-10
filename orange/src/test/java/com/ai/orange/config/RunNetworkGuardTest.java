@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 
@@ -142,6 +143,32 @@ class RunNetworkGuardTest {
         MockHttpServletRequest withQuery = request("172.18.0.2", "/mcp/worker");
         withQuery.setQueryString("x=/tasks");
         assertThat(guard.refuses(withQuery)).isFalse();
+    }
+
+    @Test
+    void whileTheRunNetworkIsUnknownOnlyThisHostAndTheWorkerMcpGetThrough() {
+        // Container mode, and docker has not answered yet: a container that outlived the previous
+        // coordinator may be calling, and nobody can say from which address.
+        AtomicReference<List<String>> subnets = new AtomicReference<>();
+        RunNetworkGuard guard = new RunNetworkGuard(subnets::get);
+
+        for (String anyone : List.of("172.18.0.2", "192.168.1.10", "10.0.0.7", "fd00:1::2", "not-an-address", "")) {
+            assertThat(guard.refusal(request(anyone, "/tasks"))).as(anyone).isEqualTo(RunNetworkGuard.NETWORK_UNKNOWN);
+            assertThat(guard.refuses(request(anyone, "/scheduler/resume"))).as(anyone).isTrue();
+            assertThat(guard.refuses(request(anyone, "/mcp/worker/"))).as(anyone).isTrue();
+            // A run's own endpoint asks for the run's token behind the guard.
+            assertThat(guard.refuses(request(anyone, "/mcp/worker"))).as(anyone).isFalse();
+        }
+        for (String thisHost : List.of("127.0.0.1", "127.0.0.53", "::1", "0:0:0:0:0:0:0:1", "::ffff:127.0.0.1")) {
+            assertThat(guard.refuses(request(thisHost, "/tasks"))).as(thisHost).isFalse();
+        }
+        assertThat(guard.fromRunNetwork("172.18.0.2")).isFalse();
+
+        // Docker answered: a run is refused for what it is, and everyone else gets through again.
+        subnets.set(List.of("172.18.0.0/16"));
+        assertThat(guard.refusal(request("172.18.0.2", "/tasks"))).isEqualTo(RunNetworkGuard.ONLY_THE_WORKER_MCP);
+        assertThat(guard.refusal(request("192.168.1.10", "/tasks"))).isNull();
+        assertThat(guard.refusal(request("127.0.0.1", "/tasks"))).isNull();
     }
 
     @Test

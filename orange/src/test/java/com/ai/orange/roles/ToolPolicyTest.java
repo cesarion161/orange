@@ -31,6 +31,21 @@ class ToolPolicyTest {
     }
 
     @Test
+    void aDiffReviewLoadsNoSettingsOfTheTreeItReads() {
+        // The tree is what the reviewed agent committed: a hook in its .claude/settings.json would run
+        // with the reviewer's run token in reach, and could submit the verdict itself.
+        assertThat(ToolPolicy.forKind(RunKind.DIFF_REVIEW).projectSettings()).isFalse();
+        assertThat(ToolPolicy.forRun(RunKind.DIFF_REVIEW, false).projectSettings()).isFalse();
+        assertThat(ToolPolicy.forRun(RunKind.DIFF_REVIEW, true).projectSettings()).isFalse();
+        assertThat(ToolPolicy.forKind(RunKind.DIFF_REVIEW).inContainer().projectSettings()).isFalse();
+        // An agent that works on a repository keeps that repository's settings, in a container too.
+        for (RunKind kind : new RunKind[]{RunKind.IMPLEMENT, RunKind.CI_FIX, RunKind.PLAN}) {
+            assertThat(ToolPolicy.forKind(kind).projectSettings()).as(kind.dbValue()).isTrue();
+            assertThat(ToolPolicy.forKind(kind).inContainer().projectSettings()).as(kind.dbValue()).isTrue();
+        }
+    }
+
+    @Test
     void briefHasNoBuiltInToolsAndOneMcpTool() {
         ToolPolicy p = ToolPolicy.forKind(RunKind.BRIEF);
         assertThat(p.tools()).isEmpty();

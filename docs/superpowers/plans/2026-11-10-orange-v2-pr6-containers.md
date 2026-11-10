@@ -112,8 +112,9 @@ public class ContainerRuntime {
     public ProcessBuilder command(ContainerSpec c) throws ContainerUnavailableException;
     public Result run(ContainerSpec c, Duration timeout) throws ContainerUnavailableException;  // to completion
     public void remove(String name);                                            // docker rm -f; never throws
-    public int removeByRun(UUID runId);                                         // by label; never throws; 0 when docker is unreachable
+    public int removeByRun(UUID runId);                                         // by label; never throws; -1 when docker cannot say they are gone (review)
     public List<String> subnets();                                              // the run network's, as last seen
+    public boolean networkSeen();                                               // whether docker has answered for the network since the start (review)
     public record Result(int exitCode, String output) {}                        // output: the last 64 KiB of stdout+stderr
 }
 
@@ -143,14 +144,19 @@ public final class ContainerUrls {
 - `run(c, timeout)`: starts `command(c)`, closes stdin, merges stderr into stdout, waits; at the
   timeout (or when its thread is interrupted) it calls `remove(c.name())`, destroys the client,
   removes once more (the first removal may have come before the daemon created the container)
-  and returns exit code -1. A docker binary that cannot be started is a
+  and returns exit code -1. When the client ended by itself the container is removed once as well
+  (review: a client can die without its container). A docker binary that cannot be started is a
   `ContainerUnavailableException` here; from `command(c)` of an offline spec it is the
   `IOException` of whoever starts the `ProcessBuilder`.
 - `remove(name)` and `removeByRun(id)` (`listByRun`, then one `docker rm -f` of what it printed)
   get 15 s per docker command, and are not cut short by a pending interrupt of their thread.
-- On `ApplicationReadyEvent`, when `enabled()`: `ensureNetwork()` and
-  `docker image inspect <image>`; a failure of either is one WARN line each (what is missing and
-  `orange/worker/build.sh`), never a failed start.
+  As built after the review, `removeByRun` answers -1 when the list or the removal failed and a
+  second list does not come back empty: its callers delete a run's clone only on 0 or more.
+- At the start, when `enabled()`: `ensureNetwork()` in a `@PostConstruct` (review: before the web
+  server takes a request, so the guard knows the subnets from the first one; while it fails it is
+  tried again every 30 s) and, on `ApplicationReadyEvent`, `docker image inspect <image>`; a
+  failure of either is one WARN line each (what is missing and `orange/worker/build.sh`), never a
+  failed start.
 
 ### The docker command line
 
@@ -259,14 +265,17 @@ do today.
 - `harness/Sandbox.java` (new): `public record Sandbox(boolean readOnly, Map<String, String> labels) {}`,
   "the run's process lives in a container that holds its cwd (read-only or not), its Claude config
   directory and its MCP config".
-- `RunSpec` gets a 16th component `Sandbox sandbox` (null = a host process). The 14-argument
-  constructor stays and passes `List.of(), null`.
+- `RunSpec` gets a 16th component `Sandbox sandbox` (null = a host process) and, after the
+  review, a 17th, `boolean projectSettings` (ruling 20). The 14-argument constructor stays and
+  passes `List.of(), null, true`.
 - `ProcessRunHandle.start(pb, stdin, runDir, parser, sink, redact, Runnable alsoKill)` (new
   overload; the old one passes null). `kill(reason)`: set the reason, run `alsoKill` (exceptions
   logged), then destroy the process tree as today. When a reason was set, the wait thread runs
   `alsoKill` once more after the process has exited and before the exit is reported (whoever
   waits for the exit reads the workspace next), and a virtual thread runs it a last time 5 s
-  later: a kill can arrive while the daemon is still creating the container.
+  later: a kill can arrive while the daemon is still creating the container. As built after the
+  review, the wait thread also runs `alsoKill` once when no reason was set: a docker client that
+  is killed or loses its stdout ends without its container (ruling 21).
 - `ClaudeCodeCommand`: `public static final Set<String> SECRET_ENV = Set.of("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN")`.
 - `ClaudeCodeAdapter`: the Spring constructor becomes `(HarnessProperties, ContainerRuntime)`; the
   two existing constructors stay and leave the runtime null (all three end in one private
@@ -283,6 +292,9 @@ do today.
     `ProcessRunHandle.start(containers.command(c), spec.prompt(), runDir, parser::parse, sink, redactor(…), () -> containers.remove(c.name()))`.
 - `ToolPolicy.inContainer()`: the same policy with `permissionMode` `bypassPermissions` when its
   tools include `Bash`, otherwise itself (a reviewer keeps `dontAsk`).
+- After the review: `ToolPolicy` has a fifth component `projectSettings`, false for `diff_review`
+  (a task's and a session's) and true otherwise, and `ClaudeCodeCommand.argv` writes
+  `--setting-sources user` instead of `project,local` when the spec's is false (ruling 20).
 - `WorkerMcpUrl.url(boolean contained)`: `contained ? ContainerUrls.fromContainer(url()) : url()`.
   `WorkerMcpConfigWriter.write(Path runDir, String token, boolean contained)`; the two-argument
   form stays and passes false.
@@ -346,7 +358,11 @@ where the agent may amend.
 `discard` deletes the two directories without following links; when a delete is refused it tries
 once more, giving the owner every right on each directory as it comes to it (build tools leave
 read-only trees), then logs. The walk keeps its own stack, so a tree an agent made very deep
-cannot overflow orange's.
+cannot overflow orange's. As built after the review there is `discard(UUID runId, Path runDir)`
+for a run's own directories: `containers.removeByRun(runId)` first, and on -1 nothing is deleted
+(ruling 22). The plain `discard(runDir)` is for directories no container holds, and
+`RunRetention` deletes a run's directory with the same walk (it could not delete what a build
+left read-only).
 
 ### `WorkerRunner`
 
@@ -363,7 +379,8 @@ New constructor parameters: `ContainerRuntime containers`, `RunWorkspaces worksp
 - `mcpConfigs.write(runDir, mcpToken, contained)`.
 - `sandbox = contained ? new Sandbox(!coding, DockerCommand.labels(run.id(), run.kind().dbValue(), props.workerId())) : null`;
   the `RunSpec` gets `cwd` and the sandbox.
-- In the `finally`: `workspaces.discard(runDir)` when `contained && coding`.
+- In the `finally`: `workspaces.discard(run.id(), runDir)` when `contained && coding` (the plan
+  had `discard(runDir)`; see the workspace section).
 
 In `supervise`:
 
@@ -374,7 +391,10 @@ In `supervise`:
   `CONTAINER_UNAVAILABLE` with no other reason makes the reason `container_unavailable`. Nothing
   comes home from a cancelled run, a lost lease or a stopping coordinator, and nothing is asked
   of docker when it could not even start the agent's container (the reason below). The INFO
-  line `its commits: imported (… ms)` carries the time of the export and the import.
+  line `its commits: imported (… ms)` carries the time of the export and the import. As built
+  after the review: `UNREADABLE` with a `done` report and no other reason makes the reason
+  `no_commits`, so `afterCoding` never sends an earlier attempt's head to verification as this
+  run's work.
 - `failureReason(RunExit, String lastAssistant, boolean contained)`: after the kill reason and the
   success check, `contained && exit.result() == null && DockerCommand.dockerFailed(exit.exitCode())`
   → `container_unavailable`. `RunWatch` keeps the last stderr line that is not docker's pointer
@@ -407,7 +427,10 @@ and on the full one; the test constructor (a host environment, no session checks
     with stderr merged; `kill` = `containers.remove(name)` then the client's process tree. A
     contained command that was killed (its timeout, a lost lease, a shutdown) has its container
     removed once more after the client has gone, at most 5 s later: the kill may have come before
-    the daemon created the container.
+    the daemon created the container. As built after the review, a command that ended without a
+    kill has its container removed once too, and before its result is recorded the lease is
+    renewed: a lease that is gone (the reaper took it, and the container with it) ends the run
+    without a row for the command (ruling 23).
 - A contained command that ends with exit code 125, or whose docker client cannot be started (a
   `ContainerUnavailableException` or any other `IOException`), is no evidence: the run ends
   `container_unavailable`, with no row for that command and none for the commands after it (a
@@ -421,6 +444,11 @@ New parameter `ContainerRuntime containers`. In `failOrphans` (after the pid kil
 `reapExpired`, before the row is finished: `if (containers.enabled()) containers.removeByRun(r.id())`,
 with one WARN line when something was removed. The pid kill stays; for a contained run the pid is
 the docker client's.
+
+As built after the review (two more parameters, `RunWorkspaces` and `HarnessProperties`):
+`reapExpired` finishes the row first and removes the containers after (ruling 23), and both
+paths then discard `<run-root>/<run id>/workspace` and `export` unless `removeByRun` answered -1:
+nobody else deletes the clone of a run whose executor is gone.
 
 ### The network
 
@@ -445,6 +473,11 @@ Built:
   refused. The address is the connection's (`getRemoteAddr()`); orange sets no
   `server.forward-headers-strategy`, and must not without revisiting this. At start, in container
   mode with `orange.api.token` blank, the guard logs one WARN.
+- As built after the review: the supplier answers null while container mode has not seen the
+  network (`!containers.networkSeen()`), and the guard then refuses everything but
+  `/mcp/worker` to every address that is not the loopback address, with 403
+  `{"error":"container mode, and Docker has not said yet where runs call from: …"}`
+  (`refusal(request)` gives the filter the message; `refuses` stays). Ruling 24.
 
 Not built: an allowlist for the internet (known limits).
 
@@ -546,21 +579,23 @@ public static String docker(String... args);               // runs the CLI, retu
 not: the test sends the paths as a feedback item's detail, because a task's worktree path is not
 known before the task exists) it writes `<path>=visible` or `<path>=hidden` (`Files.exists`) to
 `fake-probe.txt` under `$CLAUDE_CONFIG_DIR`, then does what `implement` does. Every tool call now
-also logs `POST <url>` to `fake-mcp.log`, before the replies.
+also logs `POST <url>` to `fake-mcp.log`, before the replies. Two more after the review:
+`commit-hang` (implements, writes `fake-committed.txt`, then hangs without reporting) and
+`rewind` (resets its branch to the commit before its start and reports `done`).
 
 | test | kind | what it proves |
 |---|---|---|
 | `DockerCommandTest` | unit | the exact argv of a coding run; a secret's value appears nowhere; a read-only mount; `--network none` without `--add-host` and without volumes; limits only when set; never `--privileged`, never a socket; a mount path or a variable name that would split its argument is refused; `dockerFailed` |
 | `RunnerPropertiesTest` | unit | defaults (bare, and as the shipped `application.yaml` binds them, also with its variables empty); `host` and `container:` networks, a `docker.sock` volume, a root user and an image that reads as an option are refused |
 | `ContainerUrlsTest` | unit | loopback spellings are rewritten, port and path kept; other hosts untouched |
-| `RunNetworkGuardTest` | unit | inside and outside a subnet, a prefix that ends inside a byte, IPv6, an IPv4-mapped address, no subnets, an unparsable address or subnet, subnets that change; only `/mcp/worker` for a run, every other spelling refused, everyone else untouched |
+| `RunNetworkGuardTest` | unit | inside and outside a subnet, a prefix that ends inside a byte, IPv6, an IPv4-mapped address, no subnets, an unparsable address or subnet, subnets that change; only `/mcp/worker` for a run, every other spelling refused, everyone else untouched; (review) while the network is unknown only the loopback address and `/mcp/worker` get through |
 | `ToolPolicyTest` (2 more) | unit | `inContainer()`: implement and ci_fix get `bypassPermissions`, a review keeps `dontAsk` |
 | `ContainerFailureTest` | unit | `failureReason`: exit 125/126/127 with no result is `container_unavailable` only when contained, never when there is a result or a kill reason; the reason pauses open-ended and does not count |
-| `ContainerRuntimeIT` | Docker | `run` as the caller's uid with `HOME=/home/agent`, a secret from the client's environment and nothing of the host's; the file it wrote is the caller's; the network exists afterwards (a bridge, icc off) and `subnets()` is not empty; an offline container has no route; the exit code and the end of the output; the timeout removes the container; `removeByRun` removes a run's containers and no other run's; a missing image is exit 125, a missing command 127; a missing docker binary is `ContainerUnavailableException` and never a failed start |
-| `ContainerAdapterIT` | Docker | the adapter with a sandbox: Init … Result, exit 0, the fake's commit in the mounted repo by `orange[bot]`, its cwd the repo's own path; `fake-env.json` has the token and `HOME=/home/agent`, and nothing of a host environment that holds `ORANGE_GITHUB_TOKEN` (no `DOCKER_HOST`, `USER`, `TMPDIR`, not the host's `PATH`); the token the agent echoes is redacted; `kill` during `[[fake:hang]]` ends the run and leaves no container, also when it comes before the container exists; a read-only sandbox cannot write its cwd; a missing image is exit 125 with docker's reason on stderr; a sandbox without a runtime is refused |
-| `ContainerRunIT` | Spring + Docker | see C2 and C3; also `RunWorkspaces` by itself (what the clone holds, what `bringHome` refuses, what `discard` deletes) and the security chain with a request from the run network's subnet |
+| `ContainerRuntimeIT` | Docker | `run` as the caller's uid with `HOME=/home/agent`, a secret from the client's environment and nothing of the host's; the file it wrote is the caller's; the network exists afterwards (a bridge, icc off) and `subnets()` is not empty; an offline container has no route; the exit code and the end of the output; the timeout removes the container; `removeByRun` removes a run's containers and no other run's; a missing image is exit 125, a missing command 127; a missing docker binary is `ContainerUnavailableException` and never a failed start; (review) `removeByRun` is -1 without docker; the network is known after the `@PostConstruct` look; `run` removes the container of a client that was SIGKILLed |
+| `ContainerAdapterIT` | Docker | the adapter with a sandbox: Init … Result, exit 0, the fake's commit in the mounted repo by `orange[bot]`, its cwd the repo's own path; `fake-env.json` has the token and `HOME=/home/agent`, and nothing of a host environment that holds `ORANGE_GITHUB_TOKEN` (no `DOCKER_HOST`, `USER`, `TMPDIR`, not the host's `PATH`); the token the agent echoes is redacted; `kill` during `[[fake:hang]]` ends the run and leaves no container, also when it comes before the container exists; a read-only sandbox cannot write its cwd; a missing image is exit 125 with docker's reason on stderr; a sandbox without a runtime is refused; (review) a client that is SIGKILLed leaves no container when its exit is reported |
+| `ContainerRunIT` | Spring + Docker | see C2 and C3; also `RunWorkspaces` by itself (what the clone holds, what `bringHome` refuses, what `discard` deletes) and the security chain with a request from the run network's subnet; (review) a review's `--setting-sources user`; a commit comes home after a timeout and not after a cancel; an agent's and a command's container do not outlive a SIGKILLed client; `done` with commits that do not come home is `no_commits`; an agent without its image is `container_unavailable`, pauses and counts nothing; a clone is discarded only when docker says the run's containers are gone; a lease the reaper takes from a live verify run records no evidence; the reaper discards an orphan's clone |
 | `RunLoopE2EIT.InContainers` | Spring + Docker | ready → integrated → dependent promoted, all in containers, with an evidence command that fails if it can see a host file |
-| `ContainerLiveIT` | live | the real image: see C4 |
+| `ContainerLiveIT` | live | the real image: see C4; (review) a `SessionStart` hook in the reviewed tree's `.claude/settings.json` runs with `project,local` and does not with a review's `user` (invalid token) |
 
 The first run builds the test image (pulls `eclipse-temurin:21-jdk-alpine`, installs git: needs
 the network once, like the first `postgres:18-alpine`); later runs hit the build cache. Two new
@@ -852,6 +887,34 @@ clone's and the export's time.
 19. Deferred: an egress allowlist; an image per project; the coordinator itself in a container;
     rootless Docker and user namespaces; Docker for a run's own tests; containers for `plan`,
     `brief` and `judge`; the Playwright image (PR 8); another harness in the container (PR 9).
+20. (Review.) A `diff_review` loads no settings of the tree it reads: `--setting-sources user`,
+    with the run's own empty `CLAUDE_CONFIG_DIR`, in container mode and in process mode. Reason:
+    Claude Code runs a project's hooks without asking, the tree is what the reviewed agent
+    committed, and a hook there reads the reviewer's `mcp.json` (mounted next to the config
+    directory, and in the argv) and can post `submit_review` itself; the last report wins. This
+    amends ruling 3's reason, not its rule: the review stays in a container, because the
+    reviewer's own Read still opens whatever a prompt in that tree talks it into, and there it
+    finds one read-only directory. `recordOutcome` stays "the last report wins": the first
+    report would be the hook's, at `SessionStart`.
+21. (Review.) The end of a docker client is not the end of its container, so the container is
+    removed at every end of the client, not only after orange's own kill: in `ProcessRunHandle`
+    before the exit is reported, in `EvidenceRunner.runCommand` and in `ContainerRuntime.run`.
+    `docker rm -f` of a container that is gone exits 0 in about 20 ms.
+22. (Review.) A run's clone is deleted only when docker says that none of the run's containers
+    is left (`removeByRun` ≥ 0, which removes what is there first); otherwise it stays until
+    the run's directory goes. Reason: the delete walks by path, and a container that still
+    holds the clone can turn a directory into a link between two looks. The price: with docker
+    gone (no binary, no daemon) a clone stays for the retention time.
+23. (Review.) The reaper finishes an expired run's row before it removes the run's containers,
+    and a contained evidence command's result is recorded only under a lease that still renews.
+    Reason: a lease can expire under a live supervisor (the database away, a laptop asleep),
+    and the supervisor must find the run ended, not a docker client with exit 137.
+24. (Review.) While container mode does not know the run network's subnets, the guard lets
+    through only the loopback address and `/mcp/worker`. The network is looked up before the
+    web server starts and again every 30 s while Docker does not answer. Reason: a container
+    that outlived the previous coordinator may be calling from the first request on. The
+    price: with Docker down at the start, nobody but the host itself reaches orange's API (a
+    node's session reporter included) until Docker answers.
 
 ## Known limits
 
@@ -888,12 +951,30 @@ clone's and the export's time.
   is cached between runs unless `volumes` says so. A volume shared by runs lets one run leave
   something for the next.
 - A run that moves its `HEAD` behind where it started, or leaves a repository git cannot read,
-  brings nothing home; if it reported `done`, that is `no_commits`.
+  brings nothing home; if it reported `done`, that is `no_commits`. So is an export that takes
+  longer than its 2 minutes, or a bundle that fails git's object check.
 - A kill that arrives while the daemon is still creating the container is retried twice (at the
   client's exit and 5 s later). A container that outlives that, or whose run row is gone, runs
   until its command ends; `--rm` then removes it. There is no timer inside the container.
+- A docker client that ends without orange's kill (the OOM killer, a lost daemon connection, a
+  full disk under the run root that closes its stdout) loses its container at once, but the run
+  reads as the agent's own failure: `no_result` for an agent, a failing evidence row with the
+  client's exit code for a command. Both count against the task.
+- When docker cannot say that a run's containers are gone, the run's clone stays under its
+  directory until `RunRetention` deletes that (14 days). Retention does not ask docker again
+  and walks the tree by path: a container still alive and swapping directories for links at
+  that moment could make orange delete what a link names.
 - A coordinator restarted in process mode does not remove the containers of runs it started in
-  container mode.
+  container mode, does not delete their clones before retention does, and its guard is off for
+  them.
+- With Docker down when orange starts in container mode, the guard refuses every address but
+  the loopback address until Docker answers (it is asked every 30 s): a remote node's session
+  events and a remote steering client get 403 meanwhile.
+- A reviewer still reads what the reviewed agent wrote: the diff in its prompt and the files it
+  opens, so that text can argue with the reviewer; it can no longer run beside it. Not checked:
+  whether Claude Code still puts the reviewed tree's `CLAUDE.md` into the prompt with
+  `--setting-sources user` (seeing the prompt takes a model call). The same holds in process
+  mode.
 - `container_unavailable` pauses everything, a session's judge included, as a missing `claude`
   does today.
 - A reviewer in a container reads the worktree as orange checked it out; it cannot run git there
@@ -908,7 +989,35 @@ clone's and the export's time.
 - Not checked yet: a model call from inside the container (the invalid-token check of C4 stops
   at Anthropic's 401). That is the live gate of C5, which has not been run.
 
-## Review
+## Review (2026-11-10, fresh-context reviewers, each finding checked by a second one)
+
+Two blocking findings. A task's diff review loaded the settings of the tree it reads, so a hook
+the reviewed agent had committed ran beside the reviewer with the reviewer's run token in reach
+and could submit `pass` itself: in a container, and in process mode on the host. And a docker
+client that ended without orange's kill (SIGKILL, a lost daemon, a closed stdout) left its
+container running while orange exported from the clone it was writing and then deleted it under
+it. Fixed: a `diff_review` starts with `--setting-sources user` (ruling 20; with the real Claude
+Code in the worker image and an invalid token, a committed `SessionStart` hook runs under
+`project,local` and does not under `user`); a container is removed at every end of its client,
+before the exit is reported (ruling 21). Also fixed: a run's clone is deleted only when docker
+says that the run's containers are gone, and the reaper deletes the clone of a run it reaps
+(ruling 22); the reaper finishes an expired run's row before it takes the containers, and a
+contained command's result is recorded only under a lease that still renews, so a lease lost
+under a live supervisor is no failed evidence (ruling 23); the run network is looked up before
+the web server starts, and while it is unknown the guard lets through only the loopback address
+and `/mcp/worker` (ruling 24); a `done` run whose commits could not be brought home fails as
+`no_commits` instead of sending an earlier attempt's head to verification; `RunRetention`
+deletes what a build left read-only. Tests added for each, and for the contained kill paths that
+had none: a commit comes home after a timeout and not after a cancel, and an agent without its
+image is `container_unavailable`, pauses the scheduler and counts nothing.
+`aKillBeforeTheContainerExistsStillLeavesNone` failed once in a full run: it looked one second
+after the kill, and the daemon had finished creating the container in between; it now looks
+after the handle's last removal. Left as known limits above: a client's death reads as the
+agent's or the command's own failure and counts; a clone docker could not vouch for waits for
+retention, which walks it by path; with Docker down at the start only the host itself reaches
+orange; what the reviewed agent wrote still reaches the reviewer as text, and whether its
+`CLAUDE.md` does was not checked. Not done: a test that kills a contained agent for its budget
+or at a shutdown (both take the handle's `kill`, like the timeout and the cancel).
 
 ## Verified
 
@@ -930,15 +1039,35 @@ Docker 29.7.2 (Docker Desktop, linux/arm64), built as uid 501, gid 20.
   a container as `orange[bot]`, the bundle written by a second container with no network from the
   clone mounted read-only, fetched and reset into a linked worktree on the host.
 
-### The whole suite (C5, 2026-11-10)
+### The whole suite (C5, and again after the review, 2026-11-10)
 
-`./gradlew test` on the final code: 88 suites, 663 tests, 0 failures, 0 errors, 0 skipped, 5m38s
-(Docker 29.7.2, Docker Desktop, linux/arm64). The container tests among them, all against the
-real daemon with the test image: `ContainerRuntimeIT` 12, `DockerCommandTest` 12,
-`RunnerPropertiesTest` 9, `ContainerUrlsTest` 2, `ContainerAdapterIT` 8, `ContainerRunIT` 19,
-`ContainerFailureTest` 5, `RunNetworkGuardTest` 12, `RunLoopE2EIT` 3 (`InContainers` one of
-them). No model call and no credential. Afterwards no fake Claude Code process and no container
-with an `orange.run` label is left.
+`./gradlew test` on the code after the review's fixes: 88 suites, 677 tests, 0 failures, 0
+errors, 0 skipped, 6m22s (Docker 29.7.2, Docker Desktop, linux/arm64). The container tests among
+them, all against the real daemon with the test image: `ContainerRuntimeIT` 14,
+`DockerCommandTest` 12, `RunnerPropertiesTest` 9, `ContainerUrlsTest` 2, `ContainerAdapterIT` 9,
+`ContainerRunIT` 27, `ContainerFailureTest` 5, `RunNetworkGuardTest` 13, `RunLoopE2EIT` 3
+(`InContainers` one of them). No model call and no credential. Afterwards no fake Claude Code
+process and no container with an `orange.run` label is left. (Before the review, C5: 663 tests,
+5m38s.)
+
+The review's fixes, checked the other way round: with the fix lines taken out again (the
+setting sources, the removal at a client's end in the handle and in `ContainerRuntime.run`, the
+lease check before a command's result, `no_commits` for commits that did not come home), exactly
+these fail: `ClaudeCodeCommandTest.aRunThatMustNotLoadItsDirectorysSettingsNamesOnlyTheUsers`,
+`ContainerRunIT.aDiffReviewReadsTheWorktreeAndCannotWriteIt`, `DiffReviewIT.passVerifiesTheTask`,
+`ContainerAdapterIT.aClientThatEndsByItselfTakesItsContainerWithItBeforeItsExitIsReported`,
+`ContainerRuntimeIT.theClientsEndIsNotTheContainersSoRunRemovesIt`,
+`ContainerRunIT.aLeaseTheReaperTakesFromALiveVerifyRunIsNoVerdictOnTheWork` and
+`ContainerRunIT.doneWithCommitsThatDoNotComeHomeIsNoCommits`. The two `ContainerRunIT` tests that
+SIGKILL a docker client pass either way at that level, because the discard now removes a run's
+containers by label before it deletes anything.
+
+`./gradlew liveTest --tests 'com.ai.orange.e2e.ContainerLiveIT'` without a token, after the
+review: 3 tests, 0 failures, 1 skipped (the real implement run).
+`aReviewRunsNoHookOfTheTreeItReads` (7.4 s, Claude Code 2.1.322 in `orange-worker:local`, an
+invalid token, Anthropic's 401 and no model call): the reviewer's command line on a read-only
+tree whose `.claude/settings.json` holds a `SessionStart` hook; the hook leaves its mark with
+`--setting-sources project,local` and leaves none with a review's `user`.
 
 The docs the plan names are in place: `CLAUDE.md` (layout, the worker image, the tests and the
 live tests, the contained path under "Running Claude Code", the "Isolation" section, the reaper,
@@ -998,8 +1127,9 @@ Desktop, linux/arm64): `./worker/build.sh` builds `orange-worker:local` (Claude 
 
 To close the gate, in `orange/` of this branch, with `CLAUDE_CODE_OAUTH_TOKEN` in `orange/.env`:
 
-1. `./gradlew liveTest --tests 'com.ai.orange.e2e.ContainerLiveIT'`: both tests must pass. It is
-   one implement run on the small tier at low effort, capped at that tier's budget.
+1. `./gradlew liveTest --tests 'com.ai.orange.e2e.ContainerLiveIT'`: all three tests must pass
+   (the review added `aReviewRunsNoHookOfTheTreeItReads`, which needs no token). It is one
+   implement run on the small tier at low effort, capped at that tier's budget.
 2. The hand loop of C5 with the real image.
 
 Then record here: the Claude Code version in the image, the Docker version, the times of the

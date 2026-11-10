@@ -74,6 +74,16 @@ public final class ContainerTestSupport {
                 .lines().map(String::strip).filter(l -> !l.isEmpty()).toList();
     }
 
+    /**
+     * The docker client, a child of this JVM, that runs the container of that name. Killing it is
+     * what the OOM killer or a lost daemon connection does: the client ends, the container does not.
+     */
+    public static ProcessHandle clientOf(String containerName) {
+        return ProcessHandle.current().descendants()
+                .filter(p -> p.info().arguments().map(a -> List.of(a).contains(containerName)).orElse(false))
+                .findFirst().orElseThrow(() -> new IllegalStateException("no docker client runs " + containerName));
+    }
+
     /** Runs the Docker CLI with the test JVM's environment and returns its stdout. Throws on a non-zero exit. */
     public static String docker(String... args) {
         List<String> argv = new ArrayList<>();

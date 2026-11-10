@@ -200,10 +200,11 @@ public class EvidenceRunner implements RunExecutor {
 
         long deadline = System.nanoTime() + runsProps.timeout(RunKind.VERIFY).toNanos();
         boolean contained = containers != null && containers.enabled();
+        boolean ownClone = contained && !props.commands().isEmpty();
         Path runDir = harnessProps.runRoot().resolve(run.id().toString()).toAbsolutePath();
         Path where = wt;
         try {
-            if (contained && !props.commands().isEmpty()) {
+            if (ownClone) {
                 // The commands execute what the agent wrote: they get a copy of the head, never the
                 // worktree orange runs git in.
                 where = cloneOf(run, head, runDir);
@@ -221,7 +222,7 @@ public class EvidenceRunner implements RunExecutor {
                 if (!passed) gaps.add(new EvidenceGap(c.kind(), c.command(), r.exitCode(), r.outputTail()));
             }
         } finally {
-            if (contained) workspaces.discard(runDir);
+            if (ownClone) workspaces.discard(run.id(), runDir);
         }
         return conclude(run, new RunOutcome.Verification(false, gaps.isEmpty(), gaps));
     }
@@ -308,6 +309,9 @@ public class EvidenceRunner implements RunExecutor {
                 if (p.waitFor(Math.max(Math.min(deadline, nextBeat) - now, 1_000_000), TimeUnit.NANOSECONDS)) {
                     // Killed by a shutdown: that is no verdict on the work.
                     if (stopping) throw new Interrupted();
+                    // Nor is the end of a command whose container the reaper took with the run's lease
+                    // (the row was finished first: a database that was away, a laptop that slept).
+                    if (container != null && Boolean.FALSE.equals(lifecycle.renewLease(run))) throw new LeaseLost();
                     reader.join(DRAIN_MILLIS);
                     // docker's own exit code for "the container could not be created or started": the
                     // command never ran. 126 and 127 are also what sh says of the user's own command.
@@ -321,8 +325,14 @@ public class EvidenceRunner implements RunExecutor {
             Thread.currentThread().interrupt();
             throw new Interrupted();
         } finally {
-            // A kill can arrive while the daemon is still creating the container: once more, now that the client is gone.
-            if (container != null && (killed || stopping)) removeAgain(p, container);
+            if (container != null && (killed || stopping)) {
+                // A kill can arrive while the daemon is still creating the container: once more, now that the client is gone.
+                removeAgain(p, container);
+            } else if (container != null) {
+                // The client's end is not the container's (a client that was killed, or lost its daemon):
+                // nothing may still run in the clone when it is deleted.
+                containers.remove(container);
+            }
             live.remove(s);
         }
     }

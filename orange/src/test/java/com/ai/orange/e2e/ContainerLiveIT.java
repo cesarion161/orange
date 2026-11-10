@@ -135,7 +135,8 @@ class ContainerLiveIT {
                 List.of(), policy.permissionMode(), mcpConfig,
                 new Credentials.Subscription("sk-ant-oat01-orange-container-check-not-a-real-token"),
                 Duration.ofMinutes(2), List.of(token),
-                new Sandbox(false, DockerCommand.labels(run.id(), RunKind.IMPLEMENT.dbValue(), props.workerId())));
+                new Sandbox(false, DockerCommand.labels(run.id(), RunKind.IMPLEMENT.dbValue(), props.workerId())),
+                policy.projectSettings());
 
         List<RunEvent> events = new CopyOnWriteArrayList<>();
         RunExit exit;
@@ -181,6 +182,50 @@ class ContainerLiveIT {
         assertThat(cwd.toFile().list()).as("nothing ran, so nothing was written").isEmpty();
 
         assertThat(containersOf(run.id())).as("containers of run %s", run.id()).isEmpty();
+    }
+
+    /**
+     * A review reads the tree the reviewed agent committed. Claude Code runs the hooks of that tree's
+     * {@code .claude/settings.json} without asking, and a hook there has the reviewer's run token in
+     * reach (the MCP config is mounted next to the config directory): it could submit the verdict
+     * itself. So a review names only the user's settings, of which its run has none. An invalid
+     * token: no secret, no model call.
+     */
+    @Test
+    void aReviewRunsNoHookOfTheTreeItReads() throws Exception {
+        Path tree = Files.createDirectories(RUN_ROOT.resolve("reviewed-" + UUID.randomUUID()).toAbsolutePath());
+        Files.writeString(Files.createDirectories(tree.resolve(".claude")).resolve("settings.json"), """
+                {"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"touch \\"$CLAUDE_CONFIG_DIR/hook-ran\\""}]}]}}
+                """);
+        ToolPolicy policy = ToolPolicy.forKind(RunKind.DIFF_REVIEW).inContainer();
+
+        // What this check rests on: with the tree's settings, as every run was started before, the hook runs.
+        assertThat(hookRuns(tree, policy, true)).as("Claude Code no longer runs a project's SessionStart hook").isTrue();
+        assertThat(policy.projectSettings()).isFalse();
+        assertThat(hookRuns(tree, policy, policy.projectSettings())).as("a hook of the reviewed tree ran").isFalse();
+    }
+
+    /** Starts the reviewer on {@code tree}, mounted read-only, and says whether the tree's hook left its mark. */
+    private boolean hookRuns(Path tree, ToolPolicy policy, boolean projectSettings) throws Exception {
+        UUID runId = UUID.randomUUID();
+        Path runDir = RUN_ROOT.resolve(runId.toString()).toAbsolutePath();
+        RunSpec spec = new RunSpec(runId, "Reply with exactly: ORANGE_OK", "You are orange's container check.",
+                "claude-haiku-5-5", "claude-haiku-5-5", Effort.LOW, tree, policy.tools(), policy.allowedTools(),
+                List.of(), policy.permissionMode(), null,
+                new Credentials.Subscription("sk-ant-oat01-orange-container-check-not-a-real-token"),
+                Duration.ofMinutes(2), List.of(),
+                new Sandbox(true, DockerCommand.labels(runId, RunKind.DIFF_REVIEW.dbValue(), props.workerId())),
+                projectSettings);
+
+        RunExit exit = adapter.start(spec, event -> { }).exit().get(3, TimeUnit.MINUTES);
+
+        String stderr = read(runDir.resolve("stderr.log"));
+        assertThat(stderr).as("claude rejected part of the command line").doesNotContainIgnoringCase("error:");
+        // Anthropic rejects the token before any model call.
+        assertThat(exit.result()).as("exit %s, stderr: %s", exit.exitCode(), stderr).isNotNull();
+        assertThat(AuthFailure.matches(exit.result().text())).as("result: %s", exit.result().text()).isTrue();
+        assertThat(containersOf(runId)).as("containers of run %s", runId).isEmpty();
+        return Files.exists(runDir.resolve("claude-config/hook-ran"));
     }
 
     @Test

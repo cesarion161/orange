@@ -82,7 +82,7 @@ class ContainerAdapterIT {
         return new RunSpec(runId, prompt, "You are a test agent.", "claude-sonnet-5-5", "claude-haiku-5-5",
                 Effort.MEDIUM, repo, null, List.of("Read"), List.of(), "bypassPermissions", null,
                 new Credentials.Subscription(TOKEN), Duration.ofMinutes(1), List.of(),
-                new Sandbox(readOnly, DockerCommand.labels(runId, "implement", "test-worker")));
+                new Sandbox(readOnly, DockerCommand.labels(runId, "implement", "test-worker")), true);
     }
 
     @Test
@@ -164,16 +164,39 @@ class ContainerAdapterIT {
     }
 
     @Test
+    void aClientThatEndsByItselfTakesItsContainerWithItBeforeItsExitIsReported() throws Exception {
+        RunHandle h = adapter().start(spec("[[fake:hang]]", false), events::add);
+        Path pidFile = runRoot.resolve(runId + "/claude-config/child.pid");
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
+        while (!Files.exists(pidFile) || Files.readString(pidFile).isBlank()) {
+            assertThat(System.nanoTime()).as("fake never started its child: " + stderr()).isLessThan(deadline);
+            Thread.sleep(100);
+        }
+
+        // Nobody asked the handle for a kill: the OOM killer took the client, or it lost its daemon.
+        // The container, and the agent in it, would go on.
+        ProcessHandle.of(h.pid()).orElseThrow().destroyForcibly();
+        RunExit exit = h.exit().get(30, TimeUnit.SECONDS);
+
+        assertThat(exit.killReason()).isNull();
+        assertThat(exit.exitCode()).isEqualTo(137);
+        // Whoever waits for the exit reads the run's directory next, and then deletes it.
+        assertThat(ContainerTestSupport.containersOf(runId)).isEmpty();
+    }
+
+    @Test
     void aKillBeforeTheContainerExistsStillLeavesNone() throws Exception {
         RunHandle h = adapter().start(spec("[[fake:hang]]", false), events::add);
         h.kill("cancelled");
         RunExit exit = h.exit().get(30, TimeUnit.SECONDS);
         assertThat(exit.killReason()).isEqualTo("cancelled");
 
-        // The handle removes the container again when its client has gone, and once more 5 s later.
+        // The handle removes the container again when its client has gone, and once more 5 s later:
+        // the daemon may finish creating it after the kill and after the client's end (it then shows
+        // as created and never starts). So look only when that last removal has had its turn.
+        Thread.sleep(6000);
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
         while (!ContainerTestSupport.containersOf(runId).isEmpty() && System.nanoTime() < deadline) Thread.sleep(250);
-        Thread.sleep(1000);
         assertThat(ContainerTestSupport.containersOf(runId)).isEmpty();
     }
 

@@ -12,14 +12,25 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.ai.orange.TestcontainersConfiguration;
+import com.ai.orange.billing.BillingProperties;
+import com.ai.orange.billing.CostEstimator;
 import com.ai.orange.evidence.Evidence;
 import com.ai.orange.evidence.EvidenceProperties;
 import com.ai.orange.evidence.EvidenceRepository;
+import com.ai.orange.gateway.GatewayClient;
+import com.ai.orange.gateway.GatewayProperties;
 import com.ai.orange.harness.HarnessProperties;
+import com.ai.orange.harness.HarnessRegistry;
+import com.ai.orange.harness.claude.ClaudeCodeAdapter;
 import com.ai.orange.harness.container.ContainerRuntime;
 import com.ai.orange.harness.container.ContainerTestSupport;
+import com.ai.orange.harness.container.DockerCommand;
 import com.ai.orange.harness.container.RunnerProperties;
 import com.ai.orange.json.Json;
+import com.ai.orange.mcp.WorkerMcpConfigWriter;
+import com.ai.orange.roles.RolePrompts;
+import com.ai.orange.routing.RoutingProperties;
+import com.ai.orange.routing.RoutingTable;
 import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskRepository;
 import com.ai.orange.task.TaskService;
@@ -43,6 +54,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 import org.jooq.JSONB;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -79,7 +91,10 @@ class ContainerRunIT {
     static void props(DynamicPropertyRegistry r) {
         RunTestSupport.register(r, RUN_ROOT, BASE_REPO, WORKTREES);
         ContainerTestSupport.register(r);
-        r.add("orange.runs.timeouts.ci_fix", () -> "6s");
+        // Every test's task keeps its worktree, and there are more tests here than the default cap of 20.
+        r.add("orange.worktrees.max-count", () -> "60");
+        // Long enough for the fake to start in its container and commit before the kill.
+        r.add("orange.runs.timeouts.ci_fix", () -> "10s");
         // Passes only where the host's canary is not: in a container. And it writes where it runs.
         r.add("orange.evidence.commands[0].kind", () -> "tests");
         r.add("orange.evidence.commands[0].command", () -> EVIDENCE_COMMAND);
@@ -101,6 +116,17 @@ class ContainerRunIT {
     @Autowired ContainerRuntime containers;
     @Autowired HarnessProperties harnessProps;
     @Autowired RunLifecycle lifecycle;
+    @Autowired TaskCancellation cancellation;
+    @Autowired RoutingTable routing;
+    @Autowired RoutingProperties routingProps;
+    @Autowired GatewayClient gateway;
+    @Autowired GatewayProperties gatewayProps;
+    @Autowired BillingProperties billing;
+    @Autowired CostEstimator costs;
+    @Autowired RunPreparer preparer;
+    @Autowired RolePrompts rolePrompts;
+    @Autowired WorkerMcpConfigWriter mcpConfigs;
+    @Autowired RunSecrets secrets;
     @Autowired @Qualifier("springSecurityFilterChain") Filter securityChain;
 
     @BeforeEach
@@ -143,6 +169,7 @@ class ContainerRunIT {
 
         // The container is the boundary, so the agent's Bash asks nobody.
         assertThat(runFile(result, "fake-args.json")).contains("\"--permission-mode\",\"bypassPermissions\"")
+                .contains("\"--setting-sources\",\"project,local\"")
                 .contains("\"--mcp-config\",\"" + runDir.resolve("mcp.json") + "\"");
         // It worked in the clone, not in the worktree.
         JsonNode init = Json.mapper().readTree(Files.readAllLines(runDir.resolve("stream.jsonl")).getFirst());
@@ -236,6 +263,140 @@ class ContainerRunIT {
     }
 
     @Test
+    void aRunKilledAtItsTimeoutBringsItsCommitsHome() {
+        Task task = runningTask(taskService, tasks, "[[fake:commit-hang]]");
+        String base = git(BASE_REPO, "rev-parse", "main");
+
+        RunResult result = runner.execute(start(runs, props, task.id(), RunKind.CI_FIX, "ci_fixer", "{}"));
+
+        assertThat(result.reason()).isEqualTo("timeout");
+        // As in process mode, where the commit would simply be in the worktree: the next run goes on from it.
+        Path wt = worktrees.resolve(task.id());
+        assertThat(runFile(result, "fake-committed.txt")).as("the fake committed before the kill").isNotEmpty();
+        assertThat(git(wt, "log", "--format=%s|%an", "-1")).isEqualTo("fake: Add a greeting|orange[bot]");
+        assertThat(git(wt, "rev-parse", "HEAD~1")).isEqualTo(base);
+        assertThat(git(wt, "status", "--porcelain")).isEmpty();
+        Task after = tasks.findById(task.id()).orElseThrow();
+        assertThat(after.status()).isEqualTo(TaskStatus.RUNNING);
+        assertThat(after.failures()).isEqualTo(1);
+        assertThat(containersOf(result.runId())).isEmpty();
+        Path runDir = RUN_ROOT.resolve(result.runId().toString());
+        assertThat(runDir.resolve("workspace")).doesNotExist();
+        assertThat(runDir.resolve("export")).doesNotExist();
+    }
+
+    @Test
+    void aCancelledRunBringsNothingHome() throws Exception {
+        Task task = runningTask(taskService, tasks, "[[fake:commit-hang]]");
+        String base = git(BASE_REPO, "rev-parse", "main");
+        Run run = start(runs, props, task.id(), RunKind.IMPLEMENT, task.role(), "{}");
+        Path runDir = RUN_ROOT.resolve(run.id().toString());
+        CompletableFuture<RunResult> running = CompletableFuture.supplyAsync(() -> runner.execute(run));
+        await("the fake's commit", running, () -> Files.exists(runDir.resolve("claude-config/fake-committed.txt")));
+
+        cancellation.cancel(task.id());
+
+        RunResult result = running.get(60, TimeUnit.SECONDS);
+        assertThat(result.status()).isEqualTo(RunStatus.CANCELLED);
+        assertThat(result.reason()).isEqualTo("cancelled");
+        // Nobody wants a cancelled task's work: the worktree is where it was.
+        assertThat(git(worktrees.resolve(task.id()), "rev-parse", "HEAD")).isEqualTo(base);
+        Task after = tasks.findById(task.id()).orElseThrow();
+        assertThat(after.status()).isEqualTo(TaskStatus.CANCELLED);
+        assertThat(after.failures()).isZero();
+        assertThat(containersOf(run.id())).isEmpty();
+        assertThat(runDir.resolve("workspace")).doesNotExist();
+        assertThat(runDir.resolve("export")).doesNotExist();
+        assertThat(runDir.resolve("mcp.json")).doesNotExist();
+    }
+
+    @Test
+    void anAgentsContainerDoesNotOutliveItsDockerClient() throws Exception {
+        Task task = runningTask(taskService, tasks, "[[fake:commit-hang]]");
+        Run run = start(runs, props, task.id(), RunKind.IMPLEMENT, task.role(), "{}");
+        Path runDir = RUN_ROOT.resolve(run.id().toString());
+        CompletableFuture<RunResult> running = CompletableFuture.supplyAsync(() -> runner.execute(run));
+        await("the fake's commit", running, () -> Files.exists(runDir.resolve("claude-config/fake-committed.txt")));
+        assertThat(containersOf(run.id())).hasSize(1);
+
+        // What the OOM killer or a lost daemon connection does: the client ends, its container does not.
+        ContainerTestSupport.clientOf(DockerCommand.runName(run.id())).destroyForcibly();
+
+        RunResult result = running.get(60, TimeUnit.SECONDS);
+        // orange asked for no kill, so to it the agent ended without a result ...
+        assertThat(result.reason()).isEqualTo("no_result");
+        // ... and the container went before anything read or deleted the clone it was writing.
+        assertThat(containersOf(run.id())).isEmpty();
+        assertThat(git(worktrees.resolve(task.id()), "log", "--format=%s", "-1")).isEqualTo("fake: Add a greeting");
+        assertThat(runDir.resolve("workspace")).doesNotExist();
+        assertThat(runDir.resolve("export")).doesNotExist();
+        assertThat(runDir.resolve("mcp.json")).doesNotExist();
+    }
+
+    @Test
+    void doneWithCommitsThatDoNotComeHomeIsNoCommits() throws Exception {
+        Task task = runningTask(taskService, tasks, "Print hello.");
+        // An earlier attempt left a commit on the branch.
+        RunResult first = runner.execute(start(runs, props, task.id(), RunKind.IMPLEMENT, "implementer",
+                "{\"feedback\":[{\"source\":\"test\",\"summary\":\"[[fake:report-failed]]\"}]}"));
+        assertThat(first.reason()).isEqualTo("reported_failed");
+        Path wt = worktrees.resolve(task.id());
+        String afterFirst = git(wt, "rev-parse", "HEAD");
+
+        // This one moves its HEAD behind where it started, which no bundle can carry, and reports done.
+        RunResult second = runner.execute(start(runs, props, task.id(), RunKind.IMPLEMENT, "implementer",
+                "{\"feedback\":[{\"source\":\"test\",\"summary\":\"[[fake:rewind]]\"}]}"));
+
+        // The branch has a commit ahead of the base, but it is not this run's work: nothing goes to verification.
+        assertThat(second.status()).isEqualTo(RunStatus.FAILED);
+        assertThat(second.reason()).isEqualTo("no_commits");
+        assertThat(git(wt, "rev-parse", "HEAD")).as("the task's branch keeps its commits").isEqualTo(afterFirst);
+        Task after = tasks.findById(task.id()).orElseThrow();
+        assertThat(after.status()).isEqualTo(TaskStatus.RUNNING);
+        assertThat(after.headSha()).isNull();
+        assertThat(after.failures()).isEqualTo(2);
+        assertThat(pause.current()).isEmpty();
+        assertThat(containersOf(second.runId())).isEmpty();
+    }
+
+    @Test
+    void anAgentWithoutItsImageIsContainerUnavailableAndNothingCounts() {
+        RunnerProperties.Container d = containers.settings();
+        ContainerRuntime noImage = new ContainerRuntime(new RunnerProperties(RunnerProperties.Isolation.CONTAINER,
+                new RunnerProperties.Container(d.docker(), "orange-worker-test-missing:nope", d.claudeCommand(),
+                        d.network(), d.user(), d.home(), d.memory(), d.cpus(), d.pidsLimit(), d.volumes())));
+        WorkerRunner withoutImage = new WorkerRunner(routing, routingProps,
+                new HarnessRegistry(List.of(new ClaudeCodeAdapter(harnessProps, noImage))), harnessProps, gateway,
+                gatewayProps, billing, costs, props, runs, runEvents, lifecycle, preparer, rolePrompts, mcpConfigs,
+                secrets, noImage, new RunWorkspaces(worktrees, noImage, props));
+        Task task = runningTask(taskService, tasks, "Print hello.");
+        String base = git(BASE_REPO, "rev-parse", "main");
+        try {
+            RunResult result = withoutImage.execute(start(runs, props, task.id(), RunKind.IMPLEMENT, task.role(), "{}"));
+
+            // docker run answered 125: the agent never ran, and that says nothing about the task.
+            assertThat(result.status()).isEqualTo(RunStatus.FAILED);
+            assertThat(result.reason()).isEqualTo("container_unavailable");
+            Task after = tasks.findById(task.id()).orElseThrow();
+            assertThat(after.status()).isEqualTo(TaskStatus.RUNNING);
+            assertThat(after.failures()).isZero();
+            assertThat(git(worktrees.resolve(task.id()), "rev-parse", "HEAD")).isEqualTo(base);
+            // The next run would end the same way: a person builds the image, then resumes.
+            assertThat(pause.current()).hasValueSatisfying(p -> {
+                assertThat(p.reason()).isEqualTo("container_unavailable");
+                assertThat(p.until()).isNull();
+            });
+            Path runDir = RUN_ROOT.resolve(result.runId().toString());
+            assertThat(runDir.resolve("workspace")).doesNotExist();
+            assertThat(runDir.resolve("export")).doesNotExist();
+            assertThat(runDir.resolve("mcp.json")).doesNotExist();
+            assertThat(containersOf(result.runId())).isEmpty();
+        } finally {
+            pause.resume();
+        }
+    }
+
+    @Test
     void theNextRunStartsFromWhatTheLastOneCommitted() throws Exception {
         Task task = runningTask(taskService, tasks, "Print hello.");
         // It commits and then reports that it failed: the commit comes home all the same.
@@ -276,7 +437,10 @@ class ContainerRunIT {
         Path runDir = RUN_ROOT.resolve(result.runId().toString());
         JsonNode init = Json.mapper().readTree(Files.readAllLines(runDir.resolve("stream.jsonl")).getFirst());
         assertThat(init.path("cwd").asText()).isEqualTo(wt.toString());
-        assertThat(runFile(result, "fake-args.json")).contains("\"--permission-mode\",\"dontAsk\"");
+        assertThat(runFile(result, "fake-args.json")).contains("\"--permission-mode\",\"dontAsk\"")
+                // The worktree is what the reviewed agent committed: its .claude/settings.json and the
+                // hooks in it are not loaded, or one of them could submit the verdict with this run's token.
+                .contains("\"--setting-sources\",\"user\"").doesNotContain("project,local");
         assertThat(runFile(result, "fake-env.json")).contains("\"HOME\":\"/home/agent\"");
         assertThat(git(wt, "status", "--porcelain")).isEmpty();
         assertThat(git(wt, "rev-parse", "HEAD")).isEqualTo(task.headSha());
@@ -393,6 +557,28 @@ class ContainerRunIT {
         assertThat(runDir.resolve("export")).doesNotExist();
         assertThat(runDir.resolve("stream.jsonl")).as("the run's own files stay").exists();
         assertThat(CANARY).exists();
+    }
+
+    @Test
+    void aCloneIsDiscardedOnlyWhenTheRunsContainersAreGone() throws Exception {
+        UUID runId = UUID.randomUUID();
+        Path runDir = RUN_ROOT.resolve(runId.toString());
+        Files.writeString(Files.createDirectories(runDir.resolve("workspace/src")).resolve("a.txt"), "x");
+        RunnerProperties.Container d = containers.settings();
+        ContainerRuntime silent = new ContainerRuntime(new RunnerProperties(RunnerProperties.Isolation.CONTAINER,
+                new RunnerProperties.Container(List.of(RUN_ROOT.resolve("no-such-docker").toString()), d.image(),
+                        d.claudeCommand(), d.network(), d.user(), d.home(), d.memory(), d.cpus(), d.pidsLimit(), d.volumes())));
+
+        // Docker does not answer: a container may still be writing the clone, where a directory can
+        // turn into a link between two looks. orange does not walk it.
+        assertThat(new RunWorkspaces(worktrees, silent, props).discard(runId, runDir)).isFalse();
+        assertThat(runDir.resolve("workspace/src/a.txt")).exists();
+
+        // A container of the run that is still there goes first, then the clone.
+        leftoverContainer(runId);
+        assertThat(workspaces.discard(runId, runDir)).isTrue();
+        assertThat(containersOf(runId)).isEmpty();
+        assertThat(runDir.resolve("workspace")).doesNotExist();
     }
 
     // ─────────────────────────── evidence commands ───────────────────────────
@@ -538,11 +724,55 @@ class ContainerRunIT {
     }
 
     @Test
+    void aCommandsContainerDoesNotOutliveItsDockerClient() throws Exception {
+        Task task = taskWithHello();
+        Run run = verifyRun(task);
+        EvidenceRunner runner = evidenceRunner(containers,
+                new EvidenceProperties.Command("tests", "sleep 600", Duration.ofMinutes(10)));
+        CompletableFuture<RunResult> verifying = CompletableFuture.supplyAsync(() -> runner.execute(run));
+        await("the command's container", verifying, () -> runner.liveCommands() > 0 && !containersOf(run.id()).isEmpty());
+
+        // The client ends without orange asking for it; the container would go on in the clone.
+        ContainerTestSupport.clientOf(DockerCommand.runName(run.id()) + "-c1").destroyForcibly();
+
+        RunResult result = verifying.get(60, TimeUnit.SECONDS);
+        assertThat(containersOf(run.id())).isEmpty();
+        assertThat(RUN_ROOT.resolve(run.id().toString()).resolve("workspace")).doesNotExist();
+        // To orange the command ended with the client's exit code, as it would had the kernel killed the command.
+        assertThat(((RunOutcome.Verification) result.outcome()).gaps()).extracting(EvidenceGap::exitCode).containsExactly(137);
+    }
+
+    @Test
+    void aLeaseTheReaperTakesFromALiveVerifyRunIsNoVerdictOnTheWork() throws Exception {
+        Task task = taskWithHello();
+        Run run = verifyRun(task);
+        EvidenceRunner runner = evidenceRunner(containers,
+                new EvidenceProperties.Command("tests", "sleep 600", Duration.ofMinutes(10)));
+        CompletableFuture<RunResult> verifying = CompletableFuture.supplyAsync(() -> runner.execute(run));
+        await("the command's container", verifying, () -> runner.liveCommands() > 0 && !containersOf(run.id()).isEmpty());
+
+        // The database was away or the laptop slept: the lease ran out while its supervisor lives.
+        assertThat(runs.heartbeat(run.id(), props.workerId(), Duration.ofSeconds(-5))).isTrue();
+        reaper.reapExpired();
+
+        RunResult result = verifying.get(60, TimeUnit.SECONDS);
+        assertThat(result.status()).isEqualTo(RunStatus.FAILED);
+        assertThat(result.reason()).isEqualTo("lease_expired");
+        // The command ended because its container was taken away, not because the work is wrong.
+        assertThat(evidence.findByTask(task.id())).isEmpty();
+        Task after = tasks.findById(task.id()).orElseThrow();
+        assertThat(after.status()).isEqualTo(TaskStatus.VERIFYING);
+        assertThat(after.failures()).isZero();
+        assertThat(containersOf(run.id())).isEmpty();
+        assertThat(RUN_ROOT.resolve(run.id().toString()).resolve("workspace")).doesNotExist();
+    }
+
+    @Test
     void aMissingImageIsNoEvidenceAndPausesTheScheduler() {
         RunnerProperties.Container d = containers.settings();
         // docker run answers 125: there is no such image, and orange never pulls one.
         dockerCannotRunTheCommand(new RunnerProperties.Container(d.docker(), "orange-worker-test-missing:nope",
-                d.claudeCommand(), d.network(), d.user(), d.home(), d.memory(), d.cpus(), d.pidsLimit(), d.volumes()));
+                d.claudeCommand(), d.network(), d.user(), d.home(), d.memory(), d.cpus(), d.pidsLimit(), d.volumes()), true);
     }
 
     @Test
@@ -550,10 +780,11 @@ class ContainerRunIT {
         RunnerProperties.Container d = containers.settings();
         dockerCannotRunTheCommand(new RunnerProperties.Container(List.of(RUN_ROOT.resolve("no-such-docker").toString()),
                 d.image(), d.claudeCommand(), d.network(), d.user(), d.home(), d.memory(), d.cpus(), d.pidsLimit(),
-                d.volumes()));
+                d.volumes()), false);
     }
 
-    private void dockerCannotRunTheCommand(RunnerProperties.Container settings) {
+    /** @param dockerAnswers whether docker can at least say that the run has no container left */
+    private void dockerCannotRunTheCommand(RunnerProperties.Container settings, boolean dockerAnswers) {
         Task task = taskWithHello();
         Run run = verifyRun(task);
         ContainerRuntime broken = new ContainerRuntime(new RunnerProperties(RunnerProperties.Isolation.CONTAINER, settings));
@@ -573,7 +804,14 @@ class ContainerRunIT {
                 assertThat(p.reason()).isEqualTo("container_unavailable");
                 assertThat(p.until()).isNull();
             });
-            assertThat(RUN_ROOT.resolve(run.id().toString()).resolve("workspace")).doesNotExist();
+            Path runDir = RUN_ROOT.resolve(run.id().toString());
+            if (dockerAnswers) {
+                assertThat(runDir.resolve("workspace")).doesNotExist();
+            } else {
+                // Nobody can say that no container holds the clone, so nobody walks it: it goes with the run's directory.
+                assertThat(runDir.resolve("workspace")).exists();
+                workspaces.discard(runDir);
+            }
             assertThat(containersOf(run.id())).isEmpty();
         } finally {
             pause.resume();
@@ -589,7 +827,7 @@ class ContainerRunIT {
     }
 
     @Test
-    void theReaperRemovesAnOrphansContainers() {
+    void theReaperRemovesAnOrphansContainersAndItsClone() throws Exception {
         Task task = runningTask(taskService, tasks, "x");
         Task own = runningTask(taskService, tasks, "y");
         Run orphan = runs.insertRunning(RunKind.IMPLEMENT, "implementer", task.id(), "previous-instance",
@@ -600,10 +838,21 @@ class ContainerRunIT {
             leftoverContainer(orphan.id());
             leftoverContainer(mine.id());
             assertThat(containersOf(orphan.id())).hasSize(2);
+            // And the clone its agent worked on, with what a build left read-only, next to the run's own files.
+            Path orphanDir = RUN_ROOT.resolve(orphan.id().toString());
+            Path built = Files.createDirectories(orphanDir.resolve("workspace/build"));
+            Files.writeString(built.resolve("out.txt"), "x");
+            Files.setPosixFilePermissions(built, PosixFilePermissions.fromString("r-xr-xr-x"));
+            Files.writeString(orphanDir.resolve("stream.jsonl"), "{}\n");
+            Path mineDir = RUN_ROOT.resolve(mine.id().toString());
+            Files.createDirectories(mineDir.resolve("workspace"));
 
             reaper.failOrphans();
 
             assertThat(containersOf(orphan.id())).isEmpty();
+            assertThat(orphanDir.resolve("workspace")).as("nobody else would delete it before retention").doesNotExist();
+            assertThat(orphanDir.resolve("stream.jsonl")).exists();
+            assertThat(mineDir.resolve("workspace")).as("a run this coordinator supervises keeps its clone").exists();
             Run failed = runs.findById(orphan.id()).orElseThrow();
             assertThat(failed.status()).isEqualTo(RunStatus.FAILED);
             assertThat(failed.error()).isEqualTo("coordinator_restart");
@@ -682,6 +931,16 @@ class ContainerRunIT {
     }
 
     // ─────────────────────────── helpers ───────────────────────────
+
+    /** Waits until {@code ready} holds; fails when the run ends first or a minute has passed. */
+    static void await(String what, CompletableFuture<?> running, BooleanSupplier ready) throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(60).toNanos();
+        while (!ready.getAsBoolean()) {
+            assertThat(running.isDone()).as("the run ended before " + what).isFalse();
+            assertThat(System.nanoTime()).as("waiting for " + what).isLessThan(deadline);
+            Thread.sleep(100);
+        }
+    }
 
     /** A file the fake wrote under the run's {@code CLAUDE_CONFIG_DIR}; empty when it is not there. */
     static String runFile(RunResult result, String name) {

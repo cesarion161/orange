@@ -4,6 +4,7 @@ import com.ai.orange.harness.container.ContainerRuntime;
 import com.ai.orange.mcp.WorkerMcpConfig;
 import jakarta.servlet.http.HttpServletRequest;
 import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Supplier;
@@ -27,6 +28,11 @@ import org.springframework.stereotype.Component;
  * requests, and the guard sees nothing: there, container mode is for development, and
  * {@code orange.api.token} guards at least the session and steering endpoints.
  *
+ * <p>Until Docker has said which subnets the run network has (it is asked before the web server
+ * starts, and again every 30 s while it does not answer), nobody can tell a run's request from
+ * anyone's: a container that outlived the previous coordinator may be calling. In container mode
+ * the guard then lets through only this host itself (the loopback address) and {@code /mcp/worker}.
+ *
  * <p>The address is the connection's ({@code getRemoteAddr()}). orange does not read forwarding
  * headers ({@code server.forward-headers-strategy} is not set); if it ever does, a run could name
  * any address it likes.
@@ -42,13 +48,20 @@ public class RunNetworkGuard {
     private final boolean warnAtStart;
     private volatile Parsed parsed = new Parsed(List.of(), List.of());
 
+    static final String ONLY_THE_WORKER_MCP = "runs reach only /mcp/worker";
+    static final String NETWORK_UNKNOWN = "container mode, and Docker has not said yet where runs call from: "
+            + "until it does, only this host itself reaches orange";
+
     @Autowired
     public RunNetworkGuard(ContainerRuntime containers, @Value("${orange.api.token:}") String apiToken) {
-        this(() -> containers.enabled() ? containers.subnets() : List.of(),
+        this(() -> !containers.enabled() ? List.of() : containers.networkSeen() ? containers.subnets() : null,
                 containers.enabled() && (apiToken == null || apiToken.isBlank()));
     }
 
-    /** @param subnets the run network's subnets in CIDR notation, as they are now */
+    /**
+     * @param subnets the run network's subnets in CIDR notation, as they are now; empty when there are
+     *                no contained runs (process mode), null while container mode does not know them yet
+     */
     public RunNetworkGuard(Supplier<List<String>> subnets) {
         this(subnets, false);
     }
@@ -60,13 +73,24 @@ public class RunNetworkGuard {
 
     /** Whether the request comes from a run's container and asks for anything but the worker MCP endpoint. */
     public boolean refuses(HttpServletRequest request) {
+        return refusal(request) != null;
+    }
+
+    /** Why the request is refused, for whoever sent it; null when it is not. */
+    public String refusal(HttpServletRequest request) {
         // The raw URI, compared as it is: any other spelling of the path is refused, not interpreted.
-        return fromRunNetwork(request.getRemoteAddr()) && !WorkerMcpConfig.PATH.equals(request.getRequestURI());
+        if (WorkerMcpConfig.PATH.equals(request.getRequestURI())) return null;
+        if (subnets.get() == null) {
+            // Any address may be a run's container as long as the run network is unknown; this host's own is not.
+            return loopback(request.getRemoteAddr()) ? null : NETWORK_UNKNOWN;
+        }
+        return fromRunNetwork(request.getRemoteAddr()) ? ONLY_THE_WORKER_MCP : null;
     }
 
     /**
-     * Whether {@code remoteAddr} lies in one of the run network's subnets. False when the network
-     * has not been looked at yet (process mode never looks) or the address is not an IP literal.
+     * Whether {@code remoteAddr} lies in one of the run network's subnets. False when the subnets
+     * are not known (process mode never looks; for container mode see {@link #refusal}) or the
+     * address is not an IP literal.
      */
     public boolean fromRunNetwork(String remoteAddr) {
         List<Cidr> cidrs = cidrs();
@@ -88,8 +112,19 @@ public class RunNetworkGuard {
         }
     }
 
+    private static boolean loopback(String remoteAddr) {
+        byte[] address = remoteAddr == null ? null : literal(remoteAddr.strip());
+        if (address == null) return false;
+        try {
+            return InetAddress.getByAddress(address).isLoopbackAddress();
+        } catch (UnknownHostException e) {
+            return false;
+        }
+    }
+
     private List<Cidr> cidrs() {
         List<String> now = subnets.get();
+        if (now == null) now = List.of();
         Parsed p = parsed;
         if (!p.source().equals(now)) {
             List<Cidr> cidrs = new ArrayList<>();
