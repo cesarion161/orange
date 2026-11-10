@@ -114,4 +114,4 @@ another checkout (the spec's own rule).
 
 ## Verified
 
-- `./gradlew test`: 401 tests, 0 failures (2026-11-10).
+- `./gradlew test`: 406 tests, 0 failures (2026-11-10, after the review fixes and the live check).
