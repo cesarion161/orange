@@ -76,9 +76,11 @@ class RunnerPropertiesTest {
 
     @Test
     void anEmptyVariableMeansTheDefault() throws Exception {
-        // A variable left empty in .env binds as an empty string.
-        RunnerProperties p = shipped(Map.of("ORANGE_WORKER_IMAGE", "", "ORANGE_RUNNER_NETWORK", " ",
-                "ORANGE_RUNNER_USER", "", "ORANGE_RUNNER_MEMORY", "", "ORANGE_RUNNER_CPUS", ""));
+        // A variable left empty in .env binds as an empty string. For the isolation that is process
+        // mode: Spring reads an empty string as no enum constant, and the default steps in.
+        RunnerProperties p = shipped(Map.of("ORANGE_RUNNER_ISOLATION", "", "ORANGE_WORKER_IMAGE", "",
+                "ORANGE_RUNNER_NETWORK", " ", "ORANGE_RUNNER_USER", "", "ORANGE_RUNNER_MEMORY", "",
+                "ORANGE_RUNNER_CPUS", ""));
         assertDefaults(p);
     }
 

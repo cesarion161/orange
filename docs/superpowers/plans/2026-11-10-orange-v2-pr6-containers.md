@@ -12,7 +12,7 @@ and is untouched.
 - [x] **C1. The container runtime: settings, the docker command, the test image.**
 - [x] **C2. Agent runs in containers: the launcher, the clone, the way home.**
 - [x] **C3. Evidence commands, the reaper, the network guard, the loop end to end.**
-- [ ] **C4. The worker image, the docs, the live checks' code.**
+- [x] **C4. The worker image, the docs, the live checks' code.**
 - [ ] **C5. Live gate** (one real implement run in a container; recorded below).
 
 ## Design
@@ -222,8 +222,20 @@ Claude Code 2.1.322 is what this laptop runs):
   exits 0; `InetAddress.ofLiteral` reads `172.18.0` and a bare number as IPv4 addresses, so the
   guard asks for a dotted quad first; a `MockHttpServletRequest` with a remote address in the run
   network's subnet goes through the real `springSecurityFilterChain` and is refused there.
-- Not checked: source addresses on a Linux bridge; the installer inside a Linux image; Claude
-  Code in a container (C4 and C5).
+- While building C4: the installer's layout in `debian:bookworm-slim` and in `ubuntu:24.04`
+  (linux/arm64) is what the Dockerfile expects (`/root/.local/bin/claude` links to one binary of
+  about 340 MB); the image is about 780 MB on disk, built in about a minute, and
+  `claude --version` in it prints `2.1.322 (Claude Code)`, `id -u` the builder's uid (501 here,
+  with gid 20, which Debian calls `dialout`; `--non-unique` takes both). Claude Code 2.1.322 in
+  the image, as uid 501 with `--cap-drop ALL` and `no-new-privileges`, accepts orange's whole
+  command line with `--permission-mode bypassPermissions`, connects to the coordinator's
+  `/mcp/worker` as `host.docker.internal` and lists the run's tools; an invalid token ends it
+  with `Failed to authenticate. API Error: 401 …` after two `api_retry` events, in about four
+  seconds, with an empty stderr. The image's git (2.39.5 on bookworm) commits in a clone made by
+  the host's git 2.54.0 and bundles from it when it is mounted read-only; the host fetches that
+  bundle. An empty `ORANGE_RUNNER_ISOLATION` binds as `process`: Spring reads an empty string as
+  no enum constant, and the default steps in.
+- Not checked: source addresses on a Linux bridge; a model call from inside the container (C5).
 
 ### The launcher (`harness`)
 
@@ -451,9 +463,10 @@ Not built: an allowlist for the internet (known limits).
       volumes: []
 ```
 
-No migration (next free stays V23). `.env.example` gets `ORANGE_WORKER_IMAGE=` and, commented
-out, `# ORANGE_RUNNER_ISOLATION=container` (an empty value does not bind to the enum and stops
-the start, as with `ORANGE_BRIEF_ENABLED`).
+No migration (next free stays V23). `.env.example` gets `ORANGE_RUNNER_ISOLATION=` and
+`ORANGE_WORKER_IMAGE=`, both blank: an empty isolation binds as `process` (checked in C4 and kept
+as an assertion in `RunnerPropertiesTest`; the plan first had it commented out, expecting an empty
+value to stop the start as `ORANGE_BRIEF_ENABLED` does).
 
 ### The image
 
@@ -489,6 +502,9 @@ WORKDIR /home/agent
 `CLAUDE_CODE_VERSION`, `AGENT_UID=$(id -u)`, `AGENT_GID=$(id -g)`. The agent user gets the uid of
 whoever builds, which must be the user orange runs as: build the image on the host that uses it.
 A deployment picks its toolchain with `--base` and names the result in `ORANGE_WORKER_IMAGE`.
+As built, the script also refuses to run as root (the image's user would be root, which orange
+refuses at start), answers an unknown option with its usage and exit code 2, and ends with one
+line naming the tag, the version, the base and the uid.
 
 ### Tests (no model, process mode stays the default everywhere else)
 
@@ -673,7 +689,7 @@ Build:
   what the Dockerfile expects, any pinned install that leaves `/usr/local/bin/claude` at that
   version is right; record what was needed under Verified.
 - `orange/compose.yaml`: Postgres publishes `127.0.0.1:5432:5432` (ruling 16).
-- `orange/.env.example`: the two variables.
+- `orange/.env.example`: the two variables, both blank (see Settings).
 - `CLAUDE.md`: the repository layout (`orange/worker/`, `harness/container/`, `RunWorkspaces`);
   under "Running Claude Code" the contained path; the isolation paragraph rewritten (what runs
   where, the rule, what the network does and does not hold); the commands
@@ -689,7 +705,12 @@ Build:
      empty directory under the run root and an invalid token. Asserts on the init line of
      `stream.jsonl`: `permissionMode` is `bypassPermissions`, the `orange` MCP server is
      `connected`, the tools include `mcp__orange__report_result`, `cwd` is that directory; the
-     result is an auth failure; stderr has no `error:`; no container is left.
+     result is an auth failure; stderr has no `error:`; no container is left. As built, the
+     spec's run id is the run row's, so `mcp.json`, `claude-config` and the `workspace` directory
+     lie in one run directory as `WorkerRunner` lays them out, and the policy is
+     `ToolPolicy.forKind(IMPLEMENT).inContainer()`. It also asserts that `Bash` is among the
+     tools and `mcp__orange__submit_review` is not, that only built-in plugins load, that no tool
+     was used, that the run has no outcome and that the directory stayed empty.
   2. `oneRealImplementRunInAContainer` (`@EnabledIfEnvironmentVariable CLAUDE_CODE_OAUTH_TOKEN`):
      a task with role `chore` (small tier, low effort) asking for a file `HELLO.md` with one given
      line and a file `probe.txt` holding the output of
@@ -697,7 +718,16 @@ Build:
      `WorkerRunner.execute` on its implement run. Asserts: the run succeeded with a `done`
      outcome; the task is `verifying`; the worktree's head has both files, `probe.txt` says
      `CANARY_HIDDEN` and a uid that is not 0; `run_events` has `init`, `tool_use` and `result` and
-     none contains the token; no container is left.
+     none contains the token; no container is left. As built, it also asserts that the uid is
+     the one of `ContainerRuntime.user()`, that the worktree is clean on the task's branch at the
+     recorded head, that the token is in neither `stream.jsonl` nor `stderr.log`, that the init
+     line has `bypassPermissions` and the clone as its cwd, and that the clone, the export and
+     `mcp.json` are gone. It prints the image, the model, the cost estimate and the seconds the
+     run took, for the record C5 asks for.
+
+  The class sets `orange.mcp.worker-url` to blank (this coordinator's own port, whatever
+  `orange/.env` says about a deployment's) and the implement timeout to 10 minutes. Test 1 was
+  run while building C4 (it needs no secret); test 2 was only compiled.
 
 Run: `./gradlew compileJava compileTestJava`, `./gradlew test`.
 
@@ -839,9 +869,30 @@ that had to change.
   made (no API spend).
 - The pids limit counts threads; a build that needs more than 4096 has to raise it.
 - The first test run needs the network to build the test image, and the Docker CLI on the PATH.
-- Not checked before C4: the installer's layout in a Linux image, and Claude Code under
-  `bypassPermissions` as a non-root user in a container.
+- The worker image holds Debian's git (2.39 on bookworm), older than a host's may be. A
+  repository format the host's git writes and the image's cannot read (a later git's defaults)
+  would fail the run inside the container; with git 2.54 on the host it works.
+- Not checked before C5: a model call from inside the container (the invalid-token check of C4
+  stops at Anthropic's 401).
 
 ## Review
 
 ## Verified
+
+### The worker image (C4, 2026-11-10)
+
+Docker 29.7.2 (Docker Desktop, linux/arm64), built as uid 501, gid 20.
+
+- `./worker/build.sh` built `orange-worker:local` on `debian:bookworm-slim` with the Dockerfile
+  as planned: nothing about the installer's layout had to change. `docker run --rm
+  orange-worker:local claude --version` prints `2.1.322 (Claude Code)`, `id -u` prints `501`,
+  `/home/agent` is the agent's and writable, `/root` is closed to it. `--base ubuntu:24.04` builds
+  the same way (git 2.43, ripgrep 14.1).
+- `./gradlew liveTest --tests '*ContainerLiveIT'` without a token: the invalid-token test passes
+  (init line: `bypassPermissions`, cwd the mounted directory, `orange` connected, tools `Bash`,
+  `Edit`, `Glob`, `Grep`, `Read`, `Write`, `mcp__orange__report_result`,
+  `mcp__orange__request_human`; result `Failed to authenticate. API Error: 401 OAuth access token
+  is invalid.`; no container left); the real implement run is skipped.
+- By hand, the export path with the real image: a clone made by the host's git, a commit made in
+  a container as `orange[bot]`, the bundle written by a second container with no network from the
+  clone mounted read-only, fetched and reset into a linked worktree on the host.

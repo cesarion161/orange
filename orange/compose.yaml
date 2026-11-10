@@ -6,7 +6,9 @@ services:
       - 'POSTGRES_PASSWORD=secret'
       - 'POSTGRES_USER=orange'
     ports:
-      - '5432:5432'
+      # On the loopback address only: on Linux a container (orange's contained runs among them)
+      # reaches whatever the host serves on all interfaces.
+      - '127.0.0.1:5432:5432'
     volumes:
       - ./.docker/postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
