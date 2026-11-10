@@ -7,11 +7,13 @@ import com.ai.orange.brief.BriefSnapshot.ProjectFacts;
 import com.ai.orange.brief.BriefSnapshot.SessionFacts;
 import com.ai.orange.brief.BriefSnapshot.TaskFacts;
 import java.nio.charset.StandardCharsets;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.jooq.JSONB;
 
 /**
  * Snapshots for the brief's tests, built by hand: {@code snapshot(project("orange-ai").prompts(3))}.
@@ -23,6 +25,8 @@ public final class BriefFixtures {
     public static final String AT = "2026-11-10T09:05+01:00";
     public static final String SINCE = "2026-11-09T14:00:03+01:00";
     public static final String ZONE = "Europe/Berlin";
+    /** The brief time the fixture briefs answer. */
+    public static final String SLOT = "2026-11-10T09:00+01:00";
 
     private BriefFixtures() {}
 
@@ -77,6 +81,28 @@ public final class BriefFixtures {
         Map<String, Integer> counts = new LinkedHashMap<>();
         for (int i = 0; i + 1 < byStatus.length; i += 2) counts.put((String) byStatus[i], (Integer) byStatus[i + 1]);
         return new TaskFacts(counts, integratedSince, needsHuman);
+    }
+
+    /** A scheduled brief for {@link #SLOT}, as stored: with the model's lines, or facts only with a note. */
+    public static Brief brief(BriefSnapshot snapshot, BriefContent contentOrNull, String note) {
+        return brief(OffsetDateTime.parse(SLOT), snapshot.toJsonb(), json(contentOrNull), note);
+    }
+
+    /** A brief that was asked for ({@code orange_focus}): it answers no brief time. */
+    public static Brief onDemand(BriefSnapshot snapshot, BriefContent contentOrNull, String note) {
+        return brief(null, snapshot.toJsonb(), json(contentOrNull), note);
+    }
+
+    /** A brief from whatever is stored, with random ids and a page key. */
+    public static Brief brief(OffsetDateTime slotOrNull, JSONB snapshot, JSONB contentOrNull, String note) {
+        OffsetDateTime at = OffsetDateTime.parse(AT);
+        return new Brief(UUID.randomUUID(), slotOrNull, at, snapshot, contentOrNull, note,
+                contentOrNull == null ? null : UUID.randomUUID(), slotOrNull != null,
+                UUID.randomUUID().toString().replace("-", ""), null, at);
+    }
+
+    private static JSONB json(BriefContent content) {
+        return content == null ? null : JSONB.valueOf(content.toJson().toString());
     }
 
     public static final class ProjectBuilder {

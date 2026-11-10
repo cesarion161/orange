@@ -10,8 +10,8 @@ skipped or refused run costs the words, never the brief: the facts are always or
 
 - [x] **D1. Schema, the brief record, settings and the schedule rule.**
 - [x] **D2. The snapshot: the facts in SQL, the quiet rule, the news rule.**
-- [ ] **D3. `submit_brief` and the brief run's wiring.**
-- [ ] **D4. The prompt and the text (pure).**
+- [x] **D3. `submit_brief` and the brief run's wiring.**
+- [x] **D4. The prompt and the text (pure).**
 - [ ] **D5. Writing a brief: the service, the tick and the fake.**
 - [ ] **D6. Delivery and the page.**
 - [ ] **D7. `orange_focus`, the plugin README, the docs and the live check.**
@@ -128,7 +128,8 @@ skipped or refused run costs the words, never the brief: the facts are always or
 - The page key travels through ntfy when a public url is set, and `orange_focus` shows it inside
   sessions; it opens one brief for 48 hours. With no API token set, `/brief/{id}` opens without a
   key, like the rest of the operator API on localhost.
-- The prompt is bounded by fixed caps (about 80,000 characters at worst), not trimmed to a budget.
+- The prompt is bounded by fixed caps (about 125,000 characters at worst, 92,000 of them the capped
+  texts themselves), not trimmed to a budget.
 - Whether Claude Code's MCP client waits 60 seconds for a tool call is not checked; it is part of
   the live check.
 - With `ORANGE_BRIEF_ENABLED=false` no brief is scheduled, but `orange_focus` with `fresh` still
