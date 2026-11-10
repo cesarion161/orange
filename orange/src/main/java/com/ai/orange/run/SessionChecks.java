@@ -97,7 +97,10 @@ public class SessionChecks {
         return new Located(new Place(dir, head, branch, baseRef == null ? null : base, hasOrigin, baseRef), null);
     }
 
-    /** The {@code base-branch} convention, else what the reporter saw as the repo's default, else origin's. */
+    /**
+     * The {@code base-branch} convention, else what the reporter saw as the repo's default, else
+     * origin's, else {@code main} or {@code master} when the repo has one.
+     */
     private String baseBranch(Session s, Path dir, boolean hasOrigin) {
         Optional<String> named = conventions.baseBranch(s.projectId(), s.id());
         if (named.isPresent()) return named.get();
@@ -109,6 +112,13 @@ public class SessionChecks {
         if (hasOrigin && Git.exitCode(dir, Git.QUICK, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD") == 0) {
             String ref = Git.run(dir, Git.QUICK, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").strip();
             return ref.startsWith("origin/") ? ref.substring("origin/".length()) : ref;
+        }
+        // A repo that was not cloned (git init, then a remote added) has no origin/HEAD: fall back to
+        // the usual names, as long as such a branch exists.
+        for (String usual : List.of("main", "master")) {
+            if ((hasOrigin && refExists(dir, "refs/remotes/origin/" + usual)) || refExists(dir, "refs/heads/" + usual)) {
+                return usual;
+            }
         }
         return null;
     }

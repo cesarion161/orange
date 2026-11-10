@@ -86,6 +86,7 @@ class SessionCloseIT {
     Path repo;
     String sessionId;
     String branch;
+    boolean reportDefaultBranch = true;
 
     @BeforeEach
     void fresh() throws Exception {
@@ -116,6 +117,7 @@ class SessionCloseIT {
                 .put("session_id", sessionId).put("type", type).put("cwd", repo.toString())
                 .put("repo_root", repo.toString()).put("worktree", repo.toString()).put("branch", branch)
                 .put("default_branch", "main");
+        if (!reportDefaultBranch) e.remove("default_branch");
         if (payloadField != null) e.putObject("payload").put(payloadField, payloadText);
         HttpResponse<String> res = http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/sessions/events"))
                 .header("Content-Type", "application/json")
@@ -251,7 +253,8 @@ class SessionCloseIT {
         assertThat(session().autoContinues()).isEqualTo(1);
         Poll verdict = poll(stop);
         assertThat(verdict.kind()).isEqualTo("continue");
-        assertThat(verdict.message()).contains("not done yet").contains("`test -f wanted.txt` failed with exit code 1");
+        assertThat(verdict.message()).contains("not done yet").contains("`test -f wanted.txt` failed with exit code 1")
+                .contains("It printed nothing.");
         assertThat(evidence.findBySession(session().id())).singleElement().satisfies(e -> assertThat(e.passed()).isFalse());
 
         assertThat(judgement.acknowledge("claude-code", sessionId, stop)).isTrue();
@@ -492,6 +495,20 @@ class SessionCloseIT {
         prompt("Now document it");
         assertThat(session().intent()).isEqualTo("Now document it");
         assertThat(work.findBySession(session().id()).getFirst().intent()).isEqualTo("Now document it");
+    }
+
+    @Test
+    void aRepoThatWasNeverClonedStillHasABase() throws Exception {
+        // git init plus "remote add" leaves no origin/HEAD, and the reporter then knows no default branch.
+        reportDefaultBranch = false;
+        prompt("Add the feature file");
+        convention("evidence", "[\"test -f feature.txt\"]");
+        commit("feature.txt", "the feature\n");
+        stop();
+        assertThat(runAll()).as("judge, verify, diff review, integrate").isEqualTo(4);
+
+        assertThat(lastWork().baseBranch()).isEqualTo("main");
+        assertThat(git(origin, "rev-parse", "main")).isEqualTo(git(repo, "rev-parse", "HEAD"));
     }
 
     @Test

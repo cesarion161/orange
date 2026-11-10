@@ -358,8 +358,10 @@ public class SessionClosing {
                 b.append("\n`").append(g.command()).append("` failed")
                         .append(g.exitCode() == -1 ? " (it timed out)" : " with exit code " + g.exitCode())
                         .append(" at commit ").append(check.headSha(), 0, Math.min(10, check.headSha().length()))
-                        .append(". The end of its output:\n```\n")
-                        .append(SessionService.tail(g.outputTail(), GAP_TAIL)).append("\n```\nFix it and commit.\n");
+                        .append(g.outputTail() == null || g.outputTail().isBlank() ? ". It printed nothing.\n"
+                                : ". The end of its output:\n```\n" + SessionService.tail(g.outputTail(), GAP_TAIL)
+                                        + "\n```\n")
+                        .append("Fix it and commit.\n");
             }
         }
         return b.toString().strip();

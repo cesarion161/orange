@@ -19,10 +19,25 @@ project's conventions say, and closes it. A gap goes back into the session throu
 - [x] **6. The close.** `SessionClosing`: the steps, the send-back, `session_work`, the `closed`
   session, the `session_integration` and `evidence_missing` items.
 - [x] **7. Time and the user.** A prompt ends the check; late results; a check whose run is gone.
-- [x] **8. Tests.** `SessionCloseIT` (18 cases on temporary git repositories with the fake
+- [x] **8. Tests.** `SessionCloseIT` (23 cases on temporary git repositories with the fake
   `claude`), `EvidenceConventionTest`.
-- [ ] **9. Live check** in a sandbox repo: a session verified, closed and merged; a failing test
-  sent back as a `continue`.
+- [x] **9. Live check** (2026-11-10, Claude Code with the plugin installed at user scope,
+  subscription token; real `claude -p` sessions on branch `feat` of a scratch repo with a local
+  bare origin, evidence `sh check.sh`):
+  - A session committed a wrong answer and said it was finished. The judge said `verify`, the
+    check failed, and the stop hook sent "`sh check.sh` failed with exit code 1 at commit …" back
+    into the session. The session would not contradict its instructions and asked which value was
+    meant; the judge escalated that question.
+  - A session that committed passing work was verified, reviewed, integrated and closed: origin's
+    `main` and the local `main` both moved to its head, the checkout stayed on `feat`, and no
+    scratch checkout was left. Judge about 4 s on Haiku, check under 1 s, diff review 4 s on
+    Sonnet (an estimated $0.02), integration under 1 s.
+  - **Found and fixed:** a repo that was never cloned has no `origin/HEAD`, so the reporter knows
+    no default branch and the work closed as "verified, cannot integrate". The base now falls
+    back to `main` or `master` when the repo has one. A command that prints nothing no longer
+    shows an empty output block.
+  - **Seen:** the diff review reads the whole diff since the base, so it called the earlier work
+    still on the branch scope creep. It passed here; see the known limits.
 
 ## Builder's rulings
 
@@ -62,6 +77,9 @@ project's conventions say, and closes it. A gap goes back into the session throu
     `max-concurrent`, unlike the judge: evidence commands are heavy.
 
 ## Known limits
+
+- The diff review covers everything on the branch since the base, measured against the latest
+  intent only. Earlier work that was closed without being integrated shows up as extra scope.
 
 - A judge that wrongly says "finished" starts a close. Evidence and the diff review against the
   intent are what stand between that and an integration.
