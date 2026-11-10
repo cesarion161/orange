@@ -1,18 +1,5 @@
 {
   "mcpServers": {
-    "orange": {
-      "command": "uv",
-      "args": [
-        "--directory",
-        "${CLAUDE_PLUGIN_ROOT}/../orange-mcp",
-        "run",
-        "orange-mcp"
-      ],
-      "env": {
-        "ORANGE_BASE_URL": "http://localhost:8080",
-        "ORANGE_DEFAULT_PIPELINE": "dev_qa"
-      }
-    },
     "orange-steering": {
       "type": "http",
       "url": "${ORANGE_URL:-http://localhost:8080}/mcp/steering",

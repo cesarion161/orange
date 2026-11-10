@@ -1,0 +1,14 @@
+{
+  "name": "orange-local",
+  "owner": { "name": "cesarion161" },
+  "metadata": {
+    "description": "The orange plugin, installed from a checkout of this repository."
+  },
+  "plugins": [
+    {
+      "name": "orange",
+      "source": "./plugin",
+      "description": "orange's session reporter (hooks) and steering tools: orange watches your Claude Code sessions, answers routine stops and files what needs you."
+    }
+  ]
+}
