@@ -98,8 +98,45 @@ orange:
   mcp:
     # Where agents reach /mcp/worker. Blank = http://127.0.0.1:<server port>/mcp/worker.
     worker-url: ${ORANGE_MCP_WORKER_URL:}
+  api:
+    # Bearer token for /sessions, /attention and /mcp/steering (session reporters and steering
+    # clients). Blank = open, which is only right while orange listens on localhost.
+    token: ${ORANGE_API_TOKEN:}
+  attention:
+    # Rule-based attention on the user's own sessions (project-space spec, Phase A).
+    sweep-enabled: ${ORANGE_ATTENTION_SWEEP_ENABLED:true}
+    sweep: 30s
+    # A session asking something, or showing a prompt, this long without the user becomes urgent.
+    waiting-escalate-after: 15m
+    # A session that stopped with nothing to ask is filed after this long ...
+    idle-after: 15m
+    # ... as normal (it waits for the brief) or urgent (it is pushed).
+    idle-stop-urgency: normal
+  notify:
+    enabled: ${ORANGE_NOTIFY_ENABLED:true}
+    sweep: 30s
+    # At most one push of urgent items per window; critical items always go at once.
+    batch-window: 10m
+    # The user's time zone for quiet hours, e.g. Europe/Berlin. Blank = the coordinator's.
+    zone: ${ORANGE_NOTIFY_ZONE:}
+    ntfy:
+      # No pushes while the url is blank. On a public server the topic's name is the secret.
+      url: ${ORANGE_NTFY_URL:}
+      attention-topic: ${ORANGE_NTFY_ATTENTION_TOPIC:attention}
+      token: ${ORANGE_NTFY_TOKEN:}
+  conventions:
+    # Global defaults of the conventions (project-space spec §8). A project's space and a session's
+    # overrides take precedence; brief-times and quiet-hours are global only.
+    done: [evidence, integrated]
+    integration: merge
+    auto-answer: routine
+    always-ask: []
+    auto-answer-confidence: 0.8
+    brief-times: ["09:00", "14:00"]
+    # Only critical items are pushed between these two times.
+    quiet-hours: ["22:00", "08:00"]
   events:
-    # The inbox (webhooks today): stored first, then processed one per transaction in id order.
+    # The inbox (webhooks and session events): stored first, then processed one per transaction in id order.
     processing-enabled: ${ORANGE_EVENTS_PROCESSING_ENABLED:true}
     poll: 5s
     # A failing event is retried this many times, then left with its last error.

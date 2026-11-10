@@ -1,0 +1,23 @@
+{
+  "description": "orange session reporter: tells the orange coordinator when a session starts, gets a prompt, stops, waits for the user, or ends.",
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/orange-report.py\" SessionStart", "timeout": 10 } ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/orange-report.py\" UserPromptSubmit", "timeout": 10 } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/orange-report.py\" Stop", "timeout": 10 } ] }
+    ],
+    "Notification": [
+      { "hooks": [ { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/orange-report.py\" Notification", "timeout": 10 } ] }
+    ],
+    "PostToolUse": [
+      { "hooks": [ { "type": "command", "command": "[ -e \"${ORANGE_NODE_DIR:-$HOME/.orange/node}/waiting/$CLAUDE_CODE_SESSION_ID\" ] || exit 0; exec python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/orange-report.py\" PostToolUse", "timeout": 10 } ] }
+    ],
+    "SessionEnd": [
+      { "hooks": [ { "type": "command", "command": "ORANGE_REPORT_TIMEOUT=1 python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/orange-report.py\" SessionEnd", "timeout": 5 } ] }
+    ]
+  }
+}

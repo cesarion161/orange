@@ -2,6 +2,7 @@ package com.ai.orange.config;
 
 import com.ai.orange.github.GithubProperties;
 import com.ai.orange.webhook.GithubWebhookHmacFilter;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -19,8 +20,14 @@ public class SecurityConfig {
     }
 
     @Bean
+    public ApiTokenFilter apiTokenFilter(@Value("${orange.api.token:}") String token) {
+        return new ApiTokenFilter(token);
+    }
+
+    @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http,
-                                                   GithubWebhookHmacFilter hmacFilter) throws Exception {
+                                                   GithubWebhookHmacFilter hmacFilter,
+                                                   ApiTokenFilter apiTokenFilter) throws Exception {
         http
                 .csrf(csrf -> csrf.disable())  // we expose no browser forms; all writes are HMAC- or token-authenticated
                 .authorizeHttpRequests(auth -> auth
@@ -34,6 +41,10 @@ public class SecurityConfig {
                         .requestMatchers("/scheduler", "/scheduler/**").permitAll()  // operator-driven; auth lands later
                         .requestMatchers("/runs/**").permitAll()  // operator-driven; auth lands later
                         .requestMatchers("/events/**").permitAll()           // live narration feed
+                        // ApiTokenFilter authenticates these three when orange.api.token is set
+                        .requestMatchers("/sessions", "/sessions/**").permitAll()
+                        .requestMatchers("/attention", "/attention/**").permitAll()
+                        .requestMatchers("/mcp/steering").permitAll()
                         .requestMatchers("/dev-envs", "/dev-envs/**").permitAll()
                         .requestMatchers("/health/**").permitAll()
                         .requestMatchers("/api/status").permitAll()  // status smoke check
@@ -41,6 +52,7 @@ public class SecurityConfig {
                         .anyRequest().denyAll()
                 )
                 .addFilterBefore(hmacFilter, UsernamePasswordAuthenticationFilter.class)
+                .addFilterBefore(apiTokenFilter, UsernamePasswordAuthenticationFilter.class)
                 .httpBasic(httpBasic -> httpBasic.disable())
                 .formLogin(formLogin -> formLogin.disable());
         return http.build();

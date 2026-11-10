@@ -5,8 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Repository layout
 
 - **`orange/`** — Java 27 / Spring Boot 4 coordinator. Owns persistence (Postgres + Flyway + jOOQ), task state and the run loop: it starts Claude Code (`claude -p`) directly, one process per agent run, verifies the work itself and integrates it. No Temporal, no external workers.
-- **`orange-mcp/`** — Python stdio MCP shim the Claude Code plugin uses to call orange's REST API.
-- **`plugin/`** — the Claude Code plugin (skills, slash commands).
+- **`orange-mcp/`** — Python stdio MCP shim the Claude Code plugin uses to call orange's task REST API (until v2 PR 5 folds those tools into `/mcp/steering`).
+- **`plugin/`** — the Claude Code plugin: the session reporter (`hooks/hooks.json`, `hooks/orange-report.py`), the MCP servers (`.mcp.json`) and the skills.
 - **`docs/superpowers/`** — the v2 design spec, the project-space spec that amends it, and per-PR implementation plans.
 
 Inside `orange/src/main/java/com/ai/orange/`:
@@ -14,6 +14,11 @@ Inside `orange/src/main/java/com/ai/orange/`:
 - **`harness/`** — harness-neutral run model (`RunSpec`, `RunEvent`, `HarnessAdapter`, `ProcessRunHandle`) and **`harness/claude/`**, the Claude Code adapter (`ClaudeCodeCommand` builds argv + env, `StreamJsonParser` reads `--output-format stream-json`).
 - **`roles/`** — `RolePrompts` (role instructions from `src/main/resources/roles/*.md`) and `ToolPolicy` (tools per run kind).
 - **`mcp/`** — the worker MCP endpoint `/mcp/worker` (`WorkerTools`: `report_result`, `request_human`, `submit_review`) with per-run bearer tokens.
+- **`project/`** — projects, their repos and the project space: `ProjectService` (repo → project, proposed projects), `SpaceService` (goals, milestones, decisions, notes, questions; items supersede, agents only propose) and `Conventions` (session → project → global).
+- **`session/`** — the user's own interactive sessions: `NeutralEvent` (what reporters post), `SessionReactor` (the pure rule table), `SessionService` (applies events, files attention), `SessionSweeper`, `QuestionDetector`.
+- **`attention/`** — the attention inbox (`AttentionService`): everything that wants the user, once per dedupe key.
+- **`notify/`** — `PushPlanner` (urgency, batch window, quiet hours), `NtfyClient`, `AttentionNotifier`.
+- **`mcp/`** also holds the steering endpoint `/mcp/steering` (`SteeringTools`).
 - **`evidence/`** — evidence rows and the configured evidence commands.
 - **`events/`** — the inbox (webhooks are stored first, processed later) and its processor.
 - **`routing/`** — the rule table: role × difficulty × risk × prior failures → tier (model, harness, auth, budget) + effort.
@@ -26,7 +31,7 @@ Inside `orange/src/main/java/com/ai/orange/`:
 Run from `orange/`:
 - **Run app**: `./gradlew bootRun` — automatically loads `orange/.env` into the process env (see `parseDotEnv()` in `build.gradle.kts`). Copy `orange/.env.example` to start.
 - **jOOQ codegen**: runs automatically before `compileJava` via the `nu.studer.jooq` plugin. The `generateJooq` task spins up an embedded Postgres 18 (no Docker needed), runs all Flyway migrations against it, then generates Java sources under `build/generated/sources/jooq/main/java` in package `com.ai.orange.db.jooq`. To regenerate after editing a migration, just `./gradlew generateJooq`.
-- **All tests**: `./gradlew test` — JUnit 5 + Testcontainers (Postgres 18). Needs a running Docker daemon and nothing else (no Temporal, no model calls). The run loop and the events processor are off in tests (`src/test/resources/config/application.yaml`); `RunLoopE2EIT` turns them on and takes a task from ready to integrated.
+- **All tests**: `./gradlew test` — JUnit 5 + Testcontainers (Postgres 18). Needs a running Docker daemon and nothing else (no Temporal, no model calls). The run loop and the events processor are off in tests (`src/test/resources/config/application.yaml`); `RunLoopE2EIT` turns them on and takes a task from ready to integrated. `SessionReporterIT` runs the plugin's real reporter script (needs `python3`) on captured hook payloads from `src/test/resources/hooks`.
 - **Live tests** (tagged `live`, excluded from `test`): `./gradlew liveTest`.
   - `ClaudeCliContractLiveIT` runs the installed `claude` with orange's full command line and an invalid token (no secret, no model call); rerun it after Claude Code updates itself.
   - `WorkerMcpRealClaudeLiveIT` checks that the real `claude` connects to `/mcp/worker` and sees the run's tools (invalid token, no model call).
@@ -75,13 +80,28 @@ Isolation: in process mode Claude Code confines its file tools to the worktree b
 
 Tests never call a model: `orange/src/test/resources/fake-claude/FakeClaude.java` is a single-file program that speaks real stream-json and the worker MCP protocol, launched via `com.ai.orange.harness.FakeClaude.command()` / `FakeClaude.register(...)`. With `report_result` allowed it implements and commits; with `submit_review` allowed it reviews and passes. Other scenarios are picked by `[[fake:<name>]]` markers in the prompt (`no-commit`, `report-failed`, `blocked`, `no-outcome`, `dirty`, `wrong-tool`, `review-gaps`, `error`, `hang`, `expensive`, `plan-limit`, `auth-failed`, `leak-env`, `plan`).
 
+### Sessions, the project space and attention (project-space spec, Phase A)
+orange also watches the sessions the user runs themselves. Nothing here starts an agent; the judge that answers a stopped session is Phase B.
+- **Reporter**: the plugin's hooks run `plugin/hooks/orange-report.py`, which turns a Claude Code hook into a neutral event (`session_started`, `user_prompt`, `stopped`, `waiting`, `active`, `session_ended`) and posts it to `POST /sessions/events`. It resolves git itself (main checkout through the common git dir, worktree, branch, remote), prints nothing, always exits 0 and gives up after 2 s, so a session never depends on orange. `active` comes from PostToolUse, and only while a marker file under `~/.orange/node/waiting/` says the session was waiting.
+- **Ingestion**: the controller validates and stores the event in the `events` inbox (source `session`, `delivery_id` = the reporter's event id); `SessionEventHandler` applies it through `SessionService.apply`, so events are idempotent, ordered and retried like webhooks.
+- **Rules** (`SessionReactor`, pure): a stop whose last message asks something (`QuestionDetector`) files a `normal` item; so does a permission or input prompt. `SessionSweeper` makes either `urgent` after `orange.attention.waiting-escalate-after` without the user, and files a stop with nothing to ask after `idle-after`. A user prompt, activity or the session's end resolves the session's items. Sessions of an `archived` project file nothing.
+- **Projects**: a session's repo decides its project. An unknown repo becomes a `proposed` project plus an attention item; resolving it with `confirm` activates the project, `ignore` archives it.
+- **Space**: `space_items` are never edited in place — a change inserts an item that supersedes the old one. An agent's item starts `proposed`; only accepting it makes it active (and only then does a proposed convention replace the value in force).
+- **Pushes**: `AttentionNotifier` sends open `urgent` and `critical` items to ntfy (`orange.notify.ntfy`), one push per `batch-window` with everything that queued up; quiet hours (the global `quiet-hours` convention) hold all but `critical`. An item counts as pushed only when ntfy took it. Pushes carry session excerpts, so point it at a server you trust.
+- **Steering**: `/mcp/steering` serves `orange_projects`, `orange_project`, `orange_project_update`, `orange_add`, `orange_set`, `orange_accept`, `orange_drop`, `orange_done`, `orange_attention`, `orange_resolve`, `orange_sessions`. REST: `GET /sessions`, `GET /attention`, `POST /attention/{id}/ack|resolve`.
+- **Auth**: with `ORANGE_API_TOKEN` set, `/sessions/**`, `/attention/**` and `/mcp/steering` need it as a bearer token (`ApiTokenFilter`); blank leaves them open like the rest of the operator API.
+
 ### Orange data model
 Flyway migrations live under `orange/src/main/resources/db/migration/` (immutable once merged; add `V<n+1>__…` files):
 
 - **`tasks`** — DAG of work units with the evidence-gated lifecycle (`pending → ready → running → verifying → verified → integrated`, plus `needs_human`, `failed`, `cancelled`; see `TaskStatus` and the project-space spec §10). A child becomes `ready` when every parent is `integrated` (trigger `promote_ready_dependents`). `branch` and `head_sha` are what verification and integration work from; `pr_number`/`pr_url` are for the later PR mode; `failures` counts model failures. Every status change fires `pg_notify('task_changed', <id>)`.
 - **`runs`** — one row per run: kind, status, role, attempt, route (tier, model, effort, auth, budget), lease, pid, MCP token hash, gateway key alias, cost and tokens, `input` (head or feedback) and `outcome`. Inserts fire `run_queued`, status changes `run_changed`. **`run_events`** holds each run's event stream; **`settings`** holds the scheduler pause.
 - **`evidence`** — every check orange ran on a task's head, and every diff review of it.
-- **`events`** — the inbox (webhook deliveries, once per delivery id); inserts fire `event_received`.
+- **`events`** — the inbox (webhook deliveries and session events, once per delivery id); inserts fire `event_received`.
+- **`projects`**, **`project_repos`** — projects (`proposed`, `active`, `paused`, `archived`) and the repos that map sessions to them (unique per node and path).
+- **`space_items`** — the project space: kind, body, status (`proposed`, `active`, `done`, `dropped`, `superseded`), author, `supersedes_id`; one active value per convention key, per project and per session override.
+- **`sessions`**, **`session_events`** — the user's sessions (unique per harness and its session id), why and since when each waits, and the events applied to it. Status changes fire `session_changed`.
+- **`attention_items`** — the inbox: kind, urgency, status, a `dedupe_key` that is unique forever, `pushed_at`. A new item or a raised urgency fires `attention`.
 - **`dev_envs`** — leasable port-pool envs (5 pre-seeded; dormant until UI QA). Returning to `free` fires `pg_notify('dev_env_freed', ...)`.
 
 When adding or modifying tables, follow the existing patterns: `uuidv7()` PKs, `touch_updated_at()` trigger, partial indexes on hot-status queues, `pg_notify` on state changes that callers might `LISTEN` for.
@@ -93,9 +113,9 @@ When adding or modifying tables, follow the existing patterns: `uuidv7()` PKs, `
 `/tasks` (create, list, events, reopen, replay, cancel — cancel also cancels queued runs and kills the running one), `/tasks/{id}/runs`, `/tasks/{id}/evidence`, `/runs/{id}`, `/runs/{id}/events`, `/events/live` (running runs with their latest events), `/health/aggregate`, `/scheduler`, `/plans`, `/dispatch`, `/dev-envs`. No auth yet: bind it to localhost.
 
 ### Spring config
-- App config lives in `orange/src/main/resources/application.yaml`. Notable knobs: `orange.runs` (loop switch, worker id, slots and timeouts per kind, lease TTL, heartbeat, sweeps, retention), `orange.evidence` (commands, output tail), `orange.integration.remote-push`, `orange.events` (processing switch, poll, max attempts), `orange.routing` (tiers, rules, risk paths, escalation), `orange.harness` (run root, Claude Code command, env allowlist), `orange.billing` (subscription token, prices), `orange.gateway` (LiteLLM URL, master key, timeouts), `orange.mcp.worker-url`, `orange.worktrees` (root, base repo, base branch, max count), `orange.github.webhook-secret`. All take env-var overrides.
+- App config lives in `orange/src/main/resources/application.yaml`. Notable knobs: `orange.runs` (loop switch, worker id, slots and timeouts per kind, lease TTL, heartbeat, sweeps, retention), `orange.evidence` (commands, output tail), `orange.integration.remote-push`, `orange.events` (processing switch, poll, max attempts), `orange.api.token`, `orange.attention` (sweep, escalation and idle times), `orange.notify` (batch window, zone, ntfy), `orange.conventions` (global defaults), `orange.routing` (tiers, rules, risk paths, escalation), `orange.harness` (run root, Claude Code command, env allowlist), `orange.billing` (subscription token, prices), `orange.gateway` (LiteLLM URL, master key, timeouts), `orange.mcp.worker-url`, `orange.worktrees` (root, base repo, base branch, max count), `orange.github.webhook-secret`. All take env-var overrides.
 
 ## Environment / secrets
 
-- `orange/.env` is read by `bootRun`/`test`, docker compose and the webhook-forward script; it is `.gitignore`d. `orange/.env.example` lists every key. For end-to-end runs: `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`), `WORKTREES_BASE_REPO`, and for webhooks `GITHUB_WEBHOOK_SECRET`, `GITHUB_ORG` / `GITHUB_REPO` for the forwarder. `LITELLM_MASTER_KEY` and `ANTHROPIC_API_KEY` are only needed for gateway tiers.
+- `orange/.env` is read by `bootRun`/`test`, docker compose and the webhook-forward script; it is `.gitignore`d. `orange/.env.example` lists every key. For end-to-end runs: `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`), `WORKTREES_BASE_REPO`, and for webhooks `GITHUB_WEBHOOK_SECRET`, `GITHUB_ORG` / `GITHUB_REPO` for the forwarder. `LITELLM_MASTER_KEY` and `ANTHROPIC_API_KEY` are only needed for gateway tiers. `ORANGE_NTFY_URL` (plus topic and token) turns pushes on; `ORANGE_API_TOKEN` guards the session and steering endpoints, and the plugin's hooks and MCP entry read the same variable from the user's shell, with `ORANGE_URL`.
 - Do **not** check `.env` files in.

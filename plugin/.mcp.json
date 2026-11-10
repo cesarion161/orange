@@ -12,6 +12,13 @@
         "ORANGE_BASE_URL": "http://localhost:8080",
         "ORANGE_DEFAULT_PIPELINE": "dev_qa"
       }
+    },
+    "orange-steering": {
+      "type": "http",
+      "url": "${ORANGE_URL:-http://localhost:8080}/mcp/steering",
+      "headers": {
+        "Authorization": "Bearer ${ORANGE_API_TOKEN:-none}"
+      }
     }
   }
 }

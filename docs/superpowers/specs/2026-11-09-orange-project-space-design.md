@@ -1,6 +1,6 @@
 # orange: project space, session attention and evidence-gated integration
 
-2026-11-09 · Status: draft for approval · Amends: `2026-11-02-orange-factory-v2-design.md` (the "v2 spec")
+2026-11-09 · Status: approved by the user 2026-11-09; Phase A built 2026-11-10 · Amends: `2026-11-02-orange-factory-v2-design.md` (the "v2 spec")
 
 ## 1. Intent
 
@@ -72,6 +72,16 @@ The numbers are the builder's call and are recorded as config, so they can be tu
   - the hook input carries `session_id`, `transcript_path`, `cwd` and `stop_hook_active`;
   - a hook's `timeout` is configurable per hook;
   - `SessionStart`, `UserPromptSubmit`, `Notification` and `SessionEnd` hooks exist and receive `session_id` and `cwd`.
+- **Checked for Phase A (2026-11-10, Claude Code 2.1.321, against the hooks, plugins and MCP references):**
+  - a plugin declares hooks in `hooks/hooks.json` under a top-level `"hooks"` key; `${CLAUDE_PLUGIN_ROOT}` works in `command`; `timeout` is per hook, in seconds;
+  - every hook's stdin carries `session_id`, `transcript_path`, `cwd` and `hook_event_name`; the hook process also gets `CLAUDE_CODE_SESSION_ID`;
+  - `Stop` carries `last_assistant_message` and `stop_hook_active`, so the reporter never reads the transcript;
+  - `Notification` carries `message` and `notification_type` (`permission_prompt`, `idle_prompt`, `elicitation_dialog`, …);
+  - `UserPromptSubmit` carries `prompt`; `SessionStart` a `source`; `SessionEnd` a `reason`;
+  - SessionEnd hooks share a 1.5 s budget that a plugin hook cannot raise, so the reporter does no git there and waits 1 s at most;
+  - an `http` hook type exists, but the reporter stays a command hook: it has to resolve git on the node and translate to the neutral format;
+  - Claude Code caps consecutive stop-hook continuations at 8 (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`), above the loop guard's default of 5;
+  - still to check in Phase B: whether the TUI accepts input while a Stop hook runs (not documented).
 - **OpenCode mechanics** (to check in its phase): plugins can subscribe to session events (for example `session.idle`), and the SDK client can send a message into a session.
 - **Topology** (§6.1). The coordinator must keep working while the laptop sleeps. Everything that reads or changes files runs on the machine where those files live. Nodes reach the coordinator over Tailscale, using a per-node token. The coordinator never needs to reach into the laptop. Transcript content reaches the coordinator only as the excerpts a node sends with an event; full transcripts stay on the node.
 

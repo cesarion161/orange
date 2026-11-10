@@ -11,6 +11,7 @@ import io.modelcontextprotocol.server.McpServer;
 import io.modelcontextprotocol.server.McpStatelessSyncServer;
 import io.modelcontextprotocol.server.transport.HttpServletStatelessServerTransport;
 import java.util.Map;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.boot.web.servlet.ServletRegistrationBean;
 import org.springframework.context.annotation.Bean;
@@ -52,7 +53,8 @@ public class WorkerMcpConfig {
     }
 
     @Bean(destroyMethod = "close")
-    McpStatelessSyncServer workerMcpServer(HttpServletStatelessServerTransport workerMcpTransport,
+    McpStatelessSyncServer workerMcpServer(
+            @Qualifier("workerMcpTransport") HttpServletStatelessServerTransport workerMcpTransport,
                                            WorkerTools workerTools, McpJsonMapper workerMcpJsonMapper) {
         return McpServer.sync(workerMcpTransport)
                 .serverInfo("orange-worker", "2")
@@ -64,7 +66,7 @@ public class WorkerMcpConfig {
 
     @Bean
     ServletRegistrationBean<HttpServletStatelessServerTransport> workerMcpServlet(
-            HttpServletStatelessServerTransport workerMcpTransport) {
+            @Qualifier("workerMcpTransport") HttpServletStatelessServerTransport workerMcpTransport) {
         ServletRegistrationBean<HttpServletStatelessServerTransport> bean =
                 new ServletRegistrationBean<>(workerMcpTransport, PATH);
         bean.setName("orangeWorkerMcp");

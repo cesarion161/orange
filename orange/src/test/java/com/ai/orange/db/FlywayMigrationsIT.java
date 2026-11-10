@@ -63,7 +63,8 @@ class FlywayMigrationsIT {
                 while (rs.next()) tables.add(rs.getString(1));
             }
             assertThat(tables).contains("tasks", "task_edges", "task_events", "dev_envs", "runs", "run_events",
-                    "settings");
+                    "settings", "projects", "project_repos", "space_items", "sessions", "session_events",
+                    "attention_items");
             assertThat(tables).as("runs replaced agent_runs; role prompts are files (V16)")
                     .doesNotContain("task_claims", "agents", "agent_runs");
 
