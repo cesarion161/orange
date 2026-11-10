@@ -65,6 +65,7 @@ public class FakeClaude {
         if (m.find()) scenario = m.group(1);
         else if (allowed.contains("mcp__orange__report_result")) scenario = "implement";
         else if (allowed.contains("mcp__orange__submit_review")) scenario = "review";
+        else if (allowed.contains("mcp__orange__judge_continue")) scenario = "judge-continue";
         else scenario = "success";
         Path cwd = Path.of("").toAbsolutePath();
         String firstLine = prompt.lines().filter(l -> !l.isBlank()).findFirst().orElse("work").replaceFirst("^#+\\s*", "").trim();
@@ -108,6 +109,35 @@ public class FakeClaude {
             case "review" -> {
                 callTool("submit_review", "{\"verdict\":\"pass\",\"summary\":\"Looks good\",\"gaps\":[]}");
                 finishOk(model, session, "Reviewed.");
+            }
+            case "judge-continue" -> {
+                callTool("judge_continue", "{\"message\":\"Yes, proceed with option 1.\",\"rationale\":"
+                        + "\"It fits the project's goals.\",\"confidence\":0.93}");
+                finishOk(model, session, "Answered.");
+            }
+            case "judge-unsure" -> {
+                callTool("judge_continue", "{\"message\":\"Probably option 2.\",\"rationale\":"
+                        + "\"Nothing recorded settles it.\",\"confidence\":0.4}");
+                finishOk(model, session, "Answered, unsure.");
+            }
+            case "judge-escalate" -> {
+                callTool("judge_escalate", "{\"question\":\"The session wants to delete the production table; allow it?\","
+                        + "\"proposed_answer\":\"No, archive it instead.\",\"urgency\":\"urgent\","
+                        + "\"rationale\":\"Deleting data is irreversible.\"}");
+                finishOk(model, session, "Escalated.");
+            }
+            case "judge-verify" -> {
+                callTool("judge_verify", "{\"rationale\":\"It says the work is done and committed.\"}");
+                finishOk(model, session, "Finished work.");
+            }
+            case "judge-idle" -> {
+                callTool("judge_idle", "{\"reason\":\"A status note; nothing is asked.\"}");
+                finishOk(model, session, "Nothing to do.");
+            }
+            case "judge-propose" -> {
+                callTool("propose_item", "{\"kind\":\"decision\",\"text\":\"Retries use exponential backoff.\"}");
+                callTool("judge_continue", "{\"message\":\"Go ahead.\",\"rationale\":\"Routine.\",\"confidence\":0.9}");
+                finishOk(model, session, "Answered and proposed.");
             }
             case "review-gaps" -> {
                 callTool("submit_review", "{\"verdict\":\"gaps\",\"summary\":\"Two gaps\",\"gaps\":["

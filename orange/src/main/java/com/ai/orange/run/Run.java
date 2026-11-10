@@ -9,7 +9,8 @@ import org.jooq.JSONB;
  * One agent process from queue to finish. Never carries the MCP token (only its hash lives in
  * the database, and this record does not expose it).
  *
- * @param taskId  null for plan runs
+ * @param taskId  null for plan and judge runs
+ * @param attendedSessionId the user's session a judge run decides for; null otherwise
  * @param role    the routing role ({@code implementer}, {@code chore}, {@code reviewer}, …)
  * @param input   what the run was asked to address, e.g. {@code {"head_sha": …}} for a review
  * @param outcome what the agent reported through MCP; null until it does
@@ -38,5 +39,6 @@ public record Run(
         OffsetDateTime queuedAt,
         OffsetDateTime startedAt,
         OffsetDateTime finishedAt,
-        OffsetDateTime spendSyncedAt) {
+        OffsetDateTime spendSyncedAt,
+        UUID attendedSessionId) {
 }

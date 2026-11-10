@@ -115,6 +115,37 @@ class SessionReactorTest {
     }
 
     @Test
+    void aJudgedStopFilesNothingUntilTheVerdict() {
+        Decision d = SessionReactor.onEvent(Session.ACTIVE, null, NeutralEvent.STOPPED, null, true, false,
+                SessionReactor.Judging.JUDGE);
+        assertThat(d.status()).isEqualTo(Session.JUDGING);
+        assertThat(d.waiting()).isEqualTo(Wait.JUDGING);
+        assertThat(d.raise()).isNull();
+        assertThat(d.resolveOpen()).isTrue();
+    }
+
+    @Test
+    void theLoopGuardAsksTheUserInsteadOfTheJudge() {
+        Decision d = SessionReactor.onEvent(Session.ACTIVE, null, NeutralEvent.STOPPED, null, false, false,
+                SessionReactor.Judging.LOOP_GUARD);
+        assertThat(d.status()).isEqualTo(Session.STOPPED);
+        assertThat(d.waiting()).isEqualTo(Wait.QUESTION);
+        assertThat(d.raise()).isEqualTo(AttentionItem.SESSION_LOOP);
+    }
+
+    @Test
+    void judgingOnlyConcernsStopsOfUnmutedSessions() {
+        assertThat(SessionReactor.onEvent(Session.ACTIVE, null, NeutralEvent.STOPPED, null, true, true,
+                SessionReactor.Judging.JUDGE).status()).isEqualTo(Session.STOPPED);
+        assertThat(SessionReactor.onEvent(Session.STOPPED, Session.WAIT_QUESTION, NeutralEvent.USER_PROMPT, null, false,
+                false, SessionReactor.Judging.JUDGE).status()).isEqualTo(Session.ACTIVE);
+        // A judged session whose user speaks is active again, and its wait is over.
+        Decision prompt = on(Session.JUDGING, null, NeutralEvent.USER_PROMPT);
+        assertThat(prompt.waiting()).isEqualTo(Wait.CLEAR);
+        assertThat(prompt.userPrompt()).isTrue();
+    }
+
+    @Test
     void sweepEscalatesUnansweredQuestionsAndPrompts() {
         for (String reason : new String[] {Session.WAIT_QUESTION, Session.WAIT_PERMISSION}) {
             assertThat(SessionReactor.onSweep(reason, Duration.ofMinutes(14), ESCALATE, IDLE, false))

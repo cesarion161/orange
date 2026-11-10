@@ -6,8 +6,10 @@ into one of orange's neutral session events and posts it to the coordinator
 (POST /sessions/events). It resolves git here, on the machine that has the files, so the
 coordinator never needs to read them.
 
-It must never get in the session's way: it prints nothing, always exits 0, and gives up on the
-coordinator after a short timeout (a session works the same with orange down).
+It must never get in the session's way: it always exits 0 and gives up on the coordinator after
+a short timeout (a session works the same with orange down). It prints nothing, with one
+exception: at a Stop, when orange decides to answer the session itself, it prints the hook
+decision that blocks the stop with orange's answer.
 
 Environment:
   ORANGE_URL             the coordinator (default http://localhost:8080)
@@ -16,6 +18,7 @@ Environment:
   ORANGE_REPORT          set to 0 to switch the reporter off
   ORANGE_REPORT_TIMEOUT  seconds to wait for the coordinator (default 2)
   ORANGE_NODE_DIR        where the reporter keeps its markers (default ~/.orange/node)
+  ORANGE_HOOK_WAIT       seconds a Stop hook waits for orange's verdict (default 600; 0 = never wait)
 """
 
 import json
@@ -23,10 +26,11 @@ import os
 import socket
 import subprocess
 import sys
+import time
 import urllib.request
 import uuid
 from datetime import datetime, timezone
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 MAX_PROMPT = 4000
 MAX_MESSAGE = 8000
@@ -173,6 +177,35 @@ def main():
         headers["Authorization"] = "Bearer " + token
     request = urllib.request.Request(url, data=json.dumps(event).encode("utf-8"), headers=headers, method="POST")
     urllib.request.urlopen(request, timeout=float(os.environ.get("ORANGE_REPORT_TIMEOUT", "2"))).read()
+
+    if event_type == "stopped":
+        message = wait_for_verdict(event, headers)
+        if message:
+            # The one thing this reporter ever prints: orange's answer, which keeps the session going.
+            print(json.dumps({"decision": "block", "reason": message}))
+
+
+def wait_for_verdict(event, headers):
+    """Long-polls orange for its verdict on this stop. Returns the message of a `continue`, else None.
+
+    orange says when to stop asking ("none"); ORANGE_HOOK_WAIT (seconds, default 600, 0 = do not
+    wait) is this side's own limit. Any failure means no verdict: the session just stops.
+    """
+    limit = float(os.environ.get("ORANGE_HOOK_WAIT", "600"))
+    deadline = time.monotonic() + limit
+    base = os.environ.get("ORANGE_URL", "http://localhost:8080").rstrip("/") + "/sessions/verdict?"
+    while time.monotonic() < deadline:
+        wait = max(1, min(20, int(deadline - time.monotonic())))
+        query = urlencode({"harness": event["harness"], "session_id": event["session_id"],
+                           "event_id": event["event_id"], "wait": wait})
+        request = urllib.request.Request(base + query, headers=headers, method="GET")
+        answer = json.load(urllib.request.urlopen(request, timeout=wait + 10))
+        state = answer.get("state")
+        if state == "verdict":
+            return answer.get("message") if answer.get("kind") == "continue" else None
+        if state != "pending":
+            return None
+    return None
 
 
 if __name__ == "__main__":

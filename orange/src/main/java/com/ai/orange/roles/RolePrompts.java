@@ -20,6 +20,7 @@ public class RolePrompts {
             "chore", "implementer.md",
             "ci_fixer", "implementer.md",
             "reviewer", "reviewer.md",
+            "judge", "judge.md",
             "planner", "planner.md");
 
     private final Map<String, String> loaded = new ConcurrentHashMap<>();

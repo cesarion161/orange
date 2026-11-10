@@ -126,6 +126,31 @@ public sealed interface RunOutcome {
         }
     }
 
+    /**
+     * A judge's decision at a session's stop (project-space spec §7).
+     *
+     * @param kind           {@code continue}, {@code verify}, {@code escalate} or {@code idle}
+     * @param message        continue: what the session is told
+     * @param confidence     continue: the judge's own 0–1 rating that the user would answer the same
+     * @param question       escalate: what the user is asked
+     * @param proposedAnswer escalate: the judge's own answer, when it has one
+     * @param urgency        escalate: {@code normal}, {@code urgent} or {@code critical}
+     */
+    record Verdict(String kind, String message, String rationale, Double confidence, String question,
+                   String proposedAnswer, String urgency) implements RunOutcome {
+        @Override
+        public JSONB toJsonb() {
+            ObjectNode node = Json.mapper().createObjectNode().put("type", "verdict").put("kind", kind);
+            if (message != null) node.put("message", message);
+            if (rationale != null) node.put("rationale", rationale);
+            if (confidence != null) node.put("confidence", confidence);
+            if (question != null) node.put("question", question);
+            if (proposedAnswer != null) node.put("proposed_answer", proposedAnswer);
+            if (urgency != null) node.put("urgency", urgency);
+            return JSONB.valueOf(node.toString());
+        }
+    }
+
     static Optional<RunOutcome> parse(JSONB json) {
         if (json == null) return Optional.empty();
         try {
@@ -163,6 +188,13 @@ public sealed interface RunOutcome {
                             files,
                             node.hasNonNull("error") ? node.get("error").asText() : null));
                 }
+                case "verdict" -> Optional.of(new Verdict(node.path("kind").asText(),
+                        node.hasNonNull("message") ? node.get("message").asText() : null,
+                        node.hasNonNull("rationale") ? node.get("rationale").asText() : null,
+                        node.hasNonNull("confidence") ? node.get("confidence").asDouble() : null,
+                        node.hasNonNull("question") ? node.get("question").asText() : null,
+                        node.hasNonNull("proposed_answer") ? node.get("proposed_answer").asText() : null,
+                        node.hasNonNull("urgency") ? node.get("urgency").asText() : null));
                 default -> Optional.empty();
             };
         } catch (Exception e) {

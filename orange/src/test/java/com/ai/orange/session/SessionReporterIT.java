@@ -92,6 +92,8 @@ class SessionReporterIT {
         pb.environment().put("ORANGE_URL", "http://localhost:" + port);
         pb.environment().put("ORANGE_NODE", "test-node");
         pb.environment().put("ORANGE_NODE_DIR", nodeDir.toString());
+        // These tests apply events only after the hook has returned; a Stop hook must not wait for a verdict.
+        pb.environment().put("ORANGE_HOOK_WAIT", "0");
         pb.environment().remove("ORANGE_API_TOKEN");
         Process p = pb.start();
         p.getOutputStream().write(payload.getBytes(StandardCharsets.UTF_8));

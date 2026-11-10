@@ -32,7 +32,11 @@ public record ToolPolicy(List<String> tools, List<String> allowedTools, String p
             // No Bash: a reviewer reads; the coordinator puts the diff in its prompt.
             case DIFF_REVIEW -> new ToolPolicy(READING, plus(READING, "mcp__orange__submit_review"), "dontAsk", true);
             case PLAN -> new ToolPolicy(PLANNING, PLANNING, "acceptEdits", false);
-            case VERIFY, INTEGRATE, JUDGE, BRIEF ->
+            // Read-only and no shell (decision 13): the same exposure as the user reading their own repo.
+            case JUDGE -> new ToolPolicy(READING, plus(READING, "mcp__orange__judge_continue",
+                    "mcp__orange__judge_verify", "mcp__orange__judge_escalate", "mcp__orange__judge_idle",
+                    "mcp__orange__propose_item"), "dontAsk", true);
+            case VERIFY, INTEGRATE, BRIEF ->
                     throw new IllegalArgumentException("run kind " + kind.dbValue() + " is not run by a coding agent");
         };
     }

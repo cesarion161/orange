@@ -13,7 +13,10 @@ public final class SessionReactor {
     private SessionReactor() {}
 
     /** What happens to the session's wait: unchanged, over, or begun for a reason. */
-    public enum Wait { KEEP, CLEAR, QUESTION, PERMISSION, FINISHED }
+    public enum Wait { KEEP, CLEAR, QUESTION, PERMISSION, FINISHED, JUDGING }
+
+    /** How a stop is decided: by the rules below, by a judge run, or not at all because the loop guard tripped. */
+    public enum Judging { OFF, JUDGE, LOOP_GUARD }
 
     /**
      * @param status      the session's new status; null = unchanged
@@ -38,6 +41,22 @@ public final class SessionReactor {
      */
     public static Decision onEvent(String status, String waitingReason, String type, String waitKind, boolean asks,
                                    boolean muted) {
+        return onEvent(status, waitingReason, type, waitKind, asks, muted, Judging.OFF);
+    }
+
+    /**
+     * @param judging for a {@code stopped} event of a session that is not muted: {@code JUDGE} hands the
+     *                stop to a judge run; {@code LOOP_GUARD} means orange has answered this session too
+     *                many times in a row, so the user is asked instead (spec decision 3)
+     */
+    public static Decision onEvent(String status, String waitingReason, String type, String waitKind, boolean asks,
+                                   boolean muted, Judging judging) {
+        if (NeutralEvent.STOPPED.equals(type) && !muted && judging == Judging.JUDGE) {
+            return new Decision(Session.JUDGING, Wait.JUDGING, true, "stopped", null, false);
+        }
+        if (NeutralEvent.STOPPED.equals(type) && !muted && judging == Judging.LOOP_GUARD) {
+            return new Decision(Session.STOPPED, Wait.QUESTION, true, "stopped", AttentionItem.SESSION_LOOP, false);
+        }
         return switch (type) {
             // A start of a session orange already follows (a resume, a compaction) changes nothing
             // unless it had ended.

@@ -65,10 +65,10 @@ public class WorkerRunner implements RunExecutor {
 
     private static final Logger log = LoggerFactory.getLogger(WorkerRunner.class);
     private static final Set<RunKind> KINDS = EnumSet.of(RunKind.PLAN, RunKind.IMPLEMENT, RunKind.CI_FIX,
-            RunKind.DIFF_REVIEW);
+            RunKind.DIFF_REVIEW, RunKind.JUDGE);
     /** Kinds whose agent must report through the worker MCP endpoint; a silent clean exit is a failure. */
     private static final Set<RunKind> NEEDS_OUTCOME = EnumSet.of(RunKind.IMPLEMENT, RunKind.CI_FIX,
-            RunKind.DIFF_REVIEW);
+            RunKind.DIFF_REVIEW, RunKind.JUDGE);
     /** How long to wait for the process to exit after a kill. */
     private static final Duration KILL_GRACE = Duration.ofSeconds(30);
     /** How long a shutdown waits for killed runs to be recorded. */

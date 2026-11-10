@@ -1,11 +1,14 @@
 package com.ai.orange.mcp;
 
+import com.ai.orange.project.SpaceService;
 import com.ai.orange.run.ReviewGap;
 import com.ai.orange.run.Run;
 import com.ai.orange.run.RunKind;
 import com.ai.orange.run.RunOutcome;
 import com.ai.orange.run.RunRepository;
 import com.ai.orange.run.RunSecrets;
+import com.ai.orange.session.Session;
+import com.ai.orange.session.SessionRepository;
 import io.modelcontextprotocol.common.McpTransportContext;
 import io.modelcontextprotocol.json.McpJsonMapper;
 import io.modelcontextprotocol.server.McpStatelessServerFeatures.SyncToolSpecification;
@@ -33,6 +36,11 @@ public class WorkerTools {
     public static final String REPORT_RESULT = "report_result";
     public static final String REQUEST_HUMAN = "request_human";
     public static final String SUBMIT_REVIEW = "submit_review";
+    public static final String JUDGE_CONTINUE = "judge_continue";
+    public static final String JUDGE_VERIFY = "judge_verify";
+    public static final String JUDGE_ESCALATE = "judge_escalate";
+    public static final String JUDGE_IDLE = "judge_idle";
+    public static final String PROPOSE_ITEM = "propose_item";
     /** The {@link McpTransportContext} key the token filter's run is stored under. */
     public static final String RUN_KEY = "run";
 
@@ -40,7 +48,35 @@ public class WorkerTools {
             RunKind.IMPLEMENT, Set.of(REPORT_RESULT, REQUEST_HUMAN),
             RunKind.CI_FIX, Set.of(REPORT_RESULT, REQUEST_HUMAN),
             RunKind.DIFF_REVIEW, Set.of(SUBMIT_REVIEW),
-            RunKind.PLAN, Set.of(REQUEST_HUMAN));
+            RunKind.PLAN, Set.of(REQUEST_HUMAN),
+            RunKind.JUDGE, Set.of(JUDGE_CONTINUE, JUDGE_VERIFY, JUDGE_ESCALATE, JUDGE_IDLE, PROPOSE_ITEM));
+
+    private static final String JUDGE_CONTINUE_SCHEMA = """
+            {"type":"object","properties":{
+              "message":{"type":"string","description":"What the session is told, as the user would write it."},
+              "rationale":{"type":"string","description":"Why this is the answer; kept so the user can audit it."},
+              "confidence":{"type":"number","minimum":0,"maximum":1,"description":"How sure you are that the user would give this same answer."}},
+             "required":["message","rationale","confidence"]}""";
+    private static final String JUDGE_VERIFY_SCHEMA = """
+            {"type":"object","properties":{
+              "rationale":{"type":"string","description":"What the session says it finished."}},
+             "required":["rationale"]}""";
+    private static final String JUDGE_ESCALATE_SCHEMA = """
+            {"type":"object","properties":{
+              "question":{"type":"string","description":"What the user must decide, readable without the transcript."},
+              "proposed_answer":{"type":"string","description":"Your own answer, when you have one."},
+              "urgency":{"type":"string","enum":["normal","urgent","critical"]},
+              "rationale":{"type":"string","description":"Why you may not answer this yourself."}},
+             "required":["question","urgency","rationale"]}""";
+    private static final String JUDGE_IDLE_SCHEMA = """
+            {"type":"object","properties":{
+              "reason":{"type":"string","description":"Why nothing needs to happen."}},
+             "required":["reason"]}""";
+    private static final String PROPOSE_ITEM_SCHEMA = """
+            {"type":"object","properties":{
+              "kind":{"type":"string","enum":["decision","note"]},
+              "text":{"type":"string"}},
+             "required":["kind","text"]}""";
 
     private static final String REPORT_RESULT_SCHEMA = """
             {"type":"object","properties":{
@@ -65,8 +101,13 @@ public class WorkerTools {
     private final RunRepository runs;
     private final RunSecrets secrets;
     private final McpJsonMapper jsonMapper;
+    private final SessionRepository sessions;
+    private final SpaceService space;
 
-    public WorkerTools(RunRepository runs, RunSecrets secrets, McpJsonMapper jsonMapper) {
+    public WorkerTools(RunRepository runs, RunSecrets secrets, McpJsonMapper jsonMapper, SessionRepository sessions,
+                       SpaceService space) {
+        this.sessions = sessions;
+        this.space = space;
         this.runs = runs;
         this.secrets = secrets;
         this.jsonMapper = jsonMapper;
@@ -79,7 +120,20 @@ public class WorkerTools {
                 spec(REQUEST_HUMAN, "Ask a person for a decision you cannot make yourself. Your run ends and "
                         + "the task waits for the answer.", REQUEST_HUMAN_SCHEMA, this::requestHuman),
                 spec(SUBMIT_REVIEW, "Submit your review of the diff: pass, or gaps with each problem to fix. "
-                        + "Call it exactly once.", SUBMIT_REVIEW_SCHEMA, this::submitReview));
+                        + "Call it exactly once.", SUBMIT_REVIEW_SCHEMA, this::submitReview),
+                spec(JUDGE_CONTINUE, "Answer the stopped session on the user's behalf. Only for routine questions "
+                        + "whose answer follows from the project's goals, decisions and conventions.",
+                        JUDGE_CONTINUE_SCHEMA, this::judgeContinue),
+                spec(JUDGE_VERIFY, "The session says its work is finished and asks nothing.", JUDGE_VERIFY_SCHEMA,
+                        (ctx, req) -> record(ctx, new RunOutcome.Verdict("verify", null, string(req, "rationale"), null,
+                                null, null, null))),
+                spec(JUDGE_ESCALATE, "The user must decide: file the question for them. The session stops.",
+                        JUDGE_ESCALATE_SCHEMA, this::judgeEscalate),
+                spec(JUDGE_IDLE, "The stop asks nothing and claims nothing: nothing happens.", JUDGE_IDLE_SCHEMA,
+                        (ctx, req) -> record(ctx, new RunOutcome.Verdict("idle", null, string(req, "reason"), null, null,
+                                null, null))),
+                spec(PROPOSE_ITEM, "Propose a decision or a note for the project's space. It stays a proposal until "
+                        + "the user accepts it.", PROPOSE_ITEM_SCHEMA, this::proposeItem));
     }
 
     /** True when {@code toolName} belongs to the kind of the run behind this request. */
@@ -146,6 +200,47 @@ public class WorkerTools {
         }
         if ("gaps".equals(verdict) && gaps.isEmpty()) return error("a gaps verdict needs at least one gap");
         return record(ctx, new RunOutcome.Review(verdict, summary, gaps));
+    }
+
+    private CallToolResult judgeContinue(McpTransportContext ctx, CallToolRequest req) {
+        String message = string(req, "message");
+        if (message.isBlank()) return error("message must not be blank");
+        Object confidence = req.arguments() == null ? null : req.arguments().get("confidence");
+        if (!(confidence instanceof Number n) || n.doubleValue() < 0 || n.doubleValue() > 1) {
+            return error("confidence must be a number from 0 to 1");
+        }
+        return record(ctx, new RunOutcome.Verdict("continue", message, string(req, "rationale"), n.doubleValue(), null,
+                null, null));
+    }
+
+    private CallToolResult judgeEscalate(McpTransportContext ctx, CallToolRequest req) {
+        String question = string(req, "question");
+        String urgency = string(req, "urgency");
+        if (question.isBlank()) return error("question must not be blank");
+        if (!Set.of("normal", "urgent", "critical").contains(urgency)) {
+            return error("urgency must be normal, urgent or critical");
+        }
+        String proposed = string(req, "proposed_answer");
+        return record(ctx, new RunOutcome.Verdict("escalate", null, string(req, "rationale"), null, question,
+                proposed.isBlank() ? null : proposed, urgency));
+    }
+
+    /** Not an outcome: the run goes on. The item is the run's own proposal, in its session's project. */
+    private CallToolResult proposeItem(McpTransportContext ctx, CallToolRequest req) {
+        Run run = runOf(ctx);
+        String kind = string(req, "kind");
+        if (!Set.of("decision", "note").contains(kind)) return error("kind must be decision or note");
+        Session session = run.attendedSessionId() == null ? null : sessions.findById(run.attendedSessionId()).orElse(null);
+        if (session == null || session.projectId() == null) {
+            return error("this session belongs to no project; there is no space to propose to");
+        }
+        try {
+            space.add(session.projectId(), kind, secrets.redact(run.id(), string(req, "text")),
+                    SpaceService.Author.agent("run:" + run.id()), null, null, null);
+        } catch (IllegalArgumentException e) {
+            return error(e.getMessage());
+        }
+        return CallToolResult.builder().addTextContent("proposed").isError(false).build();
     }
 
     private CallToolResult record(McpTransportContext ctx, RunOutcome outcome) {
