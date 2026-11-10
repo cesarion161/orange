@@ -2,26 +2,29 @@
 
 One-install front-end for the [orange-ai](../) orchestrator. Ships:
 
-- the `orange` MCP server (HTTP shim over the Spring Boot backend) — 12 tools spanning the planning/dispatch/task surface (plan, dispatch, create, list, task, tail, cancel, replay, reopen) and read-only monitoring (status_live, health, envs)
 - the **session reporter** (`hooks/`) — tells orange when any of your Claude Code sessions starts, gets a prompt, stops, waits for you or ends, so orange can file what needs you and push the urgent part to your phone
 - the `orange-steering` MCP server (served by the coordinator at `/mcp/steering`) — the project space, the attention inbox and your sessions: `orange_projects`, `orange_project`, `orange_project_update`, `orange_add`, `orange_set`, `orange_accept`, `orange_drop`, `orange_done`, `orange_attention`, `orange_resolve`, `orange_sessions`
 - the `orange-orchestrate` skill — teaches the chat when and how to drive orange end-to-end (idea → planner → review → dispatch → live narration while the coordinator runs the agents)
 
-## Install (development, from this repo)
+## Install
 
-The plugin references the sibling `../orange-mcp` directory via `${CLAUDE_PLUGIN_ROOT}`, so it has to be loaded directly from this checkout rather than installed via a marketplace:
+The repository is its own marketplace (`.claude-plugin/marketplace.json`). From a checkout:
 
 ```bash
-claude --plugin-dir /Users/<you>/stuff/2026/orange-ai/plugin
+claude plugin marketplace add /path/to/orange-ai
+claude plugin install orange@orange-local
 ```
 
-Or, for a persistent local install via a marketplace JSON, see `docs/marketplace.md` (TODO — Phase 8 packaging item).
+That installs at user scope, so every Claude Code session on this machine reports to orange. Hooks load when a session starts: restart sessions that were already open. The install is a copy; after pulling changes to `plugin/`, run `claude plugin marketplace update orange-local` and `claude plugin update orange@orange-local`.
+
+For a single session without installing: `claude --plugin-dir /path/to/orange-ai/plugin`.
 
 ## Prerequisites
 
-- `uv` on `$PATH` (for the MCP server)
-- the orange Spring Boot app running locally — the skill will offer to start it for you (`cd orange && ./gradlew bootRun`)
-- Postgres up via `docker compose up -d postgres` in `orange/`
+- `python3` on `$PATH` (the reporter; standard library only)
+- the orange coordinator running (`cd orange && ./gradlew bootRun`); with it down, sessions work as if the plugin were not there
+
+The task tools (`orange_plan`, `orange_dispatch`, …) are not part of the plugin: they come from the `orange` MCP server in this repository's own `.mcp.json` (the Python shim in `orange-mcp/`, which needs `uv`), so they are available in sessions inside this repo until v2 PR 5 moves them into the coordinator.
 
 ## What the skill triggers on
 

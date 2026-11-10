@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **`orange/`** — Java 27 / Spring Boot 4 coordinator. Owns persistence (Postgres + Flyway + jOOQ), task state and the run loop: it starts Claude Code (`claude -p`) directly, one process per agent run, verifies the work itself and integrates it. No Temporal, no external workers.
 - **`orange-mcp/`** — Python stdio MCP shim the Claude Code plugin uses to call orange's task REST API (until v2 PR 5 folds those tools into `/mcp/steering`).
-- **`plugin/`** — the Claude Code plugin: the session reporter (`hooks/hooks.json`, `hooks/orange-report.py`), the MCP servers (`.mcp.json`) and the skills.
+- **`plugin/`** — the Claude Code plugin: the session reporter (`hooks/hooks.json`, `hooks/orange-report.py`), the steering MCP entry (`.mcp.json`) and the skills. The repo root is its marketplace (`.claude-plugin/marketplace.json`, name `orange-local`); the task tools' Python server is in the repo's own `.mcp.json`, not in the plugin, because an installed plugin is a copy outside the repo.
 - **`docs/superpowers/`** — the v2 design spec, the project-space spec that amends it, and per-PR implementation plans.
 
 Inside `orange/src/main/java/com/ai/orange/`:

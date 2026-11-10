@@ -1,5 +1,5 @@
 {
   "name": "orange",
-  "version": "0.1.0",
-  "description": "Drive the orange-ai multi-agent feature factory from the Claude Code chat: planning, parallel execution, live narration."
+  "version": "0.2.0",
+  "description": "orange's session reporter and steering tools: orange watches your Claude Code sessions, answers routine stops itself and files what needs you."
 }
