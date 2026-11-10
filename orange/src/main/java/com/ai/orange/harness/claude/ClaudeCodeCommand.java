@@ -27,6 +27,12 @@ public final class ClaudeCodeCommand {
     public static final String BOT_NAME = "orange[bot]";
     public static final String BOT_EMAIL = "orange-bot@users.noreply.github.com";
 
+    /**
+     * The variables of {@link #env} whose values are the run's credential. A contained run passes
+     * them to docker by name only, so the value is in no command line.
+     */
+    public static final Set<String> SECRET_ENV = Set.of("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN");
+
     private static final Set<String> NEVER_PASS = Set.of(
             "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN",
             "LITELLM_MASTER_KEY", "ORANGE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN", "GITHUB_WEBHOOK_SECRET");
@@ -51,8 +57,11 @@ public final class ClaudeCodeCommand {
         // a second, unredacted one on disk.
         a.add("--no-session-persistence");
         // Only the repo's own settings apply; the user's ~/.claude settings, hooks and plugins don't.
+        // A run that must not load the repo's either (a diff review: the settings and their hooks are
+        // the reviewed agent's) names the user's alone, and CLAUDE_CONFIG_DIR is a directory of the
+        // run's own with none in it.
         a.add("--setting-sources");
-        a.add("project,local");
+        a.add(s.projectSettings() ? "project,local" : "user");
         a.add("--strict-mcp-config");
         if (s.permissionMode() != null && !s.permissionMode().isBlank()) {
             a.add("--permission-mode");

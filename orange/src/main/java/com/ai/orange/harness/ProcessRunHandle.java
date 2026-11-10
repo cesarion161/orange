@@ -10,6 +10,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -24,20 +25,29 @@ import org.slf4j.LoggerFactory;
  * Supervises one harness process: feeds the prompt on stdin, turns stdout lines into events,
  * keeps raw copies of stdout and stderr in the run directory, and kills the whole process tree
  * on request.
+ *
+ * <p>For a run in a container the process is the docker client. The client's end is not the
+ * container's (a kill of the client, a client that lost its daemon or its stdout), so such a
+ * handle is started with an {@code alsoKill} that removes the container: at every kill, and
+ * whenever the process has ended, before its exit is reported.
  */
 public final class ProcessRunHandle implements RunHandle {
 
     private static final Logger log = LoggerFactory.getLogger(ProcessRunHandle.class);
     /** After the process exits, how long to wait for its output to drain (a stray grandchild may hold the pipe). */
     private static final long DRAIN_TIMEOUT_SECONDS = 10;
+    /** After a killed process has exited, when {@code alsoKill} runs a last time. */
+    private static final Duration LAST_KILL_AFTER = Duration.ofSeconds(5);
 
     private final Process process;
+    private final Runnable alsoKill;
     private final CompletableFuture<RunExit> exit = new CompletableFuture<>();
     private final AtomicReference<String> killReason = new AtomicReference<>();
     private final AtomicReference<RunEvent.Result> lastResult = new AtomicReference<>();
 
-    private ProcessRunHandle(Process process) {
+    private ProcessRunHandle(Process process, Runnable alsoKill) {
         this.process = process;
+        this.alsoKill = alsoKill;
     }
 
     /**
@@ -52,9 +62,26 @@ public final class ProcessRunHandle implements RunHandle {
     public static ProcessRunHandle start(ProcessBuilder pb, String stdin, Path runDir,
                                          Function<String, List<RunEvent>> parser,
                                          Consumer<RunEvent> sink, UnaryOperator<String> redact) throws IOException {
+        return start(pb, stdin, runDir, parser, sink, redact, null);
+    }
+
+    /**
+     * As {@link #start(ProcessBuilder, String, Path, Function, Consumer, UnaryOperator)}, for a
+     * process whose work outlives it when it is killed (a docker client and its container).
+     *
+     * @param alsoKill ends what the end of the process does not; may be null. It runs at every
+     *                 {@link #kill} and whenever the process has exited, killed or not (a docker
+     *                 client can end without its container), and after a kill a last time a few
+     *                 seconds later: a kill can arrive before the work has started. It must be
+     *                 safe to repeat, and to run when there is nothing left to end
+     */
+    public static ProcessRunHandle start(ProcessBuilder pb, String stdin, Path runDir,
+                                         Function<String, List<RunEvent>> parser,
+                                         Consumer<RunEvent> sink, UnaryOperator<String> redact,
+                                         Runnable alsoKill) throws IOException {
         Files.createDirectories(runDir);
         Process process = pb.start();
-        ProcessRunHandle handle = new ProcessRunHandle(process);
+        ProcessRunHandle handle = new ProcessRunHandle(process, alsoKill);
         handle.supervise(stdin, runDir, parser, sink, redact);
         return handle;
     }
@@ -77,6 +104,10 @@ public final class ProcessRunHandle implements RunHandle {
         Thread.ofVirtual().name("run-wait-" + process.pid()).start(() -> {
             try {
                 int code = process.waitFor();
+                // Before the exit is reported: whoever waits for it reads what the run left behind, and
+                // then deletes it. However the process ended, nothing it started may still be at work there.
+                if (killReason.get() != null) alsoKillAgain();
+                else alsoKill();
                 stdout.join(TimeUnit.SECONDS.toMillis(DRAIN_TIMEOUT_SECONDS));
                 stderr.join(TimeUnit.SECONDS.toMillis(DRAIN_TIMEOUT_SECONDS));
                 exit.complete(new RunExit(code, killReason.get(), lastResult.get()));
@@ -129,9 +160,34 @@ public final class ProcessRunHandle implements RunHandle {
     @Override
     public void kill(String reason) {
         killReason.compareAndSet(null, reason);
+        alsoKill();
         // Children first: once the parent dies they are re-parented and no longer its descendants.
         process.descendants().forEach(ProcessHandle::destroyForcibly);
         process.destroyForcibly();
+    }
+
+    private void alsoKill() {
+        if (alsoKill == null) return;
+        try {
+            alsoKill.run();
+        } catch (RuntimeException e) {
+            log.warn("pid {}: could not end what the process started: {}", process.pid(), e.toString());
+        }
+    }
+
+    /** The kill may have come before the work existed: once more now that the process is gone, and once later. */
+    private void alsoKillAgain() {
+        if (alsoKill == null) return;
+        alsoKill();
+        Thread.ofVirtual().name("run-kill-" + process.pid()).start(() -> {
+            try {
+                Thread.sleep(LAST_KILL_AFTER);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            alsoKill();
+        });
     }
 
     @Override

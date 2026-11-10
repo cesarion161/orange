@@ -31,6 +31,21 @@ class ToolPolicyTest {
     }
 
     @Test
+    void aDiffReviewLoadsNoSettingsOfTheTreeItReads() {
+        // The tree is what the reviewed agent committed: a hook in its .claude/settings.json would run
+        // with the reviewer's run token in reach, and could submit the verdict itself.
+        assertThat(ToolPolicy.forKind(RunKind.DIFF_REVIEW).projectSettings()).isFalse();
+        assertThat(ToolPolicy.forRun(RunKind.DIFF_REVIEW, false).projectSettings()).isFalse();
+        assertThat(ToolPolicy.forRun(RunKind.DIFF_REVIEW, true).projectSettings()).isFalse();
+        assertThat(ToolPolicy.forKind(RunKind.DIFF_REVIEW).inContainer().projectSettings()).isFalse();
+        // An agent that works on a repository keeps that repository's settings, in a container too.
+        for (RunKind kind : new RunKind[]{RunKind.IMPLEMENT, RunKind.CI_FIX, RunKind.PLAN}) {
+            assertThat(ToolPolicy.forKind(kind).projectSettings()).as(kind.dbValue()).isTrue();
+            assertThat(ToolPolicy.forKind(kind).inContainer().projectSettings()).as(kind.dbValue()).isTrue();
+        }
+    }
+
+    @Test
     void briefHasNoBuiltInToolsAndOneMcpTool() {
         ToolPolicy p = ToolPolicy.forKind(RunKind.BRIEF);
         assertThat(p.tools()).isEmpty();
@@ -38,6 +53,31 @@ class ToolPolicyTest {
         assertThat(p.permissionMode()).isEqualTo("dontAsk");
         assertThat(p.mcp()).isTrue();
         assertThat(ToolPolicy.forRun(RunKind.BRIEF, false)).isEqualTo(p);
+    }
+
+    @Test
+    void inAContainerImplementAndFixRunsBypassPermissions() {
+        for (RunKind kind : new RunKind[]{RunKind.IMPLEMENT, RunKind.CI_FIX}) {
+            ToolPolicy host = ToolPolicy.forKind(kind);
+            ToolPolicy p = host.inContainer();
+            assertThat(p.permissionMode()).isEqualTo("bypassPermissions");
+            // Nothing else changes: the container is the boundary, the tools are the same.
+            assertThat(p.tools()).isEqualTo(host.tools());
+            assertThat(p.allowedTools()).isEqualTo(host.allowedTools());
+            assertThat(p.mcp()).isEqualTo(host.mcp());
+        }
+    }
+
+    @Test
+    void inAContainerARunWithoutBashKeepsItsMode() {
+        ToolPolicy review = ToolPolicy.forKind(RunKind.DIFF_REVIEW);
+        assertThat(review.inContainer()).isSameAs(review);
+        assertThat(review.inContainer().permissionMode()).isEqualTo("dontAsk");
+        // Runs that never go into a container today would keep theirs too.
+        for (RunKind kind : new RunKind[]{RunKind.PLAN, RunKind.JUDGE, RunKind.BRIEF}) {
+            ToolPolicy p = ToolPolicy.forKind(kind);
+            assertThat(p.inContainer()).as(kind.dbValue()).isSameAs(p);
+        }
     }
 
     @Test

@@ -81,6 +81,10 @@ class DiffReviewIT {
         Run row = runs.findById(result.runId()).orElseThrow();
         assertThat(row.tier()).as("reviews route medium/low").isEqualTo("medium");
         assertThat(row.effort()).isEqualTo("low");
+        // The worktree is what the reviewed agent committed. Its .claude/settings.json is not loaded:
+        // a hook in it would run here on the host, with this run's token in reach.
+        assertThat(Files.readString(RUN_ROOT.resolve(result.runId() + "/claude-config/fake-args.json")))
+                .contains("\"--setting-sources\",\"user\"").doesNotContain("project,local");
     }
 
     @Test

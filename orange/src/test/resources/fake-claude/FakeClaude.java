@@ -28,15 +28,25 @@ import java.util.regex.Pattern;
  * marker: {@code brief-urgent} (one urgent entry as well), {@code brief-unknown-project} (a call
  * that is refused, and nothing after it) and {@code brief-corrected} (that call, then a valid one).
  *
+ * <p>{@code probe} says what the run can see: for every prompt line {@code probe: <path>}
+ * (indented or not) it writes {@code <path>=visible} or {@code <path>=hidden} to
+ * {@code fake-probe.txt} under {@code $CLAUDE_CONFIG_DIR}, then implements like the default.
+ *
+ * <p>{@code commit-hang} implements like the default, writes {@code fake-committed.txt} under
+ * {@code $CLAUDE_CONFIG_DIR} and then hangs without reporting. {@code rewind} resets its branch
+ * to the commit before the one it started from and reports {@code done}.
+ *
  * <p>Every scenario records its arguments, environment and prompt as {@code fake-args.json},
  * {@code fake-env.json} and {@code fake-prompt.txt} under {@code $CLAUDE_CONFIG_DIR}; MCP replies
- * go to {@code fake-mcp.log}.
+ * go to {@code fake-mcp.log}, after a {@code POST <url>} line per tool call.
  */
 public class FakeClaude {
 
     private static final Pattern MARKER = Pattern.compile("\\[\\[fake:([a-z-]+)]]");
     /** How a brief prompt names the projects it wants a line for. */
     private static final Pattern PROJECT = Pattern.compile("(?m)^## Project: (.+)$");
+    /** What the {@code probe} scenario looks for. */
+    private static final Pattern PROBE = Pattern.compile("(?m)^\\s*probe: (.+)$");
     private static final String UNKNOWN_PROJECT_BRIEF = "{\"projects\":[{\"project\":\"no-such-project\","
             + "\"status_line\":\"All fine.\"}],\"focus\":[]}";
 
@@ -84,6 +94,18 @@ public class FakeClaude {
 
         switch (scenario) {
             case "implement" -> {
+                implement(cwd, prompt, firstLine);
+                callTool("report_result", "{\"status\":\"done\",\"summary\":" + q("Implemented: " + firstLine) + "}");
+                finishOk(model, session, "Done.");
+            }
+            case "probe" -> {
+                StringBuilder seen = new StringBuilder();
+                Matcher probe = PROBE.matcher(prompt);
+                while (probe.find()) {
+                    String path = probe.group(1).strip();
+                    seen.append(path).append(Files.exists(Path.of(path)) ? "=visible" : "=hidden").append('\n');
+                }
+                Files.writeString(configDir.resolve("fake-probe.txt"), seen.toString());
                 implement(cwd, prompt, firstLine);
                 callTool("report_result", "{\"status\":\"done\",\"summary\":" + q("Implemented: " + firstLine) + "}");
                 finishOk(model, session, "Done.");
@@ -202,6 +224,19 @@ public class FakeClaude {
                 assistant("msg_1", model, "Running a long command", 100, 20);
                 sleepForever();
             }
+            case "commit-hang" -> {
+                // Work that is committed, and then a command that never ends: what a kill finds.
+                implement(cwd, prompt, firstLine);
+                Files.writeString(configDir.resolve("fake-committed.txt"), "committed\n");
+                assistant("msg_1", model, "Committed; now running a long command", 100, 20);
+                sleepForever();
+            }
+            case "rewind" -> {
+                // An agent that throws away the commit it started from and says it is done.
+                run(cwd, "git", "reset", "-q", "--hard", "HEAD~1");
+                callTool("report_result", "{\"status\":\"done\",\"summary\":\"Started over.\"}");
+                finishOk(model, session, "Done.");
+            }
             case "expensive" -> {
                 assistant("msg_1", model, "Reading the whole repository", 5_000_000, 100);
                 sleepForever();
@@ -300,6 +335,7 @@ public class FakeClaude {
         }
         String url = mcpField("url");
         String auth = mcpField("Authorization");
+        log("POST " + url);
         HttpClient http = HttpClient.newHttpClient();
         post(http, url, auth, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{"
                 + "\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"fake-claude\",\"version\":\"1\"}}}");

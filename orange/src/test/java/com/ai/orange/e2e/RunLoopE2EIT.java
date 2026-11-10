@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.ai.orange.TestcontainersConfiguration;
 import com.ai.orange.evidence.Evidence;
 import com.ai.orange.evidence.EvidenceRepository;
+import com.ai.orange.harness.container.ContainerTestSupport;
 import com.ai.orange.run.RunKind;
 import com.ai.orange.run.RunRepository;
 import com.ai.orange.run.RunTestSupport;
@@ -35,11 +36,13 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 /**
  * The whole loop, nothing driven by hand: the reactor, scheduler, executors and fake Claude Code
  * take a task from ready to integrated, and integrating it unblocks its dependent. Each nested
- * class is its own coordinator (its own evidence command), with its own origin and base repo.
+ * class is its own coordinator (its own evidence command), with its own origin and base repo;
+ * {@code InContainers} is the same loop with every run of the task in a container.
  */
 class RunLoopE2EIT {
 
-    static final Duration CAP = Duration.ofSeconds(60);
+    /** In containers every step also clones, and starts a JVM inside a container. */
+    static final Duration CAP = Duration.ofSeconds(120);
 
     /** A bare origin and a base checkout of it with one commit, as a real project would have. */
     static Path[] originAndBase(String name) {
@@ -61,6 +64,14 @@ class RunLoopE2EIT {
         RunTestSupport.git(base, "remote", "add", "origin", origin.toString());
         RunTestSupport.git(base, "push", "-q", "-u", "origin", "main");
         return new Path[]{origin, base};
+    }
+
+    static Path canary(String name) {
+        try {
+            return Files.writeString(RunTestSupport.tempDir("e2e-" + name + "-canary-").resolve("canary.txt"), "host only\n");
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
     }
 
     static void register(DynamicPropertyRegistry r, Path base, String evidenceCommand) {
@@ -110,6 +121,37 @@ class RunLoopE2EIT {
             return taskEvents.findByTaskSince(t.id(), 0, 500).stream().map(TaskEvent::eventType).toList();
         }
 
+        /**
+         * A is implemented, verified, reviewed and integrated by the loop alone, and that promotes B.
+         *
+         * @return A, integrated
+         */
+        Task readyToIntegrated(String title) throws InterruptedException {
+            List<Task> graph = graph(title);
+            Task a = graph.get(0);
+            Task b = graph.get(1);
+            assertThat(b.status()).isEqualTo(TaskStatus.PENDING);
+
+            await("A is integrated", () -> fresh(a).get().status() == TaskStatus.INTEGRATED);
+
+            Task done = fresh(a).get();
+            assertThat(done.failures()).isZero();
+            assertThat(RunTestSupport.git(origin(), "rev-parse", "refs/heads/main")).as("origin main is A's head")
+                    .isEqualTo(done.headSha());
+            assertThat(RunTestSupport.git(origin(), "log", "--format=%s", "main")).contains("fake: " + title);
+            List<Evidence> rows = evidence.findByTaskAndHead(a.id(), done.headSha());
+            assertThat(rows).filteredOn(e -> e.kind().equals("tests")).isNotEmpty().allMatch(Evidence::passed);
+            assertThat(rows).filteredOn(e -> e.kind().equals("diff_review")).isNotEmpty().allMatch(Evidence::passed);
+            // A post-run step's events land before its run's run_finished: the run stays running until they do.
+            assertThat(eventTypes(a)).containsSubsequence("run_queued", "run_started", "verification_started",
+                    "run_finished", "verified", "integrated");
+            assertThat(runs.findByTask(a.id())).extracting(r -> r.kind())
+                    .contains(RunKind.IMPLEMENT, RunKind.VERIFY, RunKind.DIFF_REVIEW, RunKind.INTEGRATE);
+
+            await("B leaves pending", () -> fresh(b).get().status() != TaskStatus.PENDING);
+            return done;
+        }
+
         /** Stops this coordinator's loop so it does not keep working on B after the test. */
         @AfterEach
         void stop() {
@@ -136,28 +178,7 @@ class RunLoopE2EIT {
 
         @Test
         void readyToIntegratedPromotesDependents() throws Exception {
-            List<Task> graph = graph("Ship A");
-            Task a = graph.get(0);
-            Task b = graph.get(1);
-            assertThat(b.status()).isEqualTo(TaskStatus.PENDING);
-
-            await("A is integrated", () -> fresh(a).get().status() == TaskStatus.INTEGRATED);
-
-            Task done = fresh(a).get();
-            assertThat(done.failures()).isZero();
-            assertThat(RunTestSupport.git(origin(), "rev-parse", "refs/heads/main")).as("origin main is A's head")
-                    .isEqualTo(done.headSha());
-            assertThat(RunTestSupport.git(origin(), "log", "--format=%s", "main")).contains("fake: Ship A");
-            List<Evidence> rows = evidence.findByTaskAndHead(a.id(), done.headSha());
-            assertThat(rows).filteredOn(e -> e.kind().equals("tests")).isNotEmpty().allMatch(Evidence::passed);
-            assertThat(rows).filteredOn(e -> e.kind().equals("diff_review")).isNotEmpty().allMatch(Evidence::passed);
-            // A post-run step's events land before its run's run_finished: the run stays running until they do.
-            assertThat(eventTypes(a)).containsSubsequence("run_queued", "run_started", "verification_started",
-                    "run_finished", "verified", "integrated");
-            assertThat(runs.findByTask(a.id())).extracting(r -> r.kind())
-                    .contains(RunKind.IMPLEMENT, RunKind.VERIFY, RunKind.DIFF_REVIEW, RunKind.INTEGRATE);
-
-            await("B leaves pending", () -> fresh(b).get().status() != TaskStatus.PENDING);
+            readyToIntegrated("Ship A");
         }
     }
 
@@ -191,6 +212,38 @@ class RunLoopE2EIT {
                     .satisfies(fix -> assertThat(fix.input().data()).contains("test -f fixed.txt"));
             assertThat(RunTestSupport.git(origin(), "log", "--format=%s", "main")).contains("fake: Ship A with a fix");
             assertThat(RunTestSupport.git(origin(), "show", "--stat", "--format=", "main")).contains("fixed.txt");
+        }
+    }
+
+    @Nested
+    @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+    @Import(TestcontainersConfiguration.class)
+    class InContainers extends Loop {
+
+        static final Path[] REPOS = originAndBase("containers");
+        /** A file of the host, in a directory no run is given: an evidence command that sees it ran on the host. */
+        static final Path CANARY = canary("containers");
+
+        @org.springframework.test.context.DynamicPropertySource
+        static void props(DynamicPropertyRegistry r) {
+            register(r, REPOS[1], "test -f orange-fake.txt && test ! -e " + CANARY);
+            ContainerTestSupport.register(r);
+        }
+
+        @Override
+        Path origin() {
+            return REPOS[0];
+        }
+
+        @Test
+        void readyToIntegratedInContainers() throws Exception {
+            assertThat(CANARY).exists();
+
+            Task a = readyToIntegrated("Ship A in a container");
+
+            // The agent, the evidence command and the reviewer each had a container; none is left.
+            assertThat(runs.findByTask(a.id())).allSatisfy(r ->
+                    assertThat(ContainerTestSupport.containersOf(r.id())).as(r.kind().dbValue()).isEmpty());
         }
     }
 }
