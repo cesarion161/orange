@@ -64,7 +64,7 @@ class FlywayMigrationsIT {
             }
             assertThat(tables).contains("tasks", "task_edges", "task_events", "dev_envs", "runs", "run_events",
                     "settings", "projects", "project_repos", "space_items", "sessions", "session_events",
-                    "attention_items");
+                    "attention_items", "verdicts", "session_work", "briefs");
             assertThat(tables).as("runs replaced agent_runs; role prompts are files (V16)")
                     .doesNotContain("task_claims", "agents", "agent_runs");
 

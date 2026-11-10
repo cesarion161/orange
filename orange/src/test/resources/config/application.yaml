@@ -10,6 +10,9 @@ orange:
   judge:
     # Stops follow Phase A's rules unless a test turns the judge on.
     enabled: false
+  brief:
+    # Tests call BriefScheduler.tick() themselves.
+    enabled: false
   attention:
     # Tests call SessionService.sweep() themselves.
     sweep-enabled: false

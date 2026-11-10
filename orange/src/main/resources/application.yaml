@@ -128,6 +128,27 @@ orange:
     pickup-grace: 2m
     # A judge run that has not started within this long is given up; the stop follows the rules.
     start-grace: 60s
+  brief:
+    # The focus brief (project-space spec, Phase D): at each brief time (the brief-times convention)
+    # orange reads where the active projects stand and a short run adds what to focus on.
+    # Off = no scheduled briefs; orange_focus still writes one when asked.
+    enabled: ${ORANGE_BRIEF_ENABLED:true}
+    # How often the schedule is looked at.
+    sweep: 60s
+    # A missed brief time is still briefed, and a brief still pushed, this long after it.
+    catch-up: 2h
+    # How far back the first brief looks; later ones cover what happened since the one before.
+    first-window: 24h
+    # orange_focus writes a fresh brief at most this often ...
+    fresh-min-interval: 10m
+    # ... and waits this long for it.
+    focus-wait: 60s
+    # Where a phone reaches orange, e.g. https://orange.example.net. Blank = the push carries no link.
+    public-url: ${ORANGE_PUBLIC_URL:}
+    # How long the key in a brief's link opens its page.
+    link-ttl: 48h
+    # Briefs older than this are deleted (their snapshots hold session text).
+    retention: 30d
   notify:
     enabled: ${ORANGE_NOTIFY_ENABLED:true}
     sweep: 30s
