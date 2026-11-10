@@ -29,7 +29,7 @@ Mark each `[x]` when it is committed with its tests green.
 - [x] **8. Claude Code reporter.** Plugin hooks (SessionStart, UserPromptSubmit, Stop, Notification,
   SessionEnd, and PostToolUse only while a session waits) and `plugin/hooks/orange-report.py`;
   captured hook payloads as test resources and an IT per hook event.
-- [ ] **9. Docs and live check.** CLAUDE.md, plugin README, `.env.example`, spec §3 hook findings;
+- [x] **9. Docs and live check.** CLAUDE.md, plugin README, `.env.example`, spec §3 hook findings;
   a real session against a running orange.
 
 ## Builder's rulings
@@ -68,3 +68,15 @@ Mark each `[x]` when it is committed with its tests green.
    differently.
 10. **The Python `orange-mcp` shim stays** for the task tools until v2 PR 5 folds them into
     `/mcp/steering`.
+
+## Verified
+
+- `./gradlew test`: 354 tests, 0 failures (2026-11-10).
+- Live (2026-11-10, Claude Code 2.1.321, `claude -p --plugin-dir plugin` in a fresh git repo against
+  a running orange): SessionStart, UserPromptSubmit, Stop and SessionEnd reached orange through the
+  real hooks. The repo proposed a project, the first prompt became the intent, the stop's real
+  `last_assistant_message` was filed as a question, and the session's end resolved it.
+- Not checked live: Notification and PostToolUse (they need an interactive session with a
+  permission prompt), and a push to a real ntfy server (none is configured yet). Both are covered
+  by ITs against the real reporter script and a fake ntfy server. The spec's exit for this phase,
+  two days of the user's real sessions, starts once the plugin is installed at user scope.
