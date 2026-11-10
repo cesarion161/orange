@@ -13,10 +13,8 @@ and is untouched.
 - [x] **C2. Agent runs in containers: the launcher, the clone, the way home.**
 - [x] **C3. Evidence commands, the reaper, the network guard, the loop end to end.**
 - [x] **C4. The worker image, the docs, the live checks' code.**
-- [ ] **C5. Live gate** (one real implement run in a container; recorded below). Open: everything
-  around it is done and recorded under Verified (the image, the invalid-token check, the loop by
-  hand with the fake, the whole suite), but the run with the real token has not been made. See
-  "Live check" at the end.
+- [x] **C5. Live gate** (one real implement run in a container; recorded under "Live check" at
+  the end).
 
 ## Design
 
@@ -251,8 +249,8 @@ Claude Code 2.1.322 is what this laptop runs):
   `ORANGE_EVIDENCE_COMMANDS_0_KIND` and `_COMMAND`); a run root and a worktree root under
   `/private/tmp` mount at their own paths (Docker Desktop shares it); with the fake, the clone
   takes about 0.15 s and the export with its import about 0.4 s.
-- Not checked: source addresses on a Linux bridge; a model call from inside the container (the
-  live gate of C5, still to be run).
+- Not checked: source addresses on a Linux bridge. A model call from inside the container was
+  checked by the live gate of C5 ("Live check" at the end).
 
 ### The launcher (`harness`)
 
@@ -986,8 +984,8 @@ clone's and the export's time.
 - The worker image holds Debian's git (2.39 on bookworm), older than a host's may be. A
   repository format the host's git writes and the image's cannot read (a later git's defaults)
   would fail the run inside the container; with git 2.54 on the host it works.
-- Not checked yet: a model call from inside the container (the invalid-token check of C4 stops
-  at Anthropic's 401). That is the live gate of C5, which has not been run.
+- A contained diff review and a contained verify of real work have not run with real Claude
+  Code; the live gate made one implement run.
 
 ## Review (2026-11-10, fresh-context reviewers, each finding checked by a second one)
 
@@ -1111,27 +1109,25 @@ configured by environment variables alone, and a task that comes in through `POS
 Nothing had to change for it. Added on the way: the two INFO lines of `WorkerRunner` that give
 the clone's and the export's time, which the record below asks for.
 
-### Live check
+### Live check (2026-11-10, after the review's fixes)
 
-Not run yet. C5's engineer was told to make no model call and to put no real credential in a
-file, so `oneRealImplementRunInAContainer` has still only been compiled, and what stays unchecked
-is the one thing the fake cannot show: Claude Code in the worker image getting an answer from
-Anthropic with the subscription token and working through a real implement run.
+`./gradlew liveTest --rerun --tests 'com.ai.orange.e2e.ContainerLiveIT'` with the subscription
+token in `orange/.env` (Docker 29.7.2, Docker Desktop, linux/arm64; `orange-worker:local` with
+Claude Code 2.1.322 on `debian:bookworm-slim`, agent user 501:20): 3 tests, 0 failures, none
+skipped.
 
-What was checked again on the final code, without a token (2026-11-10, Docker 29.7.2, Docker
-Desktop, linux/arm64): `./worker/build.sh` builds `orange-worker:local` (Claude Code 2.1.322 on
-`debian:bookworm-slim`, agent user 501:20; `claude --version` prints `2.1.322 (Claude Code)`,
-`id -u` prints `501`), and `./gradlew liveTest --tests 'com.ai.orange.e2e.ContainerLiveIT'` runs
-2 tests: `realClaudeInTheImageTakesOrangesCommandLineAndReachesTheWorkerMcp` passes in 4.4 s
-(`orange` connected), `oneRealImplementRunInAContainer` is skipped.
+- `oneRealImplementRunInAContainer`: Claude Code in the worker image answered from Anthropic and
+  worked through a real implement run on a throwaway repository: the clone took 159 ms, the run
+  9 s on the small tier (Haiku, low effort, an estimated $0.0015), the export and its import
+  542 ms. The run succeeded, its commit is on the task's branch in the worktree, the worktree is
+  clean, no container is left and the token is in none of the run's files nor in the test's
+  log. The same test on the code before the review: 10 s, $0.0028, 159 ms and 399 ms.
+- `aReviewRunsNoHookOfTheTreeItReads` and
+  `realClaudeInTheImageTakesOrangesCommandLineAndReachesTheWorkerMcp` pass (an invalid token, no
+  model call).
+- Nothing had to change for the real run.
 
-To close the gate, in `orange/` of this branch, with `CLAUDE_CODE_OAUTH_TOKEN` in `orange/.env`:
-
-1. `./gradlew liveTest --tests 'com.ai.orange.e2e.ContainerLiveIT'`: all three tests must pass
-   (the review added `aReviewRunsNoHookOfTheTreeItReads`, which needs no token). It is one
-   implement run on the small tier at low effort, capped at that tier's budget.
-2. The hand loop of C5 with the real image.
-
-Then record here: the Claude Code version in the image, the Docker version, the times of the
-clone, the run and the export (the two log lines, and the seconds the test prints), the cost
-estimate, and anything that had to change. Then tick C5.
+Not run: the whole loop by hand (implement, verify, diff review, integrate) with the real image
+and real Claude Code; only its rehearsal with the fake was (above). A contained diff review has
+therefore not made a model call. The run network guard's source address on a Linux bridge waits
+for the VPS (Phase V).
