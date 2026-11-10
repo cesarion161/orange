@@ -34,6 +34,11 @@ public class SessionRepository {
                 .forUpdate().fetchOptional().map(SessionRepository::toDomain);
     }
 
+    public Optional<Session> lock(UUID id) {
+        return dsl.selectFrom(SESSIONS).where(SESSIONS.ID.eq(id)).forUpdate().fetchOptional()
+                .map(SessionRepository::toDomain);
+    }
+
     public Optional<Session> find(String harness, String externalId) {
         return dsl.selectFrom(SESSIONS)
                 .where(SESSIONS.HARNESS.eq(harness).and(SESSIONS.EXTERNAL_ID.eq(externalId)))

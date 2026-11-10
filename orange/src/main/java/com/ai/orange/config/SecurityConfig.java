@@ -5,9 +5,12 @@ import com.ai.orange.webhook.GithubWebhookHmacFilter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.security.authorization.AuthorizationDecision;
+import org.springframework.security.authorization.AuthorizationManager;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.access.intercept.RequestAuthorizationContext;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 @Configuration
@@ -20,14 +23,18 @@ public class SecurityConfig {
     }
 
     @Bean
-    public ApiTokenFilter apiTokenFilter(@Value("${orange.api.token:}") String token) {
-        return new ApiTokenFilter(token);
+    public ApiToken apiToken(@Value("${orange.api.token:}") String token) {
+        return new ApiToken(token);
     }
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http,
                                                    GithubWebhookHmacFilter hmacFilter,
-                                                   ApiTokenFilter apiTokenFilter) throws Exception {
+                                                   ApiToken apiToken) throws Exception {
+        // Decided inside the chain, on the path Spring Security matched, so no spelling of the path
+        // (percent-encoding, a trailing slash) gets around the token.
+        AuthorizationManager<RequestAuthorizationContext> hasApiToken =
+                (authentication, context) -> new AuthorizationDecision(apiToken.allows(context.getRequest()));
         http
                 .csrf(csrf -> csrf.disable())  // we expose no browser forms; all writes are HMAC- or token-authenticated
                 .authorizeHttpRequests(auth -> auth
@@ -41,10 +48,10 @@ public class SecurityConfig {
                         .requestMatchers("/scheduler", "/scheduler/**").permitAll()  // operator-driven; auth lands later
                         .requestMatchers("/runs/**").permitAll()  // operator-driven; auth lands later
                         .requestMatchers("/events/**").permitAll()           // live narration feed
-                        // ApiTokenFilter authenticates these three when orange.api.token is set
-                        .requestMatchers("/sessions", "/sessions/**").permitAll()
-                        .requestMatchers("/attention", "/attention/**").permitAll()
-                        .requestMatchers("/mcp/steering").permitAll()
+                        // nodes and steering clients: the API token, when orange.api.token is set
+                        .requestMatchers("/sessions", "/sessions/**").access(hasApiToken)
+                        .requestMatchers("/attention", "/attention/**").access(hasApiToken)
+                        .requestMatchers("/mcp/steering").access(hasApiToken)
                         .requestMatchers("/dev-envs", "/dev-envs/**").permitAll()
                         .requestMatchers("/health/**").permitAll()
                         .requestMatchers("/api/status").permitAll()  // status smoke check
@@ -52,7 +59,6 @@ public class SecurityConfig {
                         .anyRequest().denyAll()
                 )
                 .addFilterBefore(hmacFilter, UsernamePasswordAuthenticationFilter.class)
-                .addFilterBefore(apiTokenFilter, UsernamePasswordAuthenticationFilter.class)
                 .httpBasic(httpBasic -> httpBasic.disable())
                 .formLogin(formLogin -> formLogin.disable());
         return http.build();

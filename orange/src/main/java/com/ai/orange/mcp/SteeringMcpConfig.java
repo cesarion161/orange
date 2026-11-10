@@ -18,7 +18,7 @@ import org.springframework.context.annotation.Configuration;
 /**
  * The steering MCP endpoint, {@code /mcp/steering} (project-space spec §10): the user's own
  * Claude Code sessions talk to orange here. Stateless like the worker endpoint; authenticated by
- * {@link com.ai.orange.config.ApiTokenFilter} when an API token is configured.
+ * the API token ({@link com.ai.orange.config.ApiToken}) when one is configured.
  */
 @Configuration
 public class SteeringMcpConfig {

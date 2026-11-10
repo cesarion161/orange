@@ -21,6 +21,11 @@ public record NotifyProperties(@DefaultValue("true") boolean enabled,
                                String zone,
                                @DefaultValue Ntfy ntfy) {
 
+    public NotifyProperties {
+        // A bad zone must stop the start, not silently switch pushes off at every flush.
+        if (zone != null && !zone.isBlank()) ZoneId.of(zone.strip());
+    }
+
     public ZoneId zoneId() {
         return zone == null || zone.isBlank() ? ZoneId.systemDefault() : ZoneId.of(zone.strip());
     }

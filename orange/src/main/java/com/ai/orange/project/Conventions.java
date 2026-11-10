@@ -18,7 +18,7 @@ public class Conventions {
 
     public static final String QUIET_HOURS = "quiet-hours";
     public static final String BRIEF_TIMES = "brief-times";
-    static final Set<String> GLOBAL_ONLY = Set.of(QUIET_HOURS, BRIEF_TIMES);
+    public static final Set<String> GLOBAL_ONLY = Set.of(QUIET_HOURS, BRIEF_TIMES);
 
     private final SpaceRepository space;
     private final ConventionsProperties defaults;

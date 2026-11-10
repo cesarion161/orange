@@ -138,8 +138,54 @@ class SpaceIT {
     @Test
     void quietHoursAreGlobalOnly() throws Exception {
         Project p = project();
-        space.setConvention(p.id(), null, Conventions.QUIET_HOURS, json("[\"01:00\",\"02:00\"]"), Author.USER);
+        assertThatThrownBy(() -> space.setConvention(p.id(), null, Conventions.QUIET_HOURS,
+                json("[\"01:00\",\"02:00\"]"), Author.USER))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("global only");
         assertThat(conventions.resolve(Conventions.QUIET_HOURS, p.id(), null)).contains(json("[\"22:00\",\"08:00\"]"));
+    }
+
+    @Test
+    void anItemSupersedesOnlyItsOwnKindAndOnlyOneProposalWins() throws Exception {
+        Project p = project();
+        SpaceItem convention = space.setConvention(p.id(), null, "integration", json("\"pr\""), Author.USER);
+        assertThatThrownBy(() -> space.add(p.id(), SpaceItem.NOTE, "x", Author.USER, null, null, convention.id()))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("cannot supersede");
+        assertThat(conventions.resolve("integration", p.id(), null)).contains(json("\"pr\""));
+
+        SpaceItem goal = space.add(p.id(), SpaceItem.GOAL, "Ship", Author.USER, null, null, null);
+        SpaceItem one = space.add(p.id(), SpaceItem.GOAL, "Ship fast", Author.agent("a"), null, null, goal.id());
+        SpaceItem two = space.add(p.id(), SpaceItem.GOAL, "Ship well", Author.agent("b"), null, null, goal.id());
+        space.accept(one.id());
+        assertThatThrownBy(() -> space.accept(two.id())).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("no longer active");
+        assertThat(space.current(p.id())).filteredOn(i -> SpaceItem.ACTIVE.equals(i.status())
+                && SpaceItem.GOAL.equals(i.kind())).extracting(SpaceItem::id).containsExactly(one.id());
+    }
+
+    @Test
+    void concurrentSetsOfOneKeyLeaveOneValueAndNoError() throws Exception {
+        Project p = project();
+        java.util.List<Throwable> errors = new java.util.concurrent.CopyOnWriteArrayList<>();
+        java.util.List<Thread> threads = new java.util.ArrayList<>();
+        for (int i = 0; i < 8; i++) {
+            String value = "\"v" + i + "\"";
+            threads.add(Thread.ofVirtual().start(() -> {
+                try {
+                    space.setConvention(p.id(), null, "cadence", json(value), Author.USER);
+                } catch (Throwable t) {
+                    errors.add(t);
+                }
+            }));
+        }
+        for (Thread t : threads) t.join();
+        assertThat(errors).isEmpty();
+        assertThat(space.current(p.id())).filteredOn(i -> "cadence".equals(i.key())).hasSize(1);
+    }
+
+    @Test
+    void projectNamesAreUniqueWhateverTheCase() {
+        Project p = project();
+        assertThatThrownBy(() -> projects.create(p.name().toUpperCase(), null)).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test

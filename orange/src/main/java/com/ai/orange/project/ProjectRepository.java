@@ -37,8 +37,14 @@ public class ProjectRepository {
                 .map(ProjectRepository::toDomain);
     }
 
+    /** Locks the project row for the caller's transaction, so changes to its space happen one at a time. */
+    public boolean lock(UUID id) {
+        return dsl.select(PROJECTS.ID).from(PROJECTS).where(PROJECTS.ID.eq(id)).forUpdate().fetchOptional().isPresent();
+    }
+
+    /** Names are compared without case, so a lookup by name finds one project. */
     public boolean nameTaken(String name) {
-        return dsl.fetchExists(PROJECTS, PROJECTS.NAME.eq(name));
+        return dsl.fetchExists(PROJECTS, PROJECTS.NAME.equalIgnoreCase(name));
     }
 
     /** Every project, oldest first. */

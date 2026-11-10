@@ -89,7 +89,7 @@ orange also watches the sessions the user runs themselves. Nothing here starts a
 - **Space**: `space_items` are never edited in place — a change inserts an item that supersedes the old one. An agent's item starts `proposed`; only accepting it makes it active (and only then does a proposed convention replace the value in force).
 - **Pushes**: `AttentionNotifier` sends open `urgent` and `critical` items to ntfy (`orange.notify.ntfy`), one push per `batch-window` with everything that queued up; quiet hours (the global `quiet-hours` convention) hold all but `critical`. An item counts as pushed only when ntfy took it. Pushes carry session excerpts, so point it at a server you trust.
 - **Steering**: `/mcp/steering` serves `orange_projects`, `orange_project`, `orange_project_update`, `orange_add`, `orange_set`, `orange_accept`, `orange_drop`, `orange_done`, `orange_attention`, `orange_resolve`, `orange_sessions`. REST: `GET /sessions`, `GET /attention`, `POST /attention/{id}/ack|resolve`.
-- **Auth**: with `ORANGE_API_TOKEN` set, `/sessions/**`, `/attention/**` and `/mcp/steering` need it as a bearer token (`ApiTokenFilter`); blank leaves them open like the rest of the operator API.
+- **Auth**: with `ORANGE_API_TOKEN` set, `/sessions/**`, `/attention/**` and `/mcp/steering` need it as a bearer token (403 without); blank leaves them open like the rest of the operator API. The check (`ApiToken`) is an authorization rule inside the security chain, so it holds however a request spells the path.
 
 ### Orange data model
 Flyway migrations live under `orange/src/main/resources/db/migration/` (immutable once merged; add `V<n+1>__…` files):

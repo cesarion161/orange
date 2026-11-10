@@ -98,7 +98,9 @@ CREATE INDEX idx_session_events_session ON session_events (session_id, id);
 CREATE TABLE space_items (
     id            UUID PRIMARY KEY DEFAULT uuidv7(),
     project_id    UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    session_id    UUID REFERENCES sessions(id) ON DELETE SET NULL,  -- a session's override or note
+    -- A session's override or note. It goes with its session: left behind with a null session it
+    -- would read as the project's own value.
+    session_id    UUID REFERENCES sessions(id) ON DELETE CASCADE,
     task_id       UUID REFERENCES tasks(id) ON DELETE SET NULL,
     kind          TEXT NOT NULL CHECK (kind IN ('goal', 'milestone', 'convention', 'decision', 'note', 'question')),
     key           TEXT,                                -- conventions only

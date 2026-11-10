@@ -60,7 +60,7 @@ Mark each `[x]` when it is committed with its tests green.
    item that queued up; quiet hours hold everything but `critical`. No action buttons yet: they
    need a proposed answer (Phase B) and must not hand the API token to a public ntfy server.
 8. **Auth:** with `ORANGE_API_TOKEN` set, `/sessions/**`, `/attention/**` and `/mcp/steering` need
-   it as a bearer token; blank leaves them open, like the rest of the operator API on localhost.
+   it as a bearer token (403 without); blank leaves them open, like the rest of the operator API on localhost.
    Per-node tokens come with Phase V.
 9. **Deferred to the phase that uses them:** the `runs` → session link and `verdicts` (B),
    `evidence.session_id` and `session_work` (C), `briefs` and `tasks.project_id` (D / v2 PR 4).
@@ -69,9 +69,28 @@ Mark each `[x]` when it is committed with its tests green.
 10. **The Python `orange-mcp` shim stays** for the task tools until v2 PR 5 folds them into
     `/mcp/steering`.
 
+## Known limits
+
+- **A permission prompt is tracked through PostToolUse only.** Claude Code has no hook for "the
+  user answered a prompt", so the reporter takes the next finished tool call as the answer. Two
+  consequences: when tools run in parallel, one finishing can clear the wait while another still
+  shows its prompt; and a tool approved and then running for longer than
+  `waiting-escalate-after` is escalated although it was answered. Both need a look in a real
+  interactive session before the escalation time is tuned.
+- **Sessions that die without a SessionEnd** keep their wait. The sweeper leaves a waiting session
+  alone once it has been silent for `stale-after` (12 h), so it escalates at most once.
+- **Review (2026-11-10, fresh-context reviewer):** one blocking finding, fixed: the API token was
+  checked by a servlet filter on the raw URI, so `/%73essions` got past it. The check is now an
+  authorization rule in the security chain. Also fixed: session-scoped space items go with their
+  session, the sweeper re-reads each session under its lock, one writer per project space at a
+  time, an item supersedes only its own kind and only one proposal against an item can be
+  accepted, global-only convention keys are refused per project, project names are unique
+  whatever the case, a bad `orange.notify.zone` stops the start, the reporter strips passwords
+  from any remote URL.
+
 ## Verified
 
-- `./gradlew test`: 354 tests, 0 failures (2026-11-10).
+- `./gradlew test`: 357 tests, 0 failures (2026-11-10, after the review fixes).
 - Live (2026-11-10, Claude Code 2.1.321, `claude -p --plugin-dir plugin` in a fresh git repo against
   a running orange): SessionStart, UserPromptSubmit, Stop and SessionEnd reached orange through the
   real hooks. The repo proposed a project, the first prompt became the intent, the stop's real

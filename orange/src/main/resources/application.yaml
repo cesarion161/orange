@@ -112,6 +112,8 @@ orange:
     idle-after: 15m
     # ... as normal (it waits for the brief) or urgent (it is pushed).
     idle-stop-urgency: normal
+    # A waiting session not heard from for this long is left alone (it probably died without saying so).
+    stale-after: 12h
   notify:
     enabled: ${ORANGE_NOTIFY_ENABLED:true}
     sweep: 30s

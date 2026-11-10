@@ -108,15 +108,22 @@ class SecuredPushIT {
     @Test
     void theNewEndpointsWantTheToken() throws Exception {
         for (String path : List.of("/sessions", "/attention")) {
-            assertThat(status("GET", path, null)).as(path).isEqualTo(401);
-            assertThat(status("GET", path, "wrong")).as(path).isEqualTo(401);
+            assertThat(status("GET", path, null)).as(path).isEqualTo(403);
+            assertThat(status("GET", path, "wrong")).as(path).isEqualTo(403);
             assertThat(status("GET", path, "s3cret-token")).as(path).isEqualTo(200);
         }
-        assertThat(status("POST", "/sessions/events", null)).isEqualTo(401);
+        // However the path is spelled, it is the same guarded endpoint.
+        for (String path : List.of("/%73essions", "/sessions/", "/%61ttention", "/attentio%6e", "/Sessions",
+                "/sessions;x=1", "/%73essions/events")) {
+            assertThat(status("GET", path, null)).as(path).isNotEqualTo(200);
+        }
+        assertThat(status("POST", "/%73essions/events", null)).isIn(400, 403, 404);
+        assertThat(status("POST", "/sessions/events", null)).isEqualTo(403);
         assertThat(status("POST", "/sessions/events", "s3cret-token")).isEqualTo(400); // past the filter: a bad event
-        assertThat(status("POST", "/attention/" + UUID.randomUUID() + "/resolve", null)).isEqualTo(401);
-        assertThat(status("POST", "/mcp/steering", null)).isEqualTo(401);
-        assertThat(status("POST", "/mcp/steering", "s3cret-token")).isNotEqualTo(401);
+        assertThat(status("POST", "/attention/" + UUID.randomUUID() + "/resolve", null)).isEqualTo(403);
+        assertThat(status("POST", "/%61ttention/" + UUID.randomUUID() + "/resolve", null)).isIn(400, 403);
+        assertThat(status("POST", "/mcp/steering", null)).isEqualTo(403);
+        assertThat(status("POST", "/mcp/steering", "s3cret-token")).isNotIn(401, 403);
         // The older operator API is as open as before, and the worker endpoint keeps its own tokens.
         assertThat(status("GET", "/tasks", null)).isEqualTo(200);
         assertThat(status("POST", "/mcp/worker", "s3cret-token")).isEqualTo(401);

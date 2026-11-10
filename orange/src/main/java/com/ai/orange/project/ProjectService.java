@@ -87,7 +87,7 @@ public class ProjectService {
         if (!Project.STATUSES.contains(newStatus)) {
             throw new IllegalArgumentException("status must be one of " + Project.STATUSES);
         }
-        if (!newName.equals(p.name()) && projects.nameTaken(newName)) {
+        if (!newName.equalsIgnoreCase(p.name()) && projects.nameTaken(newName)) {
             throw new IllegalArgumentException("project name is taken: " + newName);
         }
         projects.update(id, newName, newStatus, summary == null ? p.summary() : blankToNull(summary));

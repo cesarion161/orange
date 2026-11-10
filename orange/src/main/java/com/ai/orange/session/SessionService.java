@@ -115,7 +115,12 @@ public class SessionService {
     public int sweep() {
         OffsetDateTime now = OffsetDateTime.now();
         int changed = 0;
-        for (Session s : sessions.findWaiting()) {
+        for (Session seen : sessions.findWaiting()) {
+            // An event may have ended this wait since the list was read: look again, under the row's lock.
+            Session s = sessions.lock(seen.id()).orElse(null);
+            if (s == null || s.waitingSince() == null) continue;
+            // A session nobody has heard from in a long time most likely died without saying so.
+            if (Duration.between(s.lastEventAt(), now).compareTo(props.staleAfter()) > 0) continue;
             Project project = s.projectId() == null ? null : projects.findById(s.projectId()).orElse(null);
             SessionReactor.Sweep sweep = SessionReactor.onSweep(s.waitingReason(),
                     Duration.between(s.waitingSince(), now), props.waitingEscalateAfter(), props.idleAfter(),

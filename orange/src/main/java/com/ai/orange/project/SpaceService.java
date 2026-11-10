@@ -21,9 +21,16 @@ import org.springframework.transaction.annotation.Transactional;
 public class SpaceService {
 
     private final SpaceRepository items;
+    private final ProjectRepository projects;
 
-    public SpaceService(SpaceRepository items) {
+    public SpaceService(SpaceRepository items, ProjectRepository projects) {
         this.items = items;
+        this.projects = projects;
+    }
+
+    /** One writer per project at a time: two changes to the same item or key must not both win. */
+    private void lock(UUID projectId) {
+        if (!projects.lock(projectId)) throw new IllegalArgumentException("no such project: " + projectId);
     }
 
     /** Who wrote an item: {@code user}, {@code orange}, or {@code agent} with the run or session it came from. */
@@ -58,8 +65,9 @@ public class SpaceService {
         if (dueAt != null && !SpaceItem.MILESTONE.equals(kind)) {
             throw new IllegalArgumentException("only a milestone has a due date");
         }
+        lock(projectId);
         String status = author.initialStatus();
-        if (supersedes != null) supersede(projectId, supersedes, status);
+        if (supersedes != null) supersede(projectId, supersedes, kind, status);
         ObjectNode body = Json.mapper().createObjectNode().put("text", text.strip());
         return items.insert(projectId, sessionId, kind, null, JSONB.valueOf(body.toString()), status, author.kind(),
                 author.ref(), dueAt, supersedes);
@@ -75,6 +83,10 @@ public class SpaceService {
         if (value == null || value.isNull() || value.isMissingNode()) {
             throw new IllegalArgumentException("a convention needs a value");
         }
+        if (Conventions.GLOBAL_ONLY.contains(key.strip())) {
+            throw new IllegalArgumentException(key.strip() + " is global only: set it under orange.conventions");
+        }
+        lock(projectId);
         String status = author.initialStatus();
         UUID supersedes = null;
         if (SpaceItem.ACTIVE.equals(status)) {
@@ -93,15 +105,20 @@ public class SpaceService {
     /** Makes a proposal active. A proposed convention replaces the active value of its key. */
     @Transactional
     public SpaceItem accept(UUID id) {
-        SpaceItem item = items.findById(id).orElseThrow(() -> new IllegalArgumentException("no such item: " + id));
+        SpaceItem found = items.findById(id).orElseThrow(() -> new IllegalArgumentException("no such item: " + id));
+        lock(found.projectId());
+        SpaceItem item = items.findById(id).orElseThrow();
         if (!SpaceItem.PROPOSED.equals(item.status())) {
             throw new IllegalArgumentException("only a proposal can be accepted; this item is " + item.status());
         }
         if (SpaceItem.CONVENTION.equals(item.kind())) {
             items.activeConvention(item.projectId(), item.sessionId(), item.key())
                     .ifPresent(old -> items.setStatus(old.id(), Set.of(SpaceItem.ACTIVE), SpaceItem.SUPERSEDED));
-        } else if (item.supersedesId() != null) {
-            items.setStatus(item.supersedesId(), Set.of(SpaceItem.ACTIVE), SpaceItem.SUPERSEDED);
+        } else if (item.supersedesId() != null
+                && !items.setStatus(item.supersedesId(), Set.of(SpaceItem.ACTIVE), SpaceItem.SUPERSEDED)) {
+            // Something else replaced or dropped it since this was proposed; accepting would leave two answers.
+            throw new IllegalArgumentException("the item this proposal replaces is no longer active; drop the "
+                    + "proposal, or propose against the current item");
         }
         items.setStatus(id, Set.of(SpaceItem.PROPOSED), SpaceItem.ACTIVE);
         return items.findById(id).orElseThrow();
@@ -138,11 +155,14 @@ public class SpaceService {
         return items.findById(id);
     }
 
-    private void supersede(UUID projectId, UUID oldId, String newStatus) {
+    private void supersede(UUID projectId, UUID oldId, String kind, String newStatus) {
         SpaceItem old = items.findById(oldId)
                 .orElseThrow(() -> new IllegalArgumentException("no such item to supersede: " + oldId));
         if (!old.projectId().equals(projectId)) {
             throw new IllegalArgumentException("the superseded item belongs to another project");
+        }
+        if (!old.kind().equals(kind)) {
+            throw new IllegalArgumentException("a " + kind + " cannot supersede a " + old.kind());
         }
         if (!SpaceItem.ACTIVE.equals(old.status())) {
             throw new IllegalArgumentException("only an active item can be superseded; that one is " + old.status());

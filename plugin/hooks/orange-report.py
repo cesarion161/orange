@@ -55,7 +55,7 @@ def marker(session_id):
 
 def git(cwd, *args):
     try:
-        out = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, timeout=2)
+        out = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, timeout=1)
     except (OSError, subprocess.SubprocessError):
         return None
     text = out.stdout.strip()
@@ -63,13 +63,16 @@ def git(cwd, *args):
 
 
 def without_credentials(url):
-    """https://user:token@host/x -> https://host/x; scp-style and other urls are left alone."""
+    """https://token@host/x and ssh://user:pass@host/x lose their userinfo; scp-style urls have none."""
     try:
         parts = urlsplit(url)
     except ValueError:
         return url
-    if parts.scheme in ("http", "https") and "@" in parts.netloc:
-        return urlunsplit(parts._replace(netloc=parts.netloc.rsplit("@", 1)[1]))
+    if parts.scheme and "@" in parts.netloc:
+        userinfo, host = parts.netloc.rsplit("@", 1)
+        # A bare user (ssh://git@host) is no secret; a password or an http(s) token is.
+        if ":" in userinfo or parts.scheme in ("http", "https"):
+            return urlunsplit(parts._replace(netloc=host))
     return url
 
 
