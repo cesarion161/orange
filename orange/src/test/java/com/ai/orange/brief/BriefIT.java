@@ -15,6 +15,7 @@ import com.ai.orange.brief.BriefService.Focus;
 import com.ai.orange.brief.BriefSnapshot.ProjectFacts;
 import com.ai.orange.harness.FakeClaude;
 import com.ai.orange.json.Json;
+import com.ai.orange.mcp.McpTestClient;
 import com.ai.orange.notify.AttentionNotifier;
 import com.ai.orange.notify.NotifyProperties;
 import com.ai.orange.project.Project;
@@ -58,6 +59,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -67,7 +69,7 @@ import org.springframework.test.context.DynamicPropertySource;
  * A brief from its brief time to the phone, with a fake {@code claude} and a fake ntfy: the facts
  * are read, a brief run adds the words, and whatever the run does (fails, says nothing, names a
  * project that is not there, is not started at all) the brief is still written from the facts.
- * Then it is pushed once.
+ * Then it is pushed once, and {@code orange_focus} returns it.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {"orange.brief.first-window=72h", "orange.notify.ntfy.brief-topic=my-brief",
@@ -110,6 +112,7 @@ class BriefIT {
         NTFY.stop(0);
     }
 
+    @Value("${local.server.port}") int port;
     @Autowired BriefDelivery delivery;
     @Autowired AttentionNotifier attentionNotifier;
 
@@ -697,5 +700,63 @@ class BriefIT {
 
         assertThat(allBriefs()).isEmpty();
         assertThat(briefRuns()).as("its run stays; only the brief goes").hasSize(1);
+    }
+
+    // ─────────────────────────── orange_focus ───────────────────────────
+
+    @Test
+    void orangeFocusOverMcp() throws Exception {
+        McpTestClient mcp = new McpTestClient("http://localhost:" + port + "/mcp/steering", null);
+        mcp.initialize();
+
+        JsonNode nothingYet = focusTool(mcp, false);
+        assertThat(nothingYet.path("state").asText()).isEqualTo("none");
+        assertThat(nothingYet.path("hint").asText()).contains("fresh");
+        assertThat(nothingYet.has("brief")).isFalse();
+        assertThat(briefRuns()).isEmpty();
+
+        Project alpha = working("alpha", null);
+        JsonNode fresh = focusTool(mcp, true);
+        assertThat(fresh.path("state").asText()).isEqualTo("ready");
+        JsonNode b = fresh.path("brief");
+        assertThat(b.path("model_lines").asBoolean()).isTrue();
+        assertThat(b.path("slot").isNull()).as("it was asked for").isTrue();
+        assertThat(b.path("note").isNull()).isTrue();
+        assertThat(b.path("delivered_at").isNull()).isTrue();
+        assertThat(b.path("text").asText()).contains("alpha").contains("Waiting on you").contains("(on demand)");
+        Brief stored = brief();
+        assertThat(b.path("id").asText()).isEqualTo(stored.id().toString());
+        assertThat(b.path("page").asText()).startsWith("https://orange.example/brief/")
+                .isEqualTo("https://orange.example/brief/" + stored.id() + "?k=" + stored.pageKey());
+        assertThat(OffsetDateTime.parse(b.path("written_at").asText()).toInstant())
+                .isEqualTo(stored.snapshotAt().toInstant());
+        assertThat(briefRuns()).hasSize(1);
+        assertThat(PUBLISHED).as("a brief that was asked for is not pushed").isEmpty();
+
+        JsonNode latest = focusTool(mcp, false);
+        assertThat(latest.path("state").asText()).isEqualTo("ready");
+        assertThat(latest.path("brief").path("id").asText()).isEqualTo(stored.id().toString());
+        // Asked for a fresh one again right away: the same brief, and no second run.
+        JsonNode again = focusTool(mcp, true);
+        assertThat(again.path("brief").path("id").asText()).isEqualTo(stored.id().toString());
+        assertThat(again.path("hint").asText()).contains("at most every");
+        assertThat(briefRuns()).hasSize(1);
+
+        dsl.deleteFrom(BRIEFS).execute();
+        projects.update(alpha.id(), null, Project.ARCHIVED, null);
+        JsonNode none = focusTool(mcp, true);
+        assertThat(none.path("state").asText()).isEqualTo("none");
+        assertThat(none.path("hint").asText()).contains("no active project");
+        assertThat(none.has("brief")).isFalse();
+        assertThat(allBriefs()).isEmpty();
+        assertThat(briefRuns()).hasSize(1);
+    }
+
+    static JsonNode focusTool(McpTestClient mcp, boolean fresh) throws Exception {
+        ObjectNode args = Json.mapper().createObjectNode();
+        if (fresh) args.put("fresh", true);
+        JsonNode result = mcp.callTool("orange_focus", args);
+        assertThat(McpTestClient.failed(result)).as(result.toString()).isFalse();
+        return Json.mapper().readTree(McpTestClient.text(result));
     }
 }

@@ -14,7 +14,7 @@ skipped or refused run costs the words, never the brief: the facts are always or
 - [x] **D4. The prompt and the text (pure).**
 - [x] **D5. Writing a brief: the service, the tick and the fake.**
 - [x] **D6. Delivery and the page.**
-- [ ] **D7. `orange_focus`, the plugin README, the docs and the live check.**
+- [x] **D7. `orange_focus`, the plugin README and the docs.** The live check is under Open.
 
 ## Builder's rulings
 
@@ -81,8 +81,9 @@ skipped or refused run costs the words, never the brief: the facts are always or
 15. There is no dashboard to add a page to, so the brief page stands alone: `GET
     /brief/{id}?k=<page key>` and `GET /brief` for the latest. The per-brief key, valid for
     `link-ttl` (48h), is the phone's credential because a tapped link carries no bearer header and
-    the API token must never reach ntfy (Phase A ruling 7). The push carries a link only when
-    `orange.brief.public-url` is set.
+    the API token must never reach ntfy (Phase A ruling 7). The API token opens the page too, at
+    any age. A wrong key, an expired key and an unknown id are the same 404, checked in the
+    controller. The push carries a link only when `orange.brief.public-url` is set.
 16. `orange_focus` without `fresh` never starts a run, even when there is no brief yet (spec §10
     says 'the latest brief, or a fresh one'); `fresh` writes at most one brief per
     `fresh-min-interval` (10m) and waits `focus-wait` (60s). Reason: reading must be free, and a
@@ -110,7 +111,8 @@ skipped or refused run costs the words, never the brief: the facts are always or
 - The model's tool call is in `run_events`, readable at the open `/runs/{id}/events`, like a
   judge's.
 - A brief whose push failed or was held past `catch-up` is on the page only. A 2xx followed by a
-  failed update repeats one push.
+  failed update repeats one push. A push that fails is tried again at every tick (60s) until then,
+  with no backoff.
 - A coordinator stopped or killed during a brief run writes that brief from the facts at its next
   start (inside `catch-up`); the model is not asked again.
 - One coordinator is assumed: the write lock is in the process. Two coordinators could both run a
@@ -133,9 +135,35 @@ skipped or refused run costs the words, never the brief: the facts are always or
 - Whether Claude Code's MCP client waits 60 seconds for a tool call is not checked; it is part of
   the live check.
 - With `ORANGE_BRIEF_ENABLED=false` no brief is scheduled, but `orange_focus` with `fresh` still
-  writes one.
+  writes one. The variable must be `true`, `false` or absent: left empty in `.env` it stops the
+  start (an empty string does not bind to a switch), so `.env.example` lists it commented out.
+  The topics and the public url take an empty variable as "the default".
+- `GET /brief` shows the latest brief of any kind, so after an `orange_focus` with `fresh` it is
+  the one that was asked for.
+- Outside the projects, the urgent count in "Waiting on you" covers only the five items listed;
+  the snapshot has no urgent count for the rest.
+- When a fresh brief cannot be written at all (the run could not be started), `orange_focus`
+  answers `orange_focus failed: RuntimeException`; the cause is in orange's log.
+- No test covers `orange_focus` when `focus-wait` runs out while the run goes on (it needs a run
+  slower than the wait); the `writing` answer is tested through the held write lock.
 - The exit (a week of briefs the user finds accurate) is the user's to judge, not a test's.
 
 ## Review
 
+## Open
+
+- **The live check has not been run.** It needs the user's running orange and a subscription
+  token: from a Claude Code session with the plugin, call `orange_focus` with `fresh: true`
+  against the real projects, and record here, as Phases B and C did: the run's time, tier and
+  estimated cost; whether the MCP call came back within `focus-wait` (and whether Claude Code's
+  MCP client waits that long for a tool call); what the brief got wrong against the facts on its
+  page; and any wording fix made to `orange/src/main/resources/roles/brief.md`. Do not point it
+  at a public ntfy server.
+- The exit of the phase (a week of briefs the user finds accurate) starts once orange runs with
+  the plugin installed.
+
 ## Verified
+
+- `./gradlew test`: 570 tests, 0 failures (2026-11-10, after D7 and before the review; 406 before
+  the phase). No model was called: the brief runs are the fake `claude`'s, the pushes a fake
+  ntfy's. The live check is still open (above).

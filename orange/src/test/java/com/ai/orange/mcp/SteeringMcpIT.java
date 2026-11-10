@@ -70,7 +70,23 @@ class SteeringMcpIT {
     void theToolsAreListed() throws Exception {
         assertThat(mcp.listTools()).containsExactlyInAnyOrder("orange_projects", "orange_project",
                 "orange_project_update", "orange_add", "orange_set", "orange_accept", "orange_drop", "orange_done",
-                "orange_attention", "orange_resolve", "orange_sessions");
+                "orange_attention", "orange_resolve", "orange_sessions", "orange_focus");
+    }
+
+    @Test
+    void theLatestBriefIsReadWithoutWritingOne() throws Exception {
+        // Never fresh: true here. This context has no fake claude, so a fresh brief would start the real one.
+        JsonNode focus = call("orange_focus", args());
+        assertThat(focus.path("state").asText()).isIn("none", "ready");
+        if ("none".equals(focus.path("state").asText())) {
+            assertThat(focus.has("brief")).isFalse();
+            assertThat(focus.path("hint").asText()).contains("fresh");
+        } else {
+            assertThat(focus.path("brief").path("id").asText()).isNotBlank();
+            assertThat(focus.path("brief").path("text").asText()).contains("Waiting on you");
+            assertThat(focus.path("brief").path("page").asText()).contains("/brief/").contains("?k=");
+        }
+        assertThat(call("orange_focus", args().put("fresh", false)).path("state").asText()).isIn("none", "ready");
     }
 
     @Test

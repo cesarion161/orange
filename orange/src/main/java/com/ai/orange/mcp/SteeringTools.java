@@ -3,6 +3,9 @@ package com.ai.orange.mcp;
 import com.ai.orange.api.SpaceViews;
 import com.ai.orange.attention.AttentionItem;
 import com.ai.orange.attention.AttentionService;
+import com.ai.orange.brief.BriefLinks;
+import com.ai.orange.brief.BriefService;
+import com.ai.orange.brief.BriefText;
 import com.ai.orange.json.Json;
 import com.ai.orange.project.Conventions;
 import com.ai.orange.project.Project;
@@ -34,7 +37,8 @@ import org.slf4j.LoggerFactory;
 
 /**
  * The steering MCP tools ({@code /mcp/steering}; project-space spec §10): how the user, from any
- * Claude Code session, reads and writes the project space and the attention inbox. Everything
+ * Claude Code session, reads and writes the project space and the attention inbox, and reads
+ * the focus brief. Everything
  * written here is the user's own word (author {@code user}). Handlers never throw: a bad call
  * comes back as an error result that says what to correct.
  */
@@ -50,17 +54,21 @@ public class SteeringTools {
     private final Conventions conventions;
     private final AttentionService attention;
     private final SessionRepository sessions;
+    private final BriefService briefs;
+    private final BriefLinks links;
     private final McpJsonMapper jsonMapper;
 
     public SteeringTools(ProjectService projectService, ProjectRepository projects, SpaceService space,
                          Conventions conventions, AttentionService attention, SessionRepository sessions,
-                         McpJsonMapper jsonMapper) {
+                         BriefService briefs, BriefLinks links, McpJsonMapper jsonMapper) {
         this.projectService = projectService;
         this.projects = projects;
         this.space = space;
         this.conventions = conventions;
         this.attention = attention;
         this.sessions = sessions;
+        this.briefs = briefs;
+        this.links = links;
         this.jsonMapper = jsonMapper;
     }
 
@@ -113,7 +121,13 @@ public class SteeringTools {
                         + "each is doing, whether it is working, stopped or waiting, and since when.",
                         "{\"type\":\"object\",\"properties\":{" + PROJECT_ARG + ","
                                 + "\"all\":{\"type\":\"boolean\",\"description\":\"Include ended sessions.\"}}}",
-                        this::sessions));
+                        this::sessions),
+                spec("orange_focus", "The focus brief: where each active project stands, what is waiting on the "
+                        + "user and what to focus on next. Returns the latest brief; fresh: true writes a new one, "
+                        + "which can take a minute.",
+                        "{\"type\":\"object\",\"properties\":{\"fresh\":{\"type\":\"boolean\","
+                                + "\"description\":\"Write a new brief now instead of returning the latest one.\"}}}",
+                        this::focus));
     }
 
     private CallToolResult projects(CallToolRequest req) {
@@ -204,6 +218,18 @@ public class SteeringTools {
         UUID projectId = string(req, "project").isEmpty() ? null : projectOf(req).id();
         boolean all = Boolean.TRUE.equals(arg(req, "all"));
         return ok(sessions.findRecent(all, projectId, 100).stream().map(SpaceViews::of).toList());
+    }
+
+    /** The latest brief, or with {@code fresh} a new one; reading never starts a run. */
+    private CallToolResult focus(CallToolRequest req) {
+        BriefService.Focus f = briefs.focus(Boolean.TRUE.equals(arg(req, "fresh")));
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("state", f.state());
+        if (f.hint() != null) out.put("hint", f.hint());
+        if (f.brief() != null) {
+            out.put("brief", SpaceViews.of(f.brief(), BriefText.text(f.brief()), links.page(f.brief())));
+        }
+        return ok(out);
     }
 
     // ───────────────────────────── plumbing ─────────────────────────────

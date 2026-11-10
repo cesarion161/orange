@@ -1,6 +1,8 @@
 package com.ai.orange.mcp;
 
 import com.ai.orange.attention.AttentionService;
+import com.ai.orange.brief.BriefLinks;
+import com.ai.orange.brief.BriefService;
 import com.ai.orange.project.Conventions;
 import com.ai.orange.project.ProjectRepository;
 import com.ai.orange.project.ProjectService;
@@ -36,8 +38,9 @@ public class SteeringMcpConfig {
     @Bean
     SteeringTools steeringTools(ProjectService projectService, ProjectRepository projects, SpaceService space,
                                 Conventions conventions, AttentionService attention, SessionRepository sessions,
-                                McpJsonMapper workerMcpJsonMapper) {
-        return new SteeringTools(projectService, projects, space, conventions, attention, sessions, workerMcpJsonMapper);
+                                BriefService briefs, BriefLinks links, McpJsonMapper workerMcpJsonMapper) {
+        return new SteeringTools(projectService, projects, space, conventions, attention, sessions, briefs, links,
+                workerMcpJsonMapper);
     }
 
     @Bean(destroyMethod = "close")

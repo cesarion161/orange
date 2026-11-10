@@ -1,6 +1,7 @@
 package com.ai.orange.api;
 
 import com.ai.orange.attention.AttentionItem;
+import com.ai.orange.brief.Brief;
 import com.ai.orange.project.Project;
 import com.ai.orange.project.ProjectRepo;
 import com.ai.orange.project.SpaceItem;
@@ -8,7 +9,7 @@ import com.ai.orange.session.Session;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/** How projects, space items, sessions and attention items look to the operator API and the steering MCP. */
+/** How projects, space items, sessions, attention items and briefs look to the operator API and the steering MCP. */
 public final class SpaceViews {
 
     private SpaceViews() {}
@@ -93,6 +94,25 @@ public final class SpaceViews {
             m.put("resolved_at", str(a.resolvedAt()));
         }
         m.put("created_at", str(a.createdAt()));
+        return m;
+    }
+
+    /**
+     * A brief as {@code orange_focus} returns it.
+     *
+     * @param text the brief as plain text ({@code BriefText.text})
+     * @param page where its page is, with the key that opens it
+     */
+    public static Map<String, Object> of(Brief b, String text, String page) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", str(b.id()));
+        m.put("written_at", str(b.snapshotAt()));
+        m.put("slot", str(b.slotAt()));  // null = it was asked for
+        m.put("model_lines", b.content() != null);
+        m.put("note", b.note());
+        m.put("delivered_at", str(b.deliveredAt()));
+        m.put("text", text);
+        m.put("page", page);
         return m;
     }
 }
