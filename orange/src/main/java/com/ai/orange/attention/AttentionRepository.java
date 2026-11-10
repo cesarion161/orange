@@ -49,6 +49,13 @@ public class AttentionRepository {
                 .map(AttentionRepository::toDomain);
     }
 
+    /** Whether the project has an item of this kind that is not resolved yet (open or acked). */
+    public boolean hasUnresolved(UUID projectId, String kind) {
+        return dsl.fetchExists(ATTENTION_ITEMS, ATTENTION_ITEMS.PROJECT_ID.eq(projectId)
+                .and(ATTENTION_ITEMS.KIND.eq(kind))
+                .and(ATTENTION_ITEMS.STATUS.ne(AttentionItem.RESOLVED)));
+    }
+
     /** Items by status (null = any), most urgent first, then oldest first. */
     public List<AttentionItem> find(String status, int limit) {
         Condition where = status == null ? DSL.noCondition() : ATTENTION_ITEMS.STATUS.eq(status);

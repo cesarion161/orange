@@ -29,6 +29,8 @@ public record AttentionItem(UUID id, UUID projectId, UUID sessionId, UUID taskId
     public static final String SESSION_LOOP = "session_loop";
     /** orange saw a repo it does not know and proposes a project for it. */
     public static final String PROJECT_PROPOSED = "project_proposed";
+    /** The brief's model flagged something that cannot wait for the next brief and was not in the inbox. */
+    public static final String BRIEF_URGENT = "brief_urgent";
 
     public boolean critical() {
         return CRITICAL.equals(urgency);

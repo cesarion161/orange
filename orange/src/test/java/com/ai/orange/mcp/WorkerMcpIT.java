@@ -191,6 +191,113 @@ class WorkerMcpIT {
     }
 
     @Test
+    void briefRunListsOnlySubmitBrief() throws Exception {
+        String token = RunTokens.newToken();
+        briefRun(token);
+        McpTestClient client = new McpTestClient(url(), token);
+        client.initialize();
+        assertThat(client.listTools()).containsExactly("submit_brief");
+    }
+
+    @Test
+    void submitBriefRecordsTheLines() throws Exception {
+        String token = RunTokens.newToken();
+        Run run = briefRun(token);
+        McpTestClient client = new McpTestClient(url(), token);
+        client.initialize();
+
+        ObjectNode a = briefArgs("Alpha", "beta");
+        a.putArray("focus").addObject().put("project", "alpha").put("item", "Answer the session")
+                .put("why", "It has waited since morning.");
+        JsonNode result = client.callTool("submit_brief", a);
+
+        assertThat(McpTestClient.failed(result)).as(result.toString()).isFalse();
+        assertThat(McpTestClient.text(result)).isEqualTo("recorded");
+        JsonNode content = ((RunOutcome.Brief) outcome(run)).content();
+        assertThat(content.path("projects")).hasSize(2);
+        assertThat(content.path("projects").path(0).path("project").asText()).as("stored as the run names it")
+                .isEqualTo("alpha");
+        assertThat(content.path("projects").path(0).path("status_line").asText()).isEqualTo("Alpha moved.");
+        assertThat(content.path("projects").path(1).path("status_line").asText()).isEqualTo("beta moved.");
+        assertThat(content.path("focus").path(0).path("item").asText()).isEqualTo("Answer the session");
+        assertThat(content.path("urgent")).isEmpty();
+    }
+
+    @Test
+    void aBriefAboutAnUnknownProjectIsRefusedAndRecordsNothing() throws Exception {
+        String token = RunTokens.newToken();
+        Run run = briefRun(token);
+        McpTestClient client = new McpTestClient(url(), token);
+        client.initialize();
+
+        ObjectNode a = briefArgs("alpha", "beta", "no-such-project");
+        a.putArray("focus");
+        JsonNode result = client.callTool("submit_brief", a);
+
+        assertThat(McpTestClient.failed(result)).isTrue();
+        assertThat(McpTestClient.text(result)).contains("no-such-project").contains("alpha").contains("beta");
+        assertThat(runs.findById(run.id()).orElseThrow().outcome()).isNull();
+    }
+
+    @Test
+    void aBriefThatLeavesAProjectOutIsRefusedAndCanBeCorrected() throws Exception {
+        String token = RunTokens.newToken();
+        Run run = briefRun(token);
+        McpTestClient client = new McpTestClient(url(), token);
+        client.initialize();
+
+        ObjectNode partial = briefArgs("alpha");
+        partial.putArray("focus");
+        JsonNode refused = client.callTool("submit_brief", partial);
+
+        assertThat(McpTestClient.failed(refused)).isTrue();
+        assertThat(McpTestClient.text(refused)).contains("beta");
+        assertThat(runs.findById(run.id()).orElseThrow().outcome()).isNull();
+
+        // The refusal says what to correct; the corrected call lands.
+        ObjectNode whole = briefArgs("alpha", "beta");
+        whole.putArray("focus");
+        assertThat(McpTestClient.failed(client.callTool("submit_brief", whole))).isFalse();
+        assertThat(outcome(run)).isInstanceOf(RunOutcome.Brief.class);
+    }
+
+    @Test
+    void aBriefWithNoArgumentsIsRefused() throws Exception {
+        String token = RunTokens.newToken();
+        Run run = briefRun(token);
+        McpTestClient client = new McpTestClient(url(), token);
+        client.initialize();
+
+        JsonNode result = client.callTool("submit_brief", args());
+
+        assertThat(McpTestClient.failed(result)).isTrue();
+        assertThat(McpTestClient.text(result)).contains("projects");
+        assertThat(runs.findById(run.id()).orElseThrow().outcome()).isNull();
+    }
+
+    @Test
+    void submitBriefBelongsToBriefRunsOnly() throws Exception {
+        String implementToken = RunTokens.newToken();
+        Run implement = runningRun(RunKind.IMPLEMENT, implementToken);
+        McpTestClient implementer = new McpTestClient(url(), implementToken);
+        implementer.initialize();
+        ObjectNode a = briefArgs("alpha", "beta");
+        a.putArray("focus");
+
+        assertThat(McpTestClient.failed(implementer.callTool("submit_brief", a))).isTrue();
+        assertThat(runs.findById(implement.id()).orElseThrow().outcome()).isNull();
+
+        String briefToken = RunTokens.newToken();
+        Run brief = briefRun(briefToken);
+        McpTestClient writer = new McpTestClient(url(), briefToken);
+        writer.initialize();
+
+        assertThat(McpTestClient.failed(writer.callTool("report_result",
+                args().put("status", "done").put("summary", "Wrote it")))).isTrue();
+        assertThat(runs.findById(brief.id()).orElseThrow().outcome()).isNull();
+    }
+
+    @Test
     void aTokenOnlyWritesItsOwnRun() throws Exception {
         String tokenA = RunTokens.newToken();
         String tokenB = RunTokens.newToken();
@@ -252,6 +359,22 @@ class WorkerMcpIT {
         runs.recordRoute(run.id(), "medium", "claude-sonnet-5-5", "high", "claude-code", "subscription",
                 new BigDecimal("4"), null, RunTokens.hash(token), null);
         return run;
+    }
+
+    /** A running brief run, which has no task, for the projects alpha and beta. */
+    private Run briefRun(String token) {
+        Run run = runs.insertRunning(RunKind.BRIEF, "brief", null, "w", Duration.ofMinutes(5),
+                JSONB.valueOf("{\"projects\":[\"alpha\",\"beta\"]}"));
+        runs.recordRoute(run.id(), "medium", "claude-sonnet-5-5", "low", "claude-code", "subscription",
+                new BigDecimal("4"), null, RunTokens.hash(token), null);
+        return run;
+    }
+
+    /** {@code submit_brief} arguments with a status line per project and no focus yet. */
+    private static ObjectNode briefArgs(String... projects) {
+        ObjectNode a = args();
+        for (String p : projects) a.withArray("projects").addObject().put("project", p).put("status_line", p + " moved.");
+        return a;
     }
 
     private RunOutcome outcome(Run run) {

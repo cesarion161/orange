@@ -52,6 +52,8 @@ public class SecurityConfig {
                         .requestMatchers("/sessions", "/sessions/**").access(hasApiToken)
                         .requestMatchers("/attention", "/attention/**").access(hasApiToken)
                         .requestMatchers("/mcp/steering").access(hasApiToken)
+                        .requestMatchers("/brief").access(hasApiToken)  // the latest brief
+                        .requestMatchers("/brief/*").permitAll()  // one brief: its page key or the API token, checked by BriefPageController
                         .requestMatchers("/dev-envs", "/dev-envs/**").permitAll()
                         .requestMatchers("/health/**").permitAll()
                         .requestMatchers("/api/status").permitAll()  // status smoke check

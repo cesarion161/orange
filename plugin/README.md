@@ -3,7 +3,7 @@
 One-install front-end for the [orange-ai](../) orchestrator. Ships:
 
 - the **session reporter** (`hooks/`) — tells orange when any of your Claude Code sessions starts, gets a prompt, stops, waits for you or ends, so orange can file what needs you and push the urgent part to your phone
-- the `orange-steering` MCP server (served by the coordinator at `/mcp/steering`) — the project space, the attention inbox and your sessions: `orange_projects`, `orange_project`, `orange_project_update`, `orange_add`, `orange_set`, `orange_accept`, `orange_drop`, `orange_done`, `orange_attention`, `orange_resolve`, `orange_sessions`
+- the `orange-steering` MCP server (served by the coordinator at `/mcp/steering`) — the project space, the attention inbox, your sessions and the focus brief: `orange_projects`, `orange_project`, `orange_project_update`, `orange_add`, `orange_set`, `orange_accept`, `orange_drop`, `orange_done`, `orange_attention`, `orange_resolve`, `orange_sessions`, `orange_focus`
 - the `orange-orchestrate` skill — teaches the chat when and how to drive orange end-to-end (idea → planner → review → dispatch → live narration while the coordinator runs the agents)
 
 ## Install
@@ -53,3 +53,9 @@ Set these in the shell your sessions start from:
 orange's own agent runs use a private `CLAUDE_CONFIG_DIR`, so the reporter never fires inside them.
 
 The first session in a repo orange has not seen proposes a project for it: answer the attention item with `confirm` or `ignore` (`orange_resolve`), or attach the repo to an existing project with `orange_project_update`.
+
+## The focus brief
+
+At the brief times (09:00 and 14:00 by default, never in quiet hours) orange writes a brief across your active projects: where each one stands, what is waiting on you and what to focus on next. It pushes the brief to ntfy (to `ORANGE_NTFY_BRIEF_TOPIC`, or without one to the attention topic), unless nothing happened since the one before.
+
+`orange_focus` returns the latest brief from any session; `fresh: true` writes a new one, which can take a minute (at most one every 10 minutes). Every brief has a page (`page` in the tool's answer; `/brief` on the coordinator for the latest) that shows the lines beside the facts they were written from. The counts and the dates are orange's own, read from its database; the model only adds the words, and when it cannot be asked the brief is written from the facts alone.

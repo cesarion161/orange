@@ -1,5 +1,7 @@
 package com.ai.orange.mcp;
 
+import static com.ai.orange.db.jooq.Tables.BRIEFS;
+import static com.ai.orange.db.jooq.Tables.RUNS;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.ai.orange.TestcontainersConfiguration;
@@ -8,12 +10,14 @@ import com.ai.orange.attention.AttentionRepository;
 import com.ai.orange.json.Json;
 import com.ai.orange.project.Project;
 import com.ai.orange.project.ProjectService;
+import com.ai.orange.run.RunKind;
 import com.ai.orange.session.NeutralEvent;
 import com.ai.orange.session.Session;
 import com.ai.orange.session.SessionService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.UUID;
+import org.jooq.DSLContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -30,6 +34,7 @@ class SteeringMcpIT {
     @Autowired SessionService sessions;
     @Autowired ProjectService projects;
     @Autowired AttentionRepository attention;
+    @Autowired DSLContext dsl;
 
     McpTestClient mcp;
     String name;
@@ -70,7 +75,30 @@ class SteeringMcpIT {
     void theToolsAreListed() throws Exception {
         assertThat(mcp.listTools()).containsExactlyInAnyOrder("orange_projects", "orange_project",
                 "orange_project_update", "orange_add", "orange_set", "orange_accept", "orange_drop", "orange_done",
-                "orange_attention", "orange_resolve", "orange_sessions");
+                "orange_attention", "orange_resolve", "orange_sessions", "orange_focus");
+    }
+
+    @Test
+    void theLatestBriefIsReadWithoutWritingOne() throws Exception {
+        int briefsBefore = dsl.fetchCount(BRIEFS);
+        int runsBefore = dsl.fetchCount(RUNS, RUNS.KIND.eq(RunKind.BRIEF.dbValue()));
+        // Never fresh: true here. This context has no fake claude, so a fresh brief would start the real one.
+        JsonNode focus = call("orange_focus", args());
+        assertThat(focus.path("state").asText()).isIn("none", "ready");
+        if ("none".equals(focus.path("state").asText())) {
+            assertThat(focus.has("brief")).isFalse();
+            assertThat(focus.path("hint").asText()).contains("fresh");
+        } else {
+            assertThat(focus.path("brief").path("id").asText()).isNotBlank();
+            assertThat(focus.path("brief").path("text").asText()).contains("Waiting on you");
+            assertThat(focus.path("brief").path("page").asText()).contains("/brief/").contains("?k=");
+        }
+        assertThat(call("orange_focus", args().put("fresh", false)).path("state").asText())
+                .as("the same answer: nothing was written in between").isEqualTo(focus.path("state").asText());
+
+        assertThat(dsl.fetchCount(BRIEFS)).as("reading writes no brief").isEqualTo(briefsBefore);
+        assertThat(dsl.fetchCount(RUNS, RUNS.KIND.eq(RunKind.BRIEF.dbValue()))).as("and starts no brief run")
+                .isEqualTo(runsBefore);
     }
 
     @Test

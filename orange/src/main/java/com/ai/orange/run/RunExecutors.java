@@ -14,7 +14,7 @@ public class RunExecutors {
         this.executors = List.copyOf(executors);
     }
 
-    /** The executor for {@code kind}; empty for kinds nothing runs yet (brief). */
+    /** The executor for {@code kind}; empty for brief, whose runs start directly and are never queued. */
     public Optional<RunExecutor> forKind(RunKind kind) {
         // Asked each time rather than indexed once, so an executor's kinds are read when it is used.
         return executors.stream().filter(e -> e.kinds() != null && e.kinds().contains(kind)).findFirst();
