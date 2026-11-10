@@ -21,8 +21,21 @@ decide, or nothing is asked. The verdict reaches the session through the Stop ho
 - [x] **7. Time.** Uncollected answers expire into the inbox; undecided stops fall back.
 - [x] **8. Tests.** `JudgeIT` (each verdict with the fake `claude`, the real Stop hook end to end),
   reactor rules, fake scenarios.
-- [ ] **9. Live check.** A real session asking "proceed?" is continued by orange. Needs
-  `CLAUDE_CODE_OAUTH_TOKEN` in `orange/.env`, which is not set (2026-11-10).
+- [x] **9. Live check** (2026-11-10, Claude Code 2.1.321, subscription token, judge on Haiku at low
+  effort; a real `claude -p` session with the plugin in a scratch repo, ending "Should I proceed
+  with option 1?"):
+  - With nothing in the project's space, the judge escalated: it rated its own answer 0.7, below
+    the 0.8 threshold, and filed the question with "proceed with option 1" proposed. The session
+    stopped.
+  - With a goal and a decision that settle the choice, the judge answered. The Stop hook blocked
+    the stop with that answer, the session went on and did the work, and the answer and its
+    reason were recorded as an `orange` decision. The session's next stop asked for something only
+    the user knows, and the judge escalated it.
+  - A judge run took about 7 seconds and an estimated $0.002.
+  - **Found:** the judge's answer went past the question. The session had been told not to use
+    tools; the answer said that limit no longer applied and to make the edit. `roles/judge.md`
+    now says to answer only what was asked and to escalate rather than lift a limit the user set.
+    That wording has not been re-checked against the model.
 
 ## Builder's rulings
 
