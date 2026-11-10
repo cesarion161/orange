@@ -221,6 +221,15 @@ public class RunRepository {
                 .and(DSL.condition("({0} ->> 'passed')::boolean IS TRUE", RUNS.OUTCOME)));
     }
 
+    /**
+     * Whether a run of {@code kind} was ever started for this {@code slot} of its input, in any
+     * status: a brief time gets one run, whether it finished, failed or was cut off.
+     */
+    public boolean existsForSlot(RunKind kind, String slot) {
+        return dsl.fetchExists(RUNS, RUNS.KIND.eq(kind.dbValue())
+                .and(DSL.condition("{0} ->> 'slot' = {1}", RUNS.INPUT, DSL.val(slot))));
+    }
+
     public Optional<Run> findActiveByTask(UUID taskId) {
         return dsl.selectFrom(RUNS).where(RUNS.TASK_ID.eq(taskId).and(ACTIVE))
                 .fetchOptional().map(RunRepository::toDomain);

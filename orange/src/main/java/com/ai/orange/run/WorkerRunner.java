@@ -68,7 +68,7 @@ public class WorkerRunner implements RunExecutor {
             RunKind.DIFF_REVIEW, RunKind.JUDGE);
     /** Kinds whose agent must report through the worker MCP endpoint; a silent clean exit is a failure. */
     private static final Set<RunKind> NEEDS_OUTCOME = EnumSet.of(RunKind.IMPLEMENT, RunKind.CI_FIX,
-            RunKind.DIFF_REVIEW, RunKind.JUDGE);
+            RunKind.DIFF_REVIEW, RunKind.JUDGE, RunKind.BRIEF);
     /** How long to wait for the process to exit after a kill. */
     private static final Duration KILL_GRACE = Duration.ofSeconds(30);
     /** How long a shutdown waits for killed runs to be recorded. */
@@ -169,12 +169,21 @@ public class WorkerRunner implements RunExecutor {
         }
     }
 
-    /**
-     * Runs an agent outside any task (the planner): inserts a running row with no task and executes
-     * it in {@code cwd}. Not subject to slots; the caller waits for the result.
-     */
+    /** As {@link #runDirect(RunKind, String, Path, String, Duration, JSONB)}, with an empty input. */
     public RunResult runDirect(RunKind kind, String role, Path cwd, String prompt, Duration timeout) {
-        Run run = runs.insertRunning(kind, role, null, props.workerId(), props.leaseTtl(), JSONB.valueOf("{}"));
+        return runDirect(kind, role, cwd, prompt, timeout, JSONB.valueOf("{}"));
+    }
+
+    /**
+     * Runs an agent outside any task (the planner, the brief): inserts a running row with no task
+     * and executes it in {@code cwd}. Not subject to slots or to the scheduler's pause; the caller
+     * waits for the result and holds it.
+     *
+     * @param input stored as the run's input: what its tools may check a call against, and what
+     *              tells a later look which runs were already started ({@code slot})
+     */
+    public RunResult runDirect(RunKind kind, String role, Path cwd, String prompt, Duration timeout, JSONB input) {
+        Run run = runs.insertRunning(kind, role, null, props.workerId(), props.leaseTtl(), input);
         inFlight.add(run.id());
         try {
             if (stopping) return conclude(run, RunResult.failed(run.id(), "coordinator_restart"), null);

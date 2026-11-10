@@ -42,7 +42,7 @@ public record RunsProperties(
             RunKind.PLAN, Duration.ofMinutes(30), RunKind.IMPLEMENT, Duration.ofMinutes(60),
             RunKind.CI_FIX, Duration.ofMinutes(40), RunKind.VERIFY, Duration.ofMinutes(30),
             RunKind.DIFF_REVIEW, Duration.ofMinutes(20), RunKind.INTEGRATE, Duration.ofMinutes(10),
-            RunKind.JUDGE, Duration.ofMinutes(5), RunKind.BRIEF, Duration.ofMinutes(10));
+            RunKind.JUDGE, Duration.ofMinutes(5), RunKind.BRIEF, Duration.ofMinutes(5));
 
     public RunsProperties {
         if (workerId == null || workerId.isBlank()) workerId = generatedWorkerId();

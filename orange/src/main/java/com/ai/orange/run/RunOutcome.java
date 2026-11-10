@@ -201,6 +201,22 @@ public sealed interface RunOutcome {
         }
     }
 
+    /**
+     * What a brief run wrote ({@code submit_brief}): one line per project, what to focus on and
+     * anything urgent, already validated ({@code BriefContent}). The facts of the brief are not
+     * here; orange reads those itself.
+     *
+     * @param content {@code {"projects":[…],"focus":[…],"urgent":[…]}}
+     */
+    record Brief(JsonNode content) implements RunOutcome {
+        @Override
+        public JSONB toJsonb() {
+            ObjectNode node = Json.mapper().createObjectNode().put("type", "brief");
+            node.set("content", content);
+            return JSONB.valueOf(node.toString());
+        }
+    }
+
     static Optional<RunOutcome> parse(JSONB json) {
         if (json == null) return Optional.empty();
         try {
@@ -262,6 +278,9 @@ public sealed interface RunOutcome {
                         node.hasNonNull("question") ? node.get("question").asText() : null,
                         node.hasNonNull("proposed_answer") ? node.get("proposed_answer").asText() : null,
                         node.hasNonNull("urgency") ? node.get("urgency").asText() : null));
+                case "brief" -> node.path("content").isObject()
+                        ? Optional.of(new Brief(node.get("content")))
+                        : Optional.empty();
                 default -> Optional.empty();
             };
         } catch (Exception e) {

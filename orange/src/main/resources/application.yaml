@@ -66,6 +66,8 @@ orange:
       - { role: reviewer,    tier: medium, effort: low }
       # judge runs: one per session stop, so small and quick (project-space §7)
       - { role: judge,       tier: small,  effort: low }
+      # brief runs: twice a day and on demand; the ranking is the product (project-space §3)
+      - { role: brief,       tier: medium, effort: low }
       - { role: ci_fixer,    tier: medium, effort: medium }
       - { role: chore,       tier: small,  effort: low }
       - { role: implementer, difficulty: L, tier: large,  effort: high }
@@ -86,9 +88,9 @@ orange:
     # runs a previous instance left running can be told apart and reaped.
     worker-id: ${ORANGE_WORKER_ID:}
     max-concurrent: 6
-    # Concurrent runs per kind; brief arrives with project-space phase D.
+    # Concurrent runs per kind. brief stays 0: brief runs start directly, like plans, and take no slot.
     slots: { plan: 1, implement: 4, ci_fix: 2, verify: 2, diff_review: 2, integrate: 1, judge: 2, brief: 0 }
-    timeouts: { plan: 30m, implement: 60m, ci_fix: 40m, verify: 30m, diff_review: 20m, integrate: 10m, judge: 5m, brief: 10m }
+    timeouts: { plan: 30m, implement: 60m, ci_fix: 40m, verify: 30m, diff_review: 20m, integrate: 10m, judge: 5m, brief: 5m }
     # A run's lease is renewed every heartbeat; one not renewed within lease-ttl is reaped.
     lease-ttl: 5m
     heartbeat: 60s

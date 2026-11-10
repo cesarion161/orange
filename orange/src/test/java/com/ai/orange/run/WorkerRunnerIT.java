@@ -17,11 +17,13 @@ import com.ai.orange.task.TaskStatus;
 import com.ai.orange.worktree.WorktreeService;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import org.jooq.JSONB;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -339,5 +341,23 @@ class WorkerRunnerIT {
     @SuppressWarnings("unused")
     private static UUID id(Task t) {
         return t.id();
+    }
+
+    /** What a direct run was started for stays on its row: the brief's tool and its one-run-per-time rule read it. */
+    @Test
+    void aDirectRunKeepsItsInput() throws Exception {
+        String slot = "s-" + UUID.randomUUID();
+        Path cwd = Files.createTempDirectory("direct-run-");
+
+        RunResult result = runner.runDirect(RunKind.PLAN, "planner", cwd, "plan it [[fake:plan]]",
+                Duration.ofMinutes(1), JSONB.valueOf("{\"slot\":\"" + slot + "\"}"));
+
+        assertThat(result.status()).as(String.valueOf(result.reason())).isEqualTo(RunStatus.SUCCEEDED);
+        Run row = runs.findById(result.runId()).orElseThrow();
+        assertThat(row.taskId()).isNull();
+        assertThat(row.input().data()).contains(slot);
+        assertThat(runs.existsForSlot(RunKind.PLAN, slot)).isTrue();
+        assertThat(runs.existsForSlot(RunKind.PLAN, slot + "-other")).isFalse();
+        assertThat(runs.existsForSlot(RunKind.BRIEF, slot)).as("another kind's run is not this kind's").isFalse();
     }
 }

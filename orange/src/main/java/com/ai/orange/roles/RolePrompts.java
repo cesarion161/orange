@@ -21,6 +21,7 @@ public class RolePrompts {
             "ci_fixer", "implementer.md",
             "reviewer", "reviewer.md",
             "judge", "judge.md",
+            "brief", "brief.md",
             "planner", "planner.md");
 
     private final Map<String, String> loaded = new ConcurrentHashMap<>();

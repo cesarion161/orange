@@ -1,5 +1,7 @@
 package com.ai.orange.mcp;
 
+import com.ai.orange.brief.BriefContent;
+import com.ai.orange.json.Json;
 import com.ai.orange.project.SpaceService;
 import com.ai.orange.run.ReviewGap;
 import com.ai.orange.run.Run;
@@ -41,6 +43,7 @@ public class WorkerTools {
     public static final String JUDGE_ESCALATE = "judge_escalate";
     public static final String JUDGE_IDLE = "judge_idle";
     public static final String PROPOSE_ITEM = "propose_item";
+    public static final String SUBMIT_BRIEF = "submit_brief";
     /** What orange tells a session on the user's behalf is an answer, not an essay. */
     static final int MAX_ANSWER = 2_000;
     /** The {@link McpTransportContext} key the token filter's run is stored under. */
@@ -51,7 +54,8 @@ public class WorkerTools {
             RunKind.CI_FIX, Set.of(REPORT_RESULT, REQUEST_HUMAN),
             RunKind.DIFF_REVIEW, Set.of(SUBMIT_REVIEW),
             RunKind.PLAN, Set.of(REQUEST_HUMAN),
-            RunKind.JUDGE, Set.of(JUDGE_CONTINUE, JUDGE_VERIFY, JUDGE_ESCALATE, JUDGE_IDLE, PROPOSE_ITEM));
+            RunKind.JUDGE, Set.of(JUDGE_CONTINUE, JUDGE_VERIFY, JUDGE_ESCALATE, JUDGE_IDLE, PROPOSE_ITEM),
+            RunKind.BRIEF, Set.of(SUBMIT_BRIEF));
 
     private static final String JUDGE_CONTINUE_SCHEMA = """
             {"type":"object","properties":{
@@ -99,6 +103,22 @@ public class WorkerTools {
                         "path":{"type":"string"},"line":{"type":"integer"},"body":{"type":"string"}},
                        "required":["body"]}}},
              "required":["verdict","summary"]}""";
+    private static final String SUBMIT_BRIEF_SCHEMA = """
+            {"type":"object","properties":{
+              "projects":{"type":"array","maxItems":12,"description":"One entry per project in your prompt.",
+                "items":{"type":"object","properties":{
+                  "project":{"type":"string","description":"The project's name, exactly as in its '## Project:' line."},
+                  "status_line":{"type":"string","description":"One line, at most 200 characters: what moved and how it stands against its goals."}},
+                 "required":["project","status_line"]}},
+              "focus":{"type":"array","maxItems":3,"description":"What the user should do next, most important first.",
+                "items":{"type":"object","properties":{
+                  "project":{"type":"string"},"item":{"type":"string"},"why":{"type":"string"}},
+                 "required":["project","item","why"]}},
+              "urgent":{"type":"array","maxItems":3,"description":"Only what cannot wait for the next brief and is not already waiting on the user. Usually empty.",
+                "items":{"type":"object","properties":{
+                  "project":{"type":"string"},"title":{"type":"string"},"why":{"type":"string"}},
+                 "required":["project","title","why"]}}},
+             "required":["projects","focus"]}""";
 
     private final RunRepository runs;
     private final RunSecrets secrets;
@@ -135,7 +155,9 @@ public class WorkerTools {
                         (ctx, req) -> record(ctx, new RunOutcome.Verdict("idle", null, string(req, "reason"), null, null,
                                 null, null))),
                 spec(PROPOSE_ITEM, "Propose a decision or a note for the project's space. It stays a proposal until "
-                        + "the user accepts it.", PROPOSE_ITEM_SCHEMA, this::proposeItem));
+                        + "the user accepts it.", PROPOSE_ITEM_SCHEMA, this::proposeItem),
+                spec(SUBMIT_BRIEF, "Submit the focus brief: one status line per project, what to focus on next, "
+                        + "and anything urgent. Call it exactly once.", SUBMIT_BRIEF_SCHEMA, this::submitBrief));
     }
 
     /** True when {@code toolName} belongs to the kind of the run behind this request. */
@@ -244,6 +266,22 @@ public class WorkerTools {
             return error(e.getMessage());
         }
         return CallToolResult.builder().addTextContent("proposed").isError(false).build();
+    }
+
+    /**
+     * The brief's lines, checked against the projects the run was started for ({@code runs.input}).
+     * A refused call records nothing and says what to correct, so the model can call again.
+     */
+    private CallToolResult submitBrief(McpTransportContext ctx, CallToolRequest req) {
+        Run run = runOf(ctx);
+        BriefContent content;
+        try {
+            content = BriefContent.parse(Json.mapper().valueToTree(req.arguments() == null ? Map.of() : req.arguments()),
+                    BriefContent.projectsOf(run.input()));
+        } catch (IllegalArgumentException e) {
+            return error(e.getMessage());
+        }
+        return record(ctx, new RunOutcome.Brief(content.toJson()));
     }
 
     private CallToolResult record(McpTransportContext ctx, RunOutcome outcome) {

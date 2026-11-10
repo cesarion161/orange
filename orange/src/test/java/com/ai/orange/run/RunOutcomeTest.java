@@ -2,6 +2,7 @@ package com.ai.orange.run;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.ai.orange.json.Json;
 import java.util.List;
 import org.jooq.JSONB;
 import org.junit.jupiter.api.Test;
@@ -45,6 +46,23 @@ class RunOutcomeTest {
             assertThat(o.toJsonb().data()).contains("\"type\":\"integration\"");
             assertThat(RunOutcome.parse(o.toJsonb())).hasValue(o);
         }
+    }
+
+    @Test
+    void briefRoundTrips() throws Exception {
+        RunOutcome.Brief brief = new RunOutcome.Brief(Json.mapper().readTree("""
+                {"projects":[{"project":"alpha","status_line":"Auth landed."}],
+                 "focus":[{"project":"alpha","item":"Answer the session","why":"It waits."}],"urgent":[]}"""));
+        JSONB json = brief.toJsonb();
+        assertThat(json.data()).contains("\"type\":\"brief\"").contains("\"status_line\":\"Auth landed.\"");
+        assertThat(RunOutcome.parse(json)).hasValue(brief);
+    }
+
+    @Test
+    void aBriefWithoutContentParsesToEmpty() {
+        assertThat(RunOutcome.parse(JSONB.valueOf("{\"type\":\"brief\"}"))).isEmpty();
+        assertThat(RunOutcome.parse(JSONB.valueOf("{\"type\":\"brief\",\"content\":null}"))).isEmpty();
+        assertThat(RunOutcome.parse(JSONB.valueOf("{\"type\":\"brief\",\"content\":\"all fine\"}"))).isEmpty();
     }
 
     @Test

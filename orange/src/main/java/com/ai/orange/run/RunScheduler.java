@@ -14,8 +14,8 @@ import org.springframework.stereotype.Component;
 
 /**
  * Starts queued runs: per kind up to its slots, and in all up to {@code max-concurrent}. Each
- * claimed run executes on its own virtual thread. The counts are this instance's own; plan runs
- * started directly ({@link WorkerRunner#runDirect}) take no slot.
+ * claimed run executes on its own virtual thread. The counts are this instance's own; plan and
+ * brief runs, started directly ({@link WorkerRunner#runDirect}), take no slot.
  */
 @Component
 public class RunScheduler {

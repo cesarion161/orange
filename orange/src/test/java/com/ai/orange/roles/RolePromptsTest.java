@@ -24,6 +24,13 @@ class RolePromptsTest {
     }
 
     @Test
+    void theBriefPromptNamesItsToolAndTheFence() {
+        // "[[fake:" would pick a scenario in the fake claude, which reads prompts for its markers.
+        assertThat(prompts.systemPrompt("brief")).contains("submit_brief").contains("fence").contains("## Project:")
+                .doesNotContain("[[fake:").doesNotContain("report_result");
+    }
+
+    @Test
     void unknownRoleThrows() {
         assertThatThrownBy(() -> prompts.systemPrompt("tester")).isInstanceOf(IllegalArgumentException.class);
     }

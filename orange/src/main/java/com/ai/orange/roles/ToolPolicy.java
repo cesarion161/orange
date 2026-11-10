@@ -6,7 +6,8 @@ import java.util.List;
 
 /**
  * The tools an agent run gets, by run kind (v2 spec §8; project-space decision 13 for
- * {@code diff_review}).
+ * {@code diff_review}). Judge and brief runs get no built-in tool at all, only their worker MCP
+ * tools.
  *
  * @param tools          Claude Code's built-in tool set ({@code --tools})
  * @param allowedTools   tools that run without a permission prompt, including the run's worker MCP tools
@@ -37,7 +38,10 @@ public record ToolPolicy(List<String> tools, List<String> allowedTools, String p
             case JUDGE -> new ToolPolicy(List.of(), List.of("mcp__orange__judge_continue",
                     "mcp__orange__judge_verify", "mcp__orange__judge_escalate", "mcp__orange__judge_idle",
                     "mcp__orange__propose_item"), "dontAsk", true);
-            case VERIFY, INTEGRATE, BRIEF ->
+            // No built-in tools either: the brief is written from its prompt, which carries text that
+            // sessions of every project wrote, and it has no single checkout to read.
+            case BRIEF -> new ToolPolicy(List.of(), List.of("mcp__orange__submit_brief"), "dontAsk", true);
+            case VERIFY, INTEGRATE ->
                     throw new IllegalArgumentException("run kind " + kind.dbValue() + " is not run by a coding agent");
         };
     }
