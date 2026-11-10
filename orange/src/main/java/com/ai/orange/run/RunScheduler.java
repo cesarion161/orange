@@ -44,7 +44,10 @@ public class RunScheduler {
             if (slots <= 0) continue;
             Optional<RunExecutor> executor = executors.forKind(kind);
             if (executor.isEmpty()) continue;
-            while (counter(kind).get() < slots && total.get() < props.maxConcurrent()) {
+            // A judge run is seconds long and a session's stop hook waits on it: its own slots bound it,
+            // and task work filling the global cap must not hold a session up.
+            while (counter(kind).get() < slots
+                    && (kind == RunKind.JUDGE || total.get() < props.maxConcurrent())) {
                 Optional<Run> run = runs.claimNext(kind, props.workerId(), props.leaseTtl());
                 if (run.isEmpty()) break;
                 start(executor.get(), run.get());

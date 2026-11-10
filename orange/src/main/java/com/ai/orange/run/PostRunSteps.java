@@ -1,5 +1,7 @@
 package com.ai.orange.run;
 
+import com.ai.orange.session.SessionJudgement;
+import org.springframework.context.annotation.Lazy;
 import com.ai.orange.evidence.EvidenceRepository;
 import com.ai.orange.json.Json;
 import com.ai.orange.task.Task;
@@ -46,9 +48,12 @@ public class PostRunSteps {
     private final WorktreeService worktrees;
     private final EvidenceRepository evidence;
     private final RunRepository runs;
+    private final SessionJudgement judgement;
 
     public PostRunSteps(TaskRepository tasks, TaskEventRepository taskEvents, SchedulerPause pause,
-                        WorktreeService worktrees, EvidenceRepository evidence, RunRepository runs) {
+                        WorktreeService worktrees, EvidenceRepository evidence, RunRepository runs,
+                        @Lazy SessionJudgement judgement) {
+        this.judgement = judgement;
         this.tasks = tasks;
         this.taskEvents = taskEvents;
         this.pause = pause;
@@ -60,6 +65,7 @@ public class PostRunSteps {
     /** Applies the run's effects and returns its final result. */
     public RunResult after(Run run, RunResult result) {
         RunResult r = result;
+        if (run.kind() == RunKind.JUDGE) judgement.after(run, r);
         if (run.taskId() != null) {
             r = switch (run.kind()) {
                 case IMPLEMENT, CI_FIX -> afterCoding(run, r);
@@ -76,7 +82,10 @@ public class PostRunSteps {
             }
         }
         String text = String.join("\n", nullToEmpty(r.resultText()), nullToEmpty(r.lastAssistantText()));
-        FailureReasons.pauseFor(r.reason(), text, ZonedDateTime.now()).ifPresent(p -> {
+        // A judge that could not be prepared says something about one session, not about the workspace
+        // task runs use: it falls back to the rules and pauses nothing.
+        boolean judgeOnly = run.kind() == RunKind.JUDGE && "workspace_failed".equals(r.reason());
+        if (!judgeOnly) FailureReasons.pauseFor(r.reason(), text, ZonedDateTime.now()).ifPresent(p -> {
             log.warn("run {} failed with {}: pausing the scheduler {}", run.id(), p.reason(),
                     p.until() == null ? "until resumed" : "until " + p.until());
             pause.pause(p.reason(), p.until());

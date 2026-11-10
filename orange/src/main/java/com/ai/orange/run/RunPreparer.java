@@ -1,6 +1,7 @@
 package com.ai.orange.run;
 
 import com.ai.orange.json.Json;
+import com.ai.orange.session.JudgePrompt;
 import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskRepository;
 import com.ai.orange.worktree.Git;
@@ -10,6 +11,7 @@ import com.fasterxml.jackson.databind.node.MissingNode;
 import java.nio.file.Path;
 import java.util.List;
 import org.jooq.JSONB;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
 /**
@@ -29,9 +31,11 @@ public class RunPreparer {
     private final RunRepository runs;
     private final RunEventRepository runEvents;
     private final WorktreeService worktrees;
+    private final JudgePrompt judgePrompt;
 
     public RunPreparer(TaskRepository tasks, RunRepository runs, RunEventRepository runEvents,
-                       WorktreeService worktrees) {
+                       WorktreeService worktrees, @Lazy JudgePrompt judgePrompt) {
+        this.judgePrompt = judgePrompt;
         this.tasks = tasks;
         this.runs = runs;
         this.runEvents = runEvents;
@@ -42,6 +46,7 @@ public class RunPreparer {
         return switch (run.kind()) {
             case IMPLEMENT, CI_FIX -> prepareCoding(run);
             case DIFF_REVIEW -> prepareReview(run);
+            case JUDGE -> judgePrompt.prepare(run);
             default -> throw new IllegalArgumentException("no preparation for " + run.kind().dbValue() + " runs");
         };
     }

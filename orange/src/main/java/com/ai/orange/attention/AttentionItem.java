@@ -25,6 +25,8 @@ public record AttentionItem(UUID id, UUID projectId, UUID sessionId, UUID taskId
     public static final String SESSION_WAITING = "session_waiting";
     /** A session stopped with nothing to ask and nobody came back to it. */
     public static final String SESSION_IDLE = "session_idle";
+    /** orange answered a session several times in a row and it stopped again: the loop guard. */
+    public static final String SESSION_LOOP = "session_loop";
     /** orange saw a repo it does not know and proposes a project for it. */
     public static final String PROJECT_PROPOSED = "project_proposed";
 

@@ -8,7 +8,7 @@
       { "hooks": [ { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/orange-report.py\" UserPromptSubmit", "timeout": 10 } ] }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/orange-report.py\" Stop", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/orange-report.py\" Stop", "timeout": 660 } ] }
     ],
     "Notification": [
       { "hooks": [ { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/orange-report.py\" Notification", "timeout": 10 } ] }

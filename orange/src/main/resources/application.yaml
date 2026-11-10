@@ -64,6 +64,8 @@ orange:
       - { role: planner,     tier: large,  effort: xhigh }
       # diff_review runs (project-space §3: verify-review routes small or medium at low effort)
       - { role: reviewer,    tier: medium, effort: low }
+      # judge runs: one per session stop, so small and quick (project-space §7)
+      - { role: judge,       tier: small,  effort: low }
       - { role: ci_fixer,    tier: medium, effort: medium }
       - { role: chore,       tier: small,  effort: low }
       - { role: implementer, difficulty: L, tier: large,  effort: high }
@@ -84,8 +86,8 @@ orange:
     # runs a previous instance left running can be told apart and reaped.
     worker-id: ${ORANGE_WORKER_ID:}
     max-concurrent: 6
-    # Concurrent runs per kind; judge and brief arrive with project-space phases B and D.
-    slots: { plan: 1, implement: 4, ci_fix: 2, verify: 2, diff_review: 2, integrate: 1, judge: 0, brief: 0 }
+    # Concurrent runs per kind; brief arrives with project-space phase D.
+    slots: { plan: 1, implement: 4, ci_fix: 2, verify: 2, diff_review: 2, integrate: 1, judge: 2, brief: 0 }
     timeouts: { plan: 30m, implement: 60m, ci_fix: 40m, verify: 30m, diff_review: 20m, integrate: 10m, judge: 5m, brief: 10m }
     # A run's lease is renewed every heartbeat; one not renewed within lease-ttl is reaped.
     lease-ttl: 5m
@@ -114,6 +116,18 @@ orange:
     idle-stop-urgency: normal
     # A waiting session not heard from for this long is left alone (it probably died without saying so).
     stale-after: 12h
+  judge:
+    # The session judge (project-space spec, Phase B): at a stop, a short run decides whether orange
+    # answers the session itself, the user must decide, or nothing is asked. Off = Phase A's rules.
+    enabled: ${ORANGE_JUDGE_ENABLED:true}
+    # How long a stop hook waits for the verdict before the session just stops.
+    hook-wait: 10m
+    # orange answers a session at most this many times in a row without the user; then it escalates.
+    max-auto-continues: 5
+    # A verdict no stop hook picked up within this long is expired; its answer goes to the inbox.
+    pickup-grace: 2m
+    # A judge run that has not started within this long is given up; the stop follows the rules.
+    start-grace: 60s
   notify:
     enabled: ${ORANGE_NOTIFY_ENABLED:true}
     sweep: 30s

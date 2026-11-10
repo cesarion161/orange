@@ -3,6 +3,7 @@ package com.ai.orange.api;
 import com.ai.orange.events.EventRepository;
 import com.ai.orange.session.NeutralEvent;
 import com.ai.orange.session.SessionEventHandler;
+import com.ai.orange.session.SessionJudgement;
 import com.ai.orange.session.SessionRepository;
 import com.ai.orange.json.Json;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -30,9 +31,15 @@ public class SessionController {
     static final int MAX_BODY_CHARS = 64_000;
 
     private final EventRepository inbox;
-    private final SessionRepository sessions;
+    /** One long-poll holds a request at most this long; the hook asks again while the state is pending. */
+    static final int MAX_VERDICT_WAIT_SECONDS = 25;
+    static final long VERDICT_POLL_MILLIS = 400;
 
-    public SessionController(EventRepository inbox, SessionRepository sessions) {
+    private final SessionRepository sessions;
+    private final SessionJudgement judgement;
+
+    public SessionController(EventRepository inbox, SessionRepository sessions, SessionJudgement judgement) {
+        this.judgement = judgement;
         this.inbox = inbox;
         this.sessions = sessions;
     }
@@ -53,6 +60,41 @@ public class SessionController {
         boolean stored = inbox.insert(SessionEventHandler.SOURCE, event.type(), null,
                 SessionEventHandler.SOURCE + ":" + event.eventId(), JSONB.valueOf(json));
         return ResponseEntity.accepted().body(Map.of("stored", stored));
+    }
+
+    /**
+     * Where a stop hook waits for orange's verdict on the stop it just reported as {@code event_id}
+     * (project-space spec decision 2). Holds the request up to {@code wait} seconds, then answers
+     * {@code {"state": "pending"}} (ask again), {@code "none"} (nothing is coming: let the session
+     * stop) or {@code "verdict"} with its {@code kind} and, for {@code continue}, the {@code message}
+     * to block the stop with, which the hook must acknowledge first ({@code POST /sessions/verdict/ack}).
+     */
+    @GetMapping("/verdict")
+    public Map<String, Object> verdict(@RequestParam String harness, @RequestParam("session_id") String sessionId,
+                                       @RequestParam("event_id") String eventId,
+                                       @RequestParam(defaultValue = "20") int wait) throws InterruptedException {
+        long deadline = System.nanoTime() + java.time.Duration.ofSeconds(Math.clamp(wait, 0, MAX_VERDICT_WAIT_SECONDS)).toNanos();
+        while (true) {
+            SessionJudgement.Poll poll = judgement.poll(harness, sessionId, eventId);
+            if (poll.state() != SessionJudgement.Poll.State.PENDING || System.nanoTime() >= deadline) {
+                Map<String, Object> out = new java.util.LinkedHashMap<>();
+                out.put("state", poll.state().name().toLowerCase(java.util.Locale.ROOT));
+                if (poll.kind() != null) out.put("kind", poll.kind());
+                if (poll.message() != null) out.put("message", poll.message());
+                return out;
+            }
+            Thread.sleep(VERDICT_POLL_MILLIS);
+        }
+    }
+
+    /**
+     * The stop hook's last step before it hands a {@code continue} to its session. {@code {"ok": true}}
+     * makes the verdict delivered; on false the hook says nothing and the session stops.
+     */
+    @PostMapping("/verdict/ack")
+    public Map<String, Object> acknowledge(@RequestParam String harness, @RequestParam("session_id") String sessionId,
+                                           @RequestParam("event_id") String eventId) {
+        return Map.of("ok", judgement.acknowledge(harness, sessionId, eventId));
     }
 
     /** Sessions, most recently heard from first. Ended ones only with {@code all=true}. */

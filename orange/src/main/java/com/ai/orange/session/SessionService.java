@@ -4,9 +4,15 @@ import com.ai.orange.attention.AttentionItem;
 import com.ai.orange.attention.AttentionProperties;
 import com.ai.orange.attention.AttentionRepository;
 import com.ai.orange.attention.AttentionService;
+import com.ai.orange.json.Json;
+import com.ai.orange.project.Conventions;
 import com.ai.orange.project.Project;
 import com.ai.orange.project.ProjectRepository;
 import com.ai.orange.project.ProjectService;
+import com.ai.orange.run.RunKind;
+import com.ai.orange.run.RunRepository;
+import com.ai.orange.run.SchedulerPause;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.OffsetDateTime;
@@ -33,6 +39,8 @@ public class SessionService {
     static final int MAX_MESSAGE = 8_000;
     /** How much of the last message an attention item quotes (its end). */
     static final int BODY_TAIL = 1_500;
+    /** Judge runs go ahead of task work: a session and its user are waiting. */
+    static final int JUDGE_PRIORITY = 10;
 
     private final SessionRepository sessions;
     private final ProjectService projectService;
@@ -40,9 +48,21 @@ public class SessionService {
     private final AttentionService attention;
     private final AttentionRepository attentionItems;
     private final AttentionProperties props;
+    private final JudgeProperties judge;
+    private final Conventions conventions;
+    private final RunRepository runs;
+    private final VerdictRepository verdicts;
+    private final SchedulerPause pause;
 
     public SessionService(SessionRepository sessions, ProjectService projectService, ProjectRepository projects,
-                          AttentionService attention, AttentionRepository attentionItems, AttentionProperties props) {
+                          AttentionService attention, AttentionRepository attentionItems, AttentionProperties props,
+                          JudgeProperties judge, Conventions conventions, RunRepository runs,
+                          VerdictRepository verdicts, SchedulerPause pause) {
+        this.judge = judge;
+        this.conventions = conventions;
+        this.runs = runs;
+        this.verdicts = verdicts;
+        this.pause = pause;
         this.sessions = sessions;
         this.projectService = projectService;
         this.projects = projects;
@@ -66,7 +86,7 @@ public class SessionService {
         String lastMessage = e.payloadText("last_message");
         boolean asks = NeutralEvent.STOPPED.equals(e.type()) && QuestionDetector.asks(lastMessage);
         SessionReactor.Decision d = SessionReactor.onEvent(s.status(), s.waitingReason(), e.type(),
-                e.payloadText("reason"), asks, muted);
+                e.payloadText("reason"), asks, muted, judging(e, s, project, muted));
 
         String waitingReason = s.waitingReason();
         OffsetDateTime waitingSince = s.waitingSince();
@@ -78,6 +98,11 @@ public class SessionService {
             }
             case QUESTION, PERMISSION, FINISHED -> {
                 waitingReason = d.waiting().name().toLowerCase(java.util.Locale.ROOT);
+                waitingSince = now;
+            }
+            // Not waiting for the user yet: the verdict decides. The time bounds the hook's wait.
+            case JUDGING -> {
+                waitingReason = null;
                 waitingSince = now;
             }
         }
@@ -98,10 +123,22 @@ public class SessionService {
                 now,
                 d.userPrompt() ? now : s.lastUserPromptAt(),
                 NeutralEvent.SESSION_ENDED.equals(e.type()) ? e.payloadText("reason") : s.closedReason(),
-                s.createdAt());
+                s.createdAt(),
+                // The stop a verdict may be delivered to; anything else the session does ends that stop.
+                NeutralEvent.STOPPED.equals(e.type()) ? e.eventId() : d.status() == null ? s.stopEventId() : null);
         sessions.save(next);
         sessions.addEvent(s.id(), e.type(), JSONB.valueOf(e.payload().toString()), e.at());
 
+        if (d.userPrompt()) {
+            // The user wins (spec decision 2): whatever orange was about to say to this session is void.
+            verdicts.cancelPending(s.id());
+            runs.cancelQueuedForSession(s.id());
+        }
+        if (Session.JUDGING.equals(d.status())) {
+            ObjectNode input = Json.mapper().createObjectNode().put("stop_event_id", e.eventId())
+                    .put("stop_hook_active", e.payload().path("stop_hook_active").asBoolean(false));
+            runs.queueForSession(s.id(), RunKind.JUDGE, "judge", JUDGE_PRIORITY, JSONB.valueOf(input.toString()));
+        }
         if (d.resolveOpen()) attentionItems.resolveForSession(s.id(), d.resolvedBy(), null);
         if (d.raise() != null) raise(next, project, d.raise(), e.payloadText("message"));
         return next;
@@ -142,19 +179,73 @@ public class SessionService {
         return changed;
     }
 
+    /**
+     * Whether this stop goes to the judge. Not when the judge is off or cannot run now (a paused
+     * scheduler would leave the stop hook waiting for nothing), not for a muted project, not when
+     * the project's {@code auto-answer} convention is {@code none}; and after too many answers in
+     * a row the loop guard asks the user instead.
+     */
+    private SessionReactor.Judging judging(NeutralEvent e, Session s, Project project, boolean muted) {
+        if (!NeutralEvent.STOPPED.equals(e.type()) || muted || !judge.enabled() || pause.current().isPresent()) {
+            return SessionReactor.Judging.OFF;
+        }
+        String autoAnswer = conventions.resolve("auto-answer", project == null ? null : project.id(), s.id())
+                .map(v -> v.asText("")).orElse("routine");
+        if ("none".equals(autoAnswer)) return SessionReactor.Judging.OFF;
+        return s.autoContinues() >= judge.maxAutoContinues() ? SessionReactor.Judging.LOOP_GUARD
+                : SessionReactor.Judging.JUDGE;
+    }
+
+    /**
+     * A stop the judge could not decide (its run failed, or never ran) falls back to the rules of
+     * Phase A, so the user still hears about a session that asks something.
+     */
+    void fallBackToRules(Session s) {
+        boolean asks = QuestionDetector.asks(s.lastMessage());
+        Session next = s.waiting(Session.STOPPED, asks ? Session.WAIT_QUESTION : Session.WAIT_FINISHED,
+                OffsetDateTime.now().truncatedTo(ChronoUnit.MILLIS));
+        sessions.save(next);
+        if (asks) raise(next, projectOf(next), AttentionItem.SESSION_QUESTION, null, null, AttentionItem.NORMAL);
+    }
+
+    Project projectOf(Session s) {
+        return s.projectId() == null ? null : projects.findById(s.projectId()).orElse(null);
+    }
+
     public Optional<Session> find(String harness, String externalId) {
         return sessions.find(harness, externalId);
     }
 
     private void raise(Session s, Project project, String kind, String harnessMessage) {
+        raise(s, project, kind, harnessMessage, null, null);
+    }
+
+    /**
+     * Files an item about a session. {@code text} is the question (for a question the judge wrote)
+     * and {@code proposedAnswer} the answer orange would give; {@code urgency} null = by kind.
+     */
+    void raise(Session s, Project project, String kind, String text, String proposedAnswer, String urgency) {
+        String harnessMessage = text;
         String where = label(s, project);
         String title;
         StringBuilder body = new StringBuilder();
         if (s.intent() != null) body.append("Doing: ").append(cut(s.intent(), 300)).append('\n');
         switch (kind) {
             case AttentionItem.SESSION_QUESTION -> {
-                title = where + " asks: " + cut(QuestionDetector.questionLine(s.lastMessage()), 120);
-                body.append("Its last message:\n").append(tail(s.lastMessage(), BODY_TAIL)).append('\n');
+                title = where + " asks: " + cut(text != null ? text : QuestionDetector.questionLine(s.lastMessage()), 120);
+                if (text != null) body.append("Needs: ").append(text).append('\n');
+                if (s.lastMessage() != null) {
+                    body.append("Its last message:\n").append(tail(s.lastMessage(), BODY_TAIL)).append('\n');
+                }
+            }
+            case AttentionItem.SESSION_LOOP -> {
+                title = where + " stopped again after " + s.autoContinues() + " answers from orange";
+                body.append("orange answered this session ").append(s.autoContinues())
+                        .append(" times in a row and it stopped again. It will not be answered again until you "
+                                + "have spoken to it.\n");
+                if (s.lastMessage() != null) {
+                    body.append("Its last message:\n").append(tail(s.lastMessage(), BODY_TAIL)).append('\n');
+                }
             }
             case AttentionItem.SESSION_WAITING -> {
                 title = where + " is waiting for you" + (harnessMessage == null ? "" : ": " + cut(harnessMessage, 120));
@@ -170,8 +261,11 @@ public class SessionService {
         body.append("Where: ").append(s.cwd() == null ? "unknown" : s.cwd());
         if (s.branch() != null) body.append(" (").append(s.branch()).append(')');
         body.append(" · ").append(s.harness()).append(" session ").append(s.externalId());
-        String urgency = AttentionItem.SESSION_IDLE.equals(kind) ? props.idleStopUrgency() : AttentionItem.NORMAL;
-        attention.raise(kind, key(s, kind), urgency, s.projectId(), s.id(), title, body.toString());
+        String level = urgency != null ? urgency
+                : AttentionItem.SESSION_IDLE.equals(kind) ? props.idleStopUrgency()
+                : AttentionItem.SESSION_LOOP.equals(kind) ? AttentionItem.URGENT
+                : AttentionItem.NORMAL;
+        attention.raise(kind, key(s, kind), level, s.projectId(), s.id(), title, body.toString(), proposedAnswer);
     }
 
     /** One item per kind per wait: the key names the wait by when it began. */

@@ -52,6 +52,36 @@ public class RunRepository {
                 .map(RunRepository::toDomain);
     }
 
+    /** Queues a run that belongs to one of the user's sessions rather than to a task (the judge). */
+    public Run queueForSession(UUID sessionId, RunKind kind, String role, int priority, JSONB input) {
+        int attempt = 1 + dsl.fetchCount(RUNS, RUNS.ATTENDED_SESSION_ID.eq(sessionId).and(RUNS.KIND.eq(kind.dbValue())));
+        return toDomain(dsl.insertInto(RUNS)
+                .set(RUNS.ATTENDED_SESSION_ID, sessionId)
+                .set(RUNS.KIND, kind.dbValue())
+                .set(RUNS.ROLE, role)
+                .set(RUNS.PRIORITY, priority)
+                .set(RUNS.ATTEMPT, attempt)
+                .set(RUNS.INPUT, input == null ? JSONB.valueOf("{}") : input)
+                .returning()
+                .fetchOne());
+    }
+
+    /** Cancels a session's runs that have not started; returns how many. */
+    public int cancelQueuedForSession(UUID sessionId) {
+        return dsl.update(RUNS)
+                .set(RUNS.STATUS, RunStatus.CANCELLED.dbValue())
+                .set(RUNS.ERROR, "cancelled")
+                .set(RUNS.FINISHED_AT, OffsetDateTime.now())
+                .where(RUNS.ATTENDED_SESSION_ID.eq(sessionId).and(RUNS.STATUS.eq(RunStatus.QUEUED.dbValue())))
+                .execute();
+    }
+
+    /** A session's runs, oldest first. */
+    public List<Run> findBySession(UUID sessionId) {
+        return dsl.selectFrom(RUNS).where(RUNS.ATTENDED_SESSION_ID.eq(sessionId))
+                .orderBy(RUNS.QUEUED_AT.asc(), RUNS.ID.asc()).fetch().map(RunRepository::toDomain);
+    }
+
     /** Inserts a run that is already running, for runs started directly rather than queued. */
     public Run insertRunning(RunKind kind, String role, UUID taskIdOrNull, String workerId, Duration leaseTtl,
                              JSONB input) {
@@ -284,6 +314,7 @@ public class RunRepository {
                 r.getQueuedAt(),
                 r.getStartedAt(),
                 r.getFinishedAt(),
-                r.getSpendSyncedAt());
+                r.getSpendSyncedAt(),
+                r.getAttendedSessionId());
     }
 }

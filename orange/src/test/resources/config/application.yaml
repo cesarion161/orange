@@ -7,6 +7,9 @@ orange:
   events:
     # Tests call EventProcessor.drain() themselves.
     processing-enabled: false
+  judge:
+    # Stops follow Phase A's rules unless a test turns the judge on.
+    enabled: false
   attention:
     # Tests call SessionService.sweep() themselves.
     sweep-enabled: false

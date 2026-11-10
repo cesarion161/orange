@@ -33,7 +33,9 @@ For small one-off tasks (a single file edit, a typo fix), the skill explicitly d
 
 For orange to see every session, install the plugin at user scope (or start sessions with `--plugin-dir`). The hooks run `hooks/orange-report.py` (needs `python3`, nothing else) on SessionStart, UserPromptSubmit, Stop, Notification and SessionEnd, plus PostToolUse while a session was waiting for you.
 
-The reporter never gets in a session's way: it prints nothing, always exits 0 and gives up on orange after 2 seconds. What it sends: the session id, the working directory, the repo's main checkout, branch and remote (without credentials), your prompt (first 4,000 characters) and the session's last message at a stop (last 8,000 characters). Full transcripts stay on your machine.
+The reporter never gets in a session's way: it always exits 0 and gives up on an unreachable orange after 2 seconds.
+
+At a stop, orange's judge decides what happens next. While it decides (usually seconds; at most `ORANGE_HOOK_WAIT`), the Stop hook waits. If orange answers the session itself, the hook blocks the stop with that answer and the session continues; you find the answer and its reason as a decision in the project's space (`orange_project`). Otherwise the session stops as usual, and what needs you is in `orange_attention`. Typing a prompt yourself always wins: it voids whatever orange was about to say. Set the project convention `auto-answer` to `none` (`orange_set`) to have orange never answer for you there. What it sends: the session id, the working directory, the repo's main checkout, branch and remote (without credentials), your prompt (first 4,000 characters) and the session's last message at a stop (last 8,000 characters). Full transcripts stay on your machine.
 
 Set these in the shell your sessions start from:
 
@@ -43,6 +45,7 @@ Set these in the shell your sessions start from:
 | `ORANGE_API_TOKEN` | none | bearer token, when the coordinator has one set |
 | `ORANGE_NODE` | the hostname | this machine's name in orange |
 | `ORANGE_REPORT` | `1` | `0` switches the reporter off |
+| `ORANGE_HOOK_WAIT` | `600` | seconds a Stop hook waits for orange's verdict; `0` = never wait |
 
 orange's own agent runs use a private `CLAUDE_CONFIG_DIR`, so the reporter never fires inside them.
 

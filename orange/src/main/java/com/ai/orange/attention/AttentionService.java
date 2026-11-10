@@ -31,8 +31,14 @@ public class AttentionService {
     /** Files an item, or returns the one already filed under {@code dedupeKey}. */
     public AttentionItem raise(String kind, String dedupeKey, String urgency, UUID projectId, UUID sessionId,
                                String title, String body) {
+        return raise(kind, dedupeKey, urgency, projectId, sessionId, title, body, null);
+    }
+
+    /** As above, with the answer orange would give ({@code proposedAnswer}) for the user to take or change. */
+    public AttentionItem raise(String kind, String dedupeKey, String urgency, UUID projectId, UUID sessionId,
+                               String title, String body, String proposedAnswer) {
         Optional<AttentionItem> created = items.insert(kind, dedupeKey, urgency, projectId, sessionId, null, title,
-                body, null);
+                body, proposedAnswer);
         if (created.isPresent()) {
             log.info("attention: {} {} item {} — {}", urgency, kind, created.get().id(), title);
             return created.get();

@@ -71,6 +71,7 @@ public class SessionRepository {
                 .set(SESSIONS.LAST_EVENT_AT, s.lastEventAt())
                 .set(SESSIONS.LAST_USER_PROMPT_AT, s.lastUserPromptAt())
                 .set(SESSIONS.CLOSED_REASON, s.closedReason())
+                .set(SESSIONS.STOP_EVENT_ID, s.stopEventId())
                 .where(SESSIONS.ID.eq(s.id()))
                 .execute();
     }
@@ -82,6 +83,27 @@ public class SessionRepository {
                 .set(SESSION_EVENTS.PAYLOAD, payload)
                 .set(SESSION_EVENTS.OCCURRED_AT, occurredAt)
                 .execute();
+    }
+
+    /** One applied event, as the judge's prompt shows it. */
+    public record Turn(String type, String payload) {}
+
+    /** The session's latest prompts and stops, oldest first. */
+    public List<Turn> recentTurns(UUID sessionId, int limit) {
+        List<Turn> turns = new java.util.ArrayList<>(dsl.select(SESSION_EVENTS.TYPE, SESSION_EVENTS.PAYLOAD)
+                .from(SESSION_EVENTS)
+                .where(SESSION_EVENTS.SESSION_ID.eq(sessionId)
+                        .and(SESSION_EVENTS.TYPE.in(NeutralEvent.USER_PROMPT, NeutralEvent.STOPPED)))
+                .orderBy(SESSION_EVENTS.ID.desc()).limit(limit)
+                .fetch(r -> new Turn(r.value1(), r.value2().data())));
+        java.util.Collections.reverse(turns);
+        return turns;
+    }
+
+    /** Sessions orange is deciding for right now. */
+    public List<Session> findJudging() {
+        return dsl.selectFrom(SESSIONS).where(SESSIONS.STATUS.eq(Session.JUDGING)).fetch()
+                .map(SessionRepository::toDomain);
     }
 
     public int countEvents(UUID sessionId) {
@@ -114,6 +136,6 @@ public class SessionRepository {
         return new Session(r.getId(), r.getProjectId(), r.getHarness(), r.getExternalId(), r.getNodeId(), r.getCwd(),
                 r.getRepoRoot(), r.getBranch(), r.getWorktree(), r.getIntent(), r.getStatus(), r.getWaitingReason(),
                 r.getWaitingSince(), r.getLastMessage(), r.getAutoContinues(), r.getLastEventAt(),
-                r.getLastUserPromptAt(), r.getClosedReason(), r.getCreatedAt());
+                r.getLastUserPromptAt(), r.getClosedReason(), r.getCreatedAt(), r.getStopEventId());
     }
 }

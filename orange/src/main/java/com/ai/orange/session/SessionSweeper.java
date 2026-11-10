@@ -14,8 +14,10 @@ public class SessionSweeper {
 
     private final SessionService sessions;
     private final AttentionProperties props;
+    private final SessionJudgement judgement;
 
-    public SessionSweeper(SessionService sessions, AttentionProperties props) {
+    public SessionSweeper(SessionService sessions, AttentionProperties props, SessionJudgement judgement) {
+        this.judgement = judgement;
         this.sessions = sessions;
         this.props = props;
     }
@@ -24,6 +26,7 @@ public class SessionSweeper {
     void sweep() {
         if (!props.sweepEnabled()) return;
         try {
+            judgement.sweep();
             sessions.sweep();
         } catch (RuntimeException e) {
             log.warn("sweeping the waiting sessions failed: {}", e.toString());

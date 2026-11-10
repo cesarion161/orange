@@ -37,7 +37,7 @@ public record RunsProperties(
 
     static final Map<RunKind, Integer> DEFAULT_SLOTS = Map.of(
             RunKind.PLAN, 1, RunKind.IMPLEMENT, 4, RunKind.CI_FIX, 2, RunKind.VERIFY, 2,
-            RunKind.DIFF_REVIEW, 2, RunKind.INTEGRATE, 1, RunKind.JUDGE, 0, RunKind.BRIEF, 0);
+            RunKind.DIFF_REVIEW, 2, RunKind.INTEGRATE, 1, RunKind.JUDGE, 2, RunKind.BRIEF, 0);
     static final Map<RunKind, Duration> DEFAULT_TIMEOUTS = Map.of(
             RunKind.PLAN, Duration.ofMinutes(30), RunKind.IMPLEMENT, Duration.ofMinutes(60),
             RunKind.CI_FIX, Duration.ofMinutes(40), RunKind.VERIFY, Duration.ofMinutes(30),
