@@ -3,7 +3,10 @@ package com.ai.orange.run;
 import com.ai.orange.harness.claude.ClaudeCodeCommand;
 import com.ai.orange.json.Json;
 import com.ai.orange.project.WorkConventions;
+import com.ai.orange.events.EventRepository;
+import com.ai.orange.session.NeutralEvent;
 import com.ai.orange.session.Session;
+import com.ai.orange.session.SessionEventHandler;
 import com.ai.orange.session.SessionRepository;
 import com.ai.orange.worktree.Git;
 import com.ai.orange.worktree.GitException;
@@ -40,16 +43,18 @@ public class Integrator implements RunExecutor {
     private final SessionRepository sessions;
     private final SessionChecks sessionChecks;
     private final WorkConventions conventions;
+    private final EventRepository inbox;
 
     public Integrator(RunRepository runs, WorktreeService worktrees, IntegrationProperties props,
                       RunsProperties runsProps, RunLifecycle lifecycle) {
-        this(runs, worktrees, props, runsProps, lifecycle, null, null, null);
+        this(runs, worktrees, props, runsProps, lifecycle, null, null, null, null);
     }
 
     @Autowired
     public Integrator(RunRepository runs, WorktreeService worktrees, IntegrationProperties props,
                       RunsProperties runsProps, RunLifecycle lifecycle, SessionRepository sessions,
-                      SessionChecks sessionChecks, WorkConventions conventions) {
+                      SessionChecks sessionChecks, WorkConventions conventions, EventRepository inbox) {
+        this.inbox = inbox;
         this.sessions = sessions;
         this.sessionChecks = sessionChecks;
         this.conventions = conventions;
@@ -141,8 +146,11 @@ public class Integrator implements RunExecutor {
     private boolean ended(Run run) {
         if (run.attendedSessionId() == null) return lifecycle.taskEnded(run);
         String stop = stopEventId(run);
+        // A prompt orange has stored but not applied yet already counts: the user wins.
         return sessions.findById(run.attendedSessionId())
-                .map(s -> !Session.VERIFYING.equals(s.status()) || !stop.equals(s.stopEventId())).orElse(true);
+                .map(s -> !Session.VERIFYING.equals(s.status()) || !stop.equals(s.stopEventId())
+                        || inbox.hasUnprocessed(SessionEventHandler.SOURCE, NeutralEvent.USER_PROMPT, s.externalId()))
+                .orElse(true);
     }
 
     private static String stopEventId(Run run) {
@@ -169,6 +177,9 @@ public class Integrator implements RunExecutor {
                 && !Git.run(wt, Git.QUICK, "status", "--porcelain", "--untracked-files=no").isBlank()) {
             return RunOutcome.Integration.of("stale");
         }
+
+        // The fetch took time: a session the user has spoken to since must not be rebased under them.
+        if (ended(run)) throw new TaskEnded();
 
         // Pushing integrates onto origin's base; without a push, onto the local base branch.
         String target = t.ref();
@@ -197,7 +208,8 @@ public class Integrator implements RunExecutor {
 
         if (t.push()) {
             try {
-                Git.run(wt, Git.SLOW, "push", "--quiet", "origin", "HEAD:refs/heads/" + t.baseBranch());
+                // The verified commit by name, never whatever HEAD has become since.
+                Git.run(wt, Git.SLOW, "push", "--quiet", "origin", head + ":refs/heads/" + t.baseBranch());
             } catch (GitException e) {
                 if (rejectedAsNonFastForward(e)) return RunOutcome.Integration.of("base_moved");
                 throw e;

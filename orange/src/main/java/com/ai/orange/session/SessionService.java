@@ -113,9 +113,11 @@ public class SessionService {
         // after a close it states a new intent.
         boolean newIntent = false;
         if (d.userPrompt() && prompt != null) {
-            String first = s.intent() != null && !Session.CLOSED.equals(s.status()) ? s.intent() : cut(prompt, MAX_INTENT);
-            boolean opened = work.openIfNone(s.id(), first);
-            newIntent = opened && Session.CLOSED.equals(s.status());
+            // Earlier work means this prompt starts something new, whatever the session did in between
+            // (it may have been quit and resumed). A session from before work was tracked keeps its intent.
+            boolean hadWork = !work.findBySession(s.id()).isEmpty();
+            String first = hadWork || s.intent() == null ? cut(prompt, MAX_INTENT) : s.intent();
+            newIntent = work.openIfNone(s.id(), first) && hadWork;
         }
         Session next = new Session(s.id(),
                 project != null ? project.id() : s.projectId(),

@@ -101,6 +101,19 @@ public class SessionClosing {
         JsonNode in = input(run);
         String stop = in.path("stop_event_id").asText("");
         if (!Session.VERIFYING.equals(s.status()) || !stop.equals(s.stopEventId())) {
+            // The user spoke while the push was in flight: the work is on the base all the same, and
+            // that must be on record even though nothing is said to the session now.
+            if (run.kind() == RunKind.INTEGRATE && result.reason() == null
+                    && result.outcome() instanceof RunOutcome.Integration i && "integrated".equals(i.status())) {
+                work.close(s.id(), SessionWork.INTEGRATED, i.headSha(), in.path("branch").asText(null),
+                        in.path("base_branch").asText(null), "Verified and integrated onto "
+                                + in.path("base_branch").asText("the base") + " at " + i.headSha()
+                                + (Boolean.TRUE.equals(i.pushed()) ? "; pushed to origin." : ".")
+                                + " The session had been spoken to again by the time this landed.");
+                log.info("integrate run {}: session {} has moved on, but its work at {} is integrated", run.id(),
+                        s.id(), i.headSha());
+                return;
+            }
             log.info("{} run {}: session {} has moved on; its result is dropped", run.kind().dbValue(), run.id(), s.id());
             return;
         }
@@ -128,8 +141,19 @@ public class SessionClosing {
                 boolean reviewable = conventions.done(s.projectId(), s.id()).contains(WorkConventions.EVIDENCE)
                         && check.baseSha() != null && !check.baseSha().equals(check.headSha())
                         && !evidence.sessionHasPassingDiffReview(s.id(), check.headSha());
-                if (reviewable) queue(s, RunKind.DIFF_REVIEW, "reviewer", next);
-                else integrateOrClose(s, run, next);
+                boolean nothingNew = check.baseSha() != null && check.baseSha().equals(check.headSha());
+                if (nothingNew) {
+                    // The base already has this commit: there is nothing to review, rebase or push, and
+                    // an integration would only move the user's branch for no reason.
+                    boolean onBase = check.branch() != null && check.branch().equals(check.baseBranch());
+                    close(s, run, next, onBase ? SessionWork.INTEGRATED : SessionWork.VERIFIED, onBase
+                            ? "Verified; the work is on " + check.baseBranch() + " and there is nothing to push."
+                            : "Verified; the branch has no commits that " + check.baseBranch() + " lacks.");
+                } else if (reviewable) {
+                    queue(s, RunKind.DIFF_REVIEW, "reviewer", next);
+                } else {
+                    integrateOrClose(s, run, next);
+                }
             }
             case RunOutcome.SessionCheck.GAPS -> sendBack(s, run, stop, gapsMessage(check));
             case RunOutcome.SessionCheck.NO_EVIDENCE -> {
@@ -291,6 +315,8 @@ public class SessionClosing {
     private void askForEvidence(Session s, RunOutcome.SessionCheck check) {
         Project project = sessionService.projectOf(s);
         if (project == null) return;
+        // Said once per project, proposal included: a user who dropped it does not get it again.
+        if (attentionItems.findByKey("project:" + project.id() + ":" + EVIDENCE_MISSING).isPresent()) return;
         StringBuilder body = new StringBuilder("orange cannot tell when work in ").append(project.name())
                 .append(" is done: the project has no evidence commands, so a finished session just stops.\n");
         if (check.detected().isEmpty()) {

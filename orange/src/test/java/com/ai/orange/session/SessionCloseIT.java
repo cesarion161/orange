@@ -69,6 +69,7 @@ class SessionCloseIT {
     @Autowired SessionRepository sessions;
     @Autowired SessionJudgement judgement;
     @Autowired SessionWorkRepository work;
+    @Autowired SessionClosing closing;
     @Autowired VerdictRepository verdicts;
     @Autowired AttentionRepository attention;
     @Autowired EvidenceRepository evidence;
@@ -475,6 +476,90 @@ class SessionCloseIT {
         assertThat(all.getFirst().status()).isEqualTo(SessionWork.OPEN);
         assertThat(all.getFirst().intent()).isEqualTo("Now document it");
         assertThat(all.getLast().intent()).isEqualTo("Add the feature file");
+    }
+
+    @Test
+    void aSessionResumedAfterACloseStillStatesANewIntent() throws Exception {
+        prompt("Add the feature file");
+        convention("done", "[\"committed\"]");
+        commit("feature.txt", "the feature\n");
+        stop();
+        runAll();
+        event("session_ended", "reason", "exit");
+        event("session_started", null, null);
+        assertThat(session().status()).isEqualTo(Session.ACTIVE);
+
+        prompt("Now document it");
+        assertThat(session().intent()).isEqualTo("Now document it");
+        assertThat(work.findBySession(session().id()).getFirst().intent()).isEqualTo("Now document it");
+    }
+
+    @Test
+    void aSessionThatCommittedNothingIsNotIntegrated() throws Exception {
+        prompt("Explain the readme");
+        convention("evidence", "[\"true\"]");
+        pushFromElsewhere("other.txt", "someone else\n");
+        git(repo, "fetch", "-q", "origin");
+        String head = git(repo, "rev-parse", "HEAD");
+        stop();
+        assertThat(runAll()).as("judge, verify: nothing to review or integrate").isEqualTo(2);
+
+        assertThat(session().status()).isEqualTo(Session.CLOSED);
+        assertThat(lastWork().result()).isEqualTo(SessionWork.VERIFIED);
+        assertThat(git(repo, "rev-parse", "HEAD")).as("the user's branch was not moved").isEqualTo(head);
+    }
+
+    @Test
+    void anIntegrationThatLandsAfterTheUserSpokeIsStillOnRecord() throws Exception {
+        prompt("Add the feature file");
+        convention("evidence", "[\"true\"]");
+        commit("feature.txt", "the feature\n");
+        String head = git(repo, "rev-parse", "HEAD");
+        stop();
+        for (RunKind kind : List.of(RunKind.JUDGE, RunKind.VERIFY, RunKind.DIFF_REVIEW)) {
+            executors.forKind(kind).orElseThrow()
+                    .execute(runs.claimNext(kind, runProps.workerId(), runProps.leaseTtl()).orElseThrow());
+        }
+        Run integrate = runs.claimNext(RunKind.INTEGRATE, runProps.workerId(), runProps.leaseTtl()).orElseThrow();
+        // The push went out, and the user spoke before its result was applied.
+        git(repo, "push", "-q", "origin", head + ":refs/heads/main");
+        prompt("one more thing");
+        closing.after(integrate, new com.ai.orange.run.RunResult(integrate.id(), RunStatus.SUCCEEDED, null,
+                new com.ai.orange.run.RunOutcome.Integration("integrated", head, true, "updated", List.of(), null),
+                null, null, java.math.BigDecimal.ZERO));
+
+        assertThat(session().status()).isEqualTo(Session.ACTIVE);
+        SessionWork closed = work.findBySession(session().id()).getFirst();
+        assertThat(closed.result()).isEqualTo(SessionWork.INTEGRATED);
+        assertThat(closed.headSha()).isEqualTo(head);
+        assertThat(closed.note()).contains("spoken to again");
+    }
+
+    @Test
+    void aPromptNotYetAppliedAlreadyStopsTheIntegration() throws Exception {
+        prompt("Add the feature file");
+        convention("evidence", "[\"true\"]");
+        commit("feature.txt", "the feature\n");
+        String head = git(repo, "rev-parse", "HEAD");
+        stop();
+        for (RunKind kind : List.of(RunKind.JUDGE, RunKind.VERIFY, RunKind.DIFF_REVIEW)) {
+            executors.forKind(kind).orElseThrow()
+                    .execute(runs.claimNext(kind, runProps.workerId(), runProps.leaseTtl()).orElseThrow());
+        }
+        // Stored, not drained: the session row still says verifying.
+        ObjectNode e = Json.mapper().createObjectNode().put("event_id", UUID.randomUUID().toString())
+                .put("harness", "claude-code").put("session_id", sessionId).put("type", "user_prompt");
+        e.putObject("payload").put("prompt", "wait");
+        http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/sessions/events"))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(e.toString())).build(), HttpResponse.BodyHandlers.ofString());
+
+        executors.forKind(RunKind.INTEGRATE).orElseThrow()
+                .execute(runs.claimNext(RunKind.INTEGRATE, runProps.workerId(), runProps.leaseTtl()).orElseThrow());
+
+        assertThat(git(origin, "rev-parse", "main")).as("nothing was pushed").isNotEqualTo(head);
+        processor.drain();
+        assertThat(session().status()).isEqualTo(Session.ACTIVE);
     }
 
     // ─────────────────────────── the user, and time ───────────────────────────

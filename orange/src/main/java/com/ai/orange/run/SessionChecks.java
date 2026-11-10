@@ -84,6 +84,11 @@ public class SessionChecks {
         if (branch == null) return new Located(null, "the checkout at " + dir + " is on a detached head");
         boolean hasOrigin = Git.run(dir, Git.QUICK, "remote").lines().anyMatch("origin"::equals);
         String base = baseBranch(s, dir, hasOrigin);
+        // The name comes from a reporter or a convention and goes to git as an argument.
+        if (base != null && (base.startsWith("-")
+                || Git.exitCode(dir, Git.QUICK, "check-ref-format", "--branch", base) != 0)) {
+            return new Located(null, "\"" + base + "\" is not a branch name");
+        }
         String baseRef = null;
         if (base != null) {
             if (hasOrigin && refExists(dir, "refs/remotes/origin/" + base)) baseRef = "origin/" + base;

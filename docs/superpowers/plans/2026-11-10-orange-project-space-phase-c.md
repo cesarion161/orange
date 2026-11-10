@@ -71,6 +71,29 @@ project's conventions say, and closes it. A gap goes back into the session throu
 - One `evidence_missing` item per project, ever: resolving it without setting commands means
   orange stays silent about it.
 
+- **Steering can set `evidence` from inside a session.** `orange_set` and `orange_accept` speak
+  with the user's voice, and the plugin puts them in every session orange watches. A session that
+  was talked into it could set a project's evidence commands, which orange then runs outside
+  Claude Code's own Bash permissions. The MCP tool's permission prompt is the only gate. Closing
+  this needs a confirmation the session cannot give (the phone, or the dashboard), which is not
+  built.
+- orange runs git in the user's repos with hooks off (`core.hooksPath=/dev/null`), so a pre-push
+  hook (Git LFS) does not run on orange's push.
+- A coordinator that dies mid-rebase leaves the rebase in the session's checkout, and a scratch
+  checkout that could not be removed stays registered; nothing cleans either up at startup.
+- The local base branch is fast-forwarded in whatever clean checkout has it (spec decision 11),
+  even if another session is working there.
+
+## Review (2026-11-10, fresh-context reviewer)
+
+No blocking finding. Fixed: the push names the verified commit instead of `HEAD`; a session with
+no commits of its own is closed without an integration; the user is checked for again after the
+fetch and before the push, a stored but unapplied prompt included; a prompt after a quit and a
+resume still states a new intent; an integration that lands after the user spoke is recorded;
+the base branch name is validated; the evidence proposal is made once per project. Left as known
+limits above: steering inside the session, hooks on push, crash cleanup, the fast-forward of
+another checkout (the spec's own rule).
+
 ## Verified
 
 - `./gradlew test`: 401 tests, 0 failures (2026-11-10).
