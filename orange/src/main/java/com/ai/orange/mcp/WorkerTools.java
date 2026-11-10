@@ -41,6 +41,8 @@ public class WorkerTools {
     public static final String JUDGE_ESCALATE = "judge_escalate";
     public static final String JUDGE_IDLE = "judge_idle";
     public static final String PROPOSE_ITEM = "propose_item";
+    /** What orange tells a session on the user's behalf is an answer, not an essay. */
+    static final int MAX_ANSWER = 2_000;
     /** The {@link McpTransportContext} key the token filter's run is stored under. */
     public static final String RUN_KEY = "run";
 
@@ -205,6 +207,7 @@ public class WorkerTools {
     private CallToolResult judgeContinue(McpTransportContext ctx, CallToolRequest req) {
         String message = string(req, "message");
         if (message.isBlank()) return error("message must not be blank");
+        if (message.length() > MAX_ANSWER) return error("message is longer than " + MAX_ANSWER + " characters; answer briefly");
         Object confidence = req.arguments() == null ? null : req.arguments().get("confidence");
         if (!(confidence instanceof Number n) || n.doubleValue() < 0 || n.doubleValue() > 1) {
             return error("confidence must be a number from 0 to 1");

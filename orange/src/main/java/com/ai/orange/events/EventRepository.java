@@ -61,6 +61,14 @@ public class EventRepository {
                 .fetchOptional(r -> new Receipt(r.value1(), r.value2() != null));
     }
 
+    /** Whether an event of this type for this session is stored but not applied yet. */
+    public boolean hasUnprocessed(String source, String type, String sessionId) {
+        return dsl.fetchExists(EVENTS, EVENTS.SOURCE.eq(source).and(EVENTS.TYPE.eq(type))
+                .and(EVENTS.PROCESSED_AT.isNull())
+                .and(org.jooq.impl.DSL.condition("{0}->>'session_id' = {1}", EVENTS.PAYLOAD,
+                        org.jooq.impl.DSL.val(sessionId))));
+    }
+
     public void markProcessed(long id) {
         dsl.update(EVENTS).set(EVENTS.PROCESSED_AT, OffsetDateTime.now()).where(EVENTS.ID.eq(id)).execute();
     }

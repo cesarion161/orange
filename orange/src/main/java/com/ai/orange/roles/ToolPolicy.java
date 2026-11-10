@@ -32,8 +32,9 @@ public record ToolPolicy(List<String> tools, List<String> allowedTools, String p
             // No Bash: a reviewer reads; the coordinator puts the diff in its prompt.
             case DIFF_REVIEW -> new ToolPolicy(READING, plus(READING, "mcp__orange__submit_review"), "dontAsk", true);
             case PLAN -> new ToolPolicy(PLANNING, PLANNING, "acceptEdits", false);
-            // Read-only and no shell (decision 13): the same exposure as the user reading their own repo.
-            case JUDGE -> new ToolPolicy(READING, plus(READING, "mcp__orange__judge_continue",
+            // No built-in tools at all: the judge decides from its prompt. It reads text a session
+            // wrote, so it gets nothing that text could turn against the user's files.
+            case JUDGE -> new ToolPolicy(List.of(), List.of("mcp__orange__judge_continue",
                     "mcp__orange__judge_verify", "mcp__orange__judge_escalate", "mcp__orange__judge_idle",
                     "mcp__orange__propose_item"), "dontAsk", true);
             case VERIFY, INTEGRATE, BRIEF ->

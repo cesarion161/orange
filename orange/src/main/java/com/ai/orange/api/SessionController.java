@@ -67,7 +67,7 @@ public class SessionController {
      * (project-space spec decision 2). Holds the request up to {@code wait} seconds, then answers
      * {@code {"state": "pending"}} (ask again), {@code "none"} (nothing is coming: let the session
      * stop) or {@code "verdict"} with its {@code kind} and, for {@code continue}, the {@code message}
-     * to block the stop with.
+     * to block the stop with, which the hook must acknowledge first ({@code POST /sessions/verdict/ack}).
      */
     @GetMapping("/verdict")
     public Map<String, Object> verdict(@RequestParam String harness, @RequestParam("session_id") String sessionId,
@@ -85,6 +85,16 @@ public class SessionController {
             }
             Thread.sleep(VERDICT_POLL_MILLIS);
         }
+    }
+
+    /**
+     * The stop hook's last step before it hands a {@code continue} to its session. {@code {"ok": true}}
+     * makes the verdict delivered; on false the hook says nothing and the session stops.
+     */
+    @PostMapping("/verdict/ack")
+    public Map<String, Object> acknowledge(@RequestParam String harness, @RequestParam("session_id") String sessionId,
+                                           @RequestParam("event_id") String eventId) {
+        return Map.of("ok", judgement.acknowledge(harness, sessionId, eventId));
     }
 
     /** Sessions, most recently heard from first. Ended ones only with {@code all=true}. */

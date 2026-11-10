@@ -82,7 +82,10 @@ public class PostRunSteps {
             }
         }
         String text = String.join("\n", nullToEmpty(r.resultText()), nullToEmpty(r.lastAssistantText()));
-        FailureReasons.pauseFor(r.reason(), text, ZonedDateTime.now()).ifPresent(p -> {
+        // A judge that could not be prepared says something about one session, not about the workspace
+        // task runs use: it falls back to the rules and pauses nothing.
+        boolean judgeOnly = run.kind() == RunKind.JUDGE && "workspace_failed".equals(r.reason());
+        if (!judgeOnly) FailureReasons.pauseFor(r.reason(), text, ZonedDateTime.now()).ifPresent(p -> {
             log.warn("run {} failed with {}: pausing the scheduler {}", run.id(), p.reason(),
                     p.until() == null ? "until resumed" : "until " + p.until());
             pause.pause(p.reason(), p.until());

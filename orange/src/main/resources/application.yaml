@@ -126,6 +126,8 @@ orange:
     max-auto-continues: 5
     # A verdict no stop hook picked up within this long is expired; its answer goes to the inbox.
     pickup-grace: 2m
+    # A judge run that has not started within this long is given up; the stop follows the rules.
+    start-grace: 60s
   notify:
     enabled: ${ORANGE_NOTIFY_ENABLED:true}
     sweep: 30s

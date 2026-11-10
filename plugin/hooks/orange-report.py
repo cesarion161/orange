@@ -202,7 +202,14 @@ def wait_for_verdict(event, headers):
         answer = json.load(urllib.request.urlopen(request, timeout=wait + 10))
         state = answer.get("state")
         if state == "verdict":
-            return answer.get("message") if answer.get("kind") == "continue" else None
+            if answer.get("kind") != "continue" or not answer.get("message"):
+                return None
+            # The answer counts only once orange has it as delivered. If the user spoke meanwhile, or
+            # this call fails, say nothing: orange keeps the answer for the user instead.
+            ack = urllib.request.Request(base.replace("/verdict?", "/verdict/ack?") + query, headers=headers,
+                                         data=b"", method="POST")
+            ok = json.load(urllib.request.urlopen(ack, timeout=5)).get("ok")
+            return answer["message"] if ok else None
         if state != "pending":
             return None
     return None

@@ -45,12 +45,32 @@ decide, or nothing is asked. The verdict reaches the session through the Stop ho
    `continue`) is recorded as an active `orange` decision.
 7. **No judging while the scheduler is paused** (plan limit, missing token): the stop follows
    Phase A's rules at once, instead of leaving the hook to wait for a run that cannot start.
-8. **Process mode reads the user's checkout.** The judge runs in the session's own directory with
-   Read, Glob and Grep only (spec decision 13). When the coordinator cannot see that directory it
-   gets an empty one and judges from its prompt.
-9. **Deferred:** `search_notes` and `get_session` tools, ntfy action buttons, delivering the
+8. **The judge has no file tools.** The spec gives it Read, Glob and Grep in the worktree. Here it
+   gets no built-in tools and an empty working directory: its prompt carries text a session wrote,
+   so it gets nothing that text could turn on the user's files, and starting Claude Code inside the
+   user's checkout would load that repo's own settings and hooks. A decision that needs a look at
+   the code is escalated. File access can come back with node-hosted runs (Phase V), with setting
+   sources off.
+9. **Untrusted text is fenced.** What orange knows comes first in the prompt; the session's intent,
+   turns and last message come last, between two lines holding a per-run random id.
+10. **A `continue` is delivered when the hook acknowledges it** (`POST /sessions/verdict/ack`), and
+    only then recorded as orange's decision. An answer whose hook has gone expires into the inbox
+    instead of being lost.
+11. **Judge runs are outside `max-concurrent`.** Their own slots (2) bound them.
+12. **Names:** the settings are `orange.judge.*` (the spec says `orange.attention.hook-wait`).
+13. **Deferred:** `search_notes` and `get_session` tools, ntfy action buttons, delivering the
    user's `orange_resolve` answer back into a stopped session, and the medium tier for risky
    projects (nothing marks a project risky yet).
+
+## Review (2026-11-10, fresh-context reviewer)
+
+No blocking finding; seven should-fix, all addressed: the fenced prompt and the tool-less judge
+(a hostile last message could pose as project facts; the judge ran in the user's checkout with
+its settings loaded), judge runs outside the global cap, immediate fallback when a judge run is
+gone or does not start, acknowledged delivery, the decision recorded at delivery, and a stored
+but unapplied user prompt already winning. Left as they are: the loop guard may over-count after
+a voided answer (the safe direction), and a running judge is not killed when the user speaks
+(its result is dropped).
 
 ## Open
 

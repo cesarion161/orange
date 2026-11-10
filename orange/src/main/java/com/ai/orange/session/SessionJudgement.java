@@ -11,10 +11,12 @@ import com.ai.orange.run.Run;
 import com.ai.orange.run.RunOutcome;
 import com.ai.orange.run.RunRepository;
 import com.ai.orange.run.RunResult;
+import com.ai.orange.run.RunStatus;
 import com.ai.orange.run.SchedulerPause;
 import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -104,7 +106,6 @@ public class SessionJudgement {
                         v.confidence(), Verdict.PENDING);
                 // Still "judging" until the hook takes the answer; then the session works again.
                 sessions.save(s.withAutoContinues(s.autoContinues() + 1));
-                recordDecision(s, project, run, v);
                 log.info("judge run {}: orange answers session {} ({} in a row)", run.id(), s.id(), s.autoContinues() + 1);
             }
             case Verdict.ESCALATE -> escalate(s, project, run, stopEventId, v.question(), v.proposedAnswer(),
@@ -127,7 +128,8 @@ public class SessionJudgement {
     }
 
     /** What orange decided for the user goes into the project's space, so it can be audited (spec §7). */
-    private void recordDecision(Session s, Project project, Run run, RunOutcome.Verdict v) {
+    private void recordDecision(Session s, Verdict v) {
+        Project project = sessionService.projectOf(s);
         if (project == null) return;
         String text = "orange answered " + SessionService.label(s, project) + ": \"" + SessionService.cut(v.message(), 600)
                 + "\"" + (v.rationale() == null ? "" : " — because " + SessionService.cut(v.rationale(), 600));
@@ -153,8 +155,10 @@ public class SessionJudgement {
     }
 
     /**
-     * One look for the verdict of the stop a reporter posted as {@code stopEventId}. A pending
-     * verdict is handed over exactly once; a {@code continue} puts the session back to work.
+     * One look for the verdict of the stop a reporter posted as {@code stopEventId}. A
+     * {@code continue} is only shown here: it counts as delivered when the hook acknowledges it
+     * ({@link #acknowledge}), so an answer whose hook has gone is not lost. The other kinds have
+     * nothing to say to the session and are settled at once.
      */
     @Transactional
     public Poll poll(String harness, String externalId, String stopEventId) {
@@ -167,12 +171,12 @@ public class SessionJudgement {
             return fresh ? Poll.PENDING : Poll.NONE;
         }
         Session s = sessions.lock(harness, externalId).orElse(null);
-        if (s == null || !stopEventId.equals(s.stopEventId())) return Poll.NONE;
+        if (s == null || !stopEventId.equals(s.stopEventId()) || userHasSpoken(externalId)) return Poll.NONE;
         Optional<Verdict> verdict = verdicts.find(s.id(), stopEventId);
         if (verdict.isPresent()) {
             Verdict v = verdict.get();
-            if (!verdicts.settle(v.id(), Verdict.DELIVERED)) return Poll.NONE;
-            if (Verdict.CONTINUE.equals(v.kind())) sessions.save(s.waiting(Session.ACTIVE, null, null));
+            if (!Verdict.PENDING.equals(v.status())) return Poll.NONE;
+            if (!Verdict.CONTINUE.equals(v.kind())) verdicts.settle(v.id(), Verdict.DELIVERED);
             return new Poll(Poll.State.VERDICT, v.kind(), v.message());
         }
         boolean waiting = Session.JUDGING.equals(s.status()) && s.waitingSince() != null
@@ -180,13 +184,35 @@ public class SessionJudgement {
         return waiting ? Poll.PENDING : Poll.NONE;
     }
 
+    /**
+     * The stop hook is about to hand a {@code continue} to its session. True makes it delivered:
+     * the session works again and the answer goes on record as orange's decision. False means the
+     * hook must stay silent: the user spoke first, the session moved on, or the verdict expired.
+     */
+    @Transactional
+    public boolean acknowledge(String harness, String externalId, String stopEventId) {
+        Session s = sessions.lock(harness, externalId).orElse(null);
+        if (s == null || !stopEventId.equals(s.stopEventId()) || userHasSpoken(externalId)) return false;
+        Verdict v = verdicts.find(s.id(), stopEventId).orElse(null);
+        if (v == null || !Verdict.CONTINUE.equals(v.kind()) || !verdicts.settle(v.id(), Verdict.DELIVERED)) return false;
+        sessions.save(s.waiting(Session.ACTIVE, null, null));
+        recordDecision(s, v);
+        return true;
+    }
+
+    /** A prompt of the user that is stored but not applied yet already counts: the user wins. */
+    private boolean userHasSpoken(String externalId) {
+        return inbox.hasUnprocessed(SessionEventHandler.SOURCE, NeutralEvent.USER_PROMPT, externalId);
+    }
+
     // ─────────────────────────── time passes ───────────────────────────
 
     /**
      * Decisions nobody collected, and stops nobody decided. An answer no hook took within the
      * pickup grace goes to the inbox as a question with that answer proposed, so it is not lost.
-     * A session still being judged when the hook has given up, or while the scheduler is paused,
-     * falls back to the rules. Returns how many sessions it moved.
+     * A session still being judged falls back to the rules when nothing will decide it: its judge
+     * run is gone (reaped, or its result could not be applied), has not started within the start
+     * grace, the scheduler is paused, or the hook has given up. Returns how many sessions it moved.
      */
     @Transactional
     public int sweep() {
@@ -210,8 +236,15 @@ public class SessionJudgement {
             Session s = sessions.lock(seen.id()).orElse(null);
             if (s == null || !Session.JUDGING.equals(s.status()) || s.waitingSince() == null) continue;
             if (s.stopEventId() != null && verdicts.find(s.id(), s.stopEventId()).isPresent()) continue;
-            boolean overdue = Duration.between(s.waitingSince(), now).compareTo(props.hookWait()) >= 0;
-            if (!overdue && !paused) continue;
+            Duration waited = Duration.between(s.waitingSince(), now);
+            List<Run> live = runs.findBySession(s.id()).stream()
+                    .filter(r -> r.status() == RunStatus.QUEUED || r.status() == RunStatus.RUNNING)
+                    .filter(r -> s.stopEventId() != null && s.stopEventId().equals(stopEventId(r)))
+                    .toList();
+            boolean neverStarted = live.stream().allMatch(r -> r.status() == RunStatus.QUEUED)
+                    && waited.compareTo(props.startGrace()) >= 0;
+            boolean overdue = waited.compareTo(props.hookWait()) >= 0;
+            if (!live.isEmpty() && !neverStarted && !overdue && !paused) continue;
             runs.cancelQueuedForSession(s.id());
             sessionService.fallBackToRules(s);
             moved++;
