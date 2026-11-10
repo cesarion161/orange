@@ -24,12 +24,18 @@ public class WorkerMcpConfigWriter {
         this.url = url;
     }
 
+    /** The config of a run on the host. */
     public Path write(Path runDir, String token) throws IOException {
+        return write(runDir, token, false);
+    }
+
+    /** @param contained whether the run reads the file from inside a container, where the host has another name */
+    public Path write(Path runDir, String token, boolean contained) throws IOException {
         Files.createDirectories(runDir);
         ObjectNode root = Json.mapper().createObjectNode();
         ObjectNode server = root.putObject("mcpServers").putObject(SERVER_NAME);
         server.put("type", "http");
-        server.put("url", url.url());
+        server.put("url", url.url(contained));
         server.putObject("headers").put("Authorization", "Bearer " + token);
 
         Path file = runDir.resolve("mcp.json");

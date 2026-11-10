@@ -13,7 +13,11 @@ import com.ai.orange.harness.RunEvent;
 import com.ai.orange.harness.RunExit;
 import com.ai.orange.harness.RunHandle;
 import com.ai.orange.harness.RunSpec;
+import com.ai.orange.harness.Sandbox;
 import com.ai.orange.harness.claude.AuthFailure;
+import com.ai.orange.harness.container.ContainerRuntime;
+import com.ai.orange.harness.container.ContainerUnavailableException;
+import com.ai.orange.harness.container.DockerCommand;
 import com.ai.orange.json.Json;
 import com.ai.orange.mcp.RunTokens;
 import com.ai.orange.mcp.WorkerMcpConfigWriter;
@@ -24,6 +28,7 @@ import com.ai.orange.routing.RouteDecision;
 import com.ai.orange.routing.RouteRequest;
 import com.ai.orange.routing.RoutingProperties;
 import com.ai.orange.routing.RoutingTable;
+import com.ai.orange.worktree.Git;
 import com.ai.orange.worktree.WorktreeCapacityException;
 import jakarta.annotation.PreDestroy;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -59,6 +64,12 @@ import org.springframework.stereotype.Service;
  * events into {@code run_events}, keeps its lease alive, enforces its timeout and budget, applies
  * the post-run steps and finishes the row. A gateway run's virtual key is always blocked
  * afterwards, and the run's MCP config file is always deleted.
+ *
+ * <p>In container mode ({@code orange.runner.isolation=container}) a task's runs start in a
+ * container: a coding run on a clone of the task's branch under the run's directory, whose commits
+ * come home as a bundle ({@link RunWorkspaces}); a review on the task's worktree, mounted
+ * read-only. Runs without a task (the planner, the brief, a session's judge and review) stay on
+ * the host.
  */
 @Service
 public class WorkerRunner implements RunExecutor {
@@ -69,6 +80,10 @@ public class WorkerRunner implements RunExecutor {
     /** Kinds whose agent must report through the worker MCP endpoint; a silent clean exit is a failure. */
     private static final Set<RunKind> NEEDS_OUTCOME = EnumSet.of(RunKind.IMPLEMENT, RunKind.CI_FIX,
             RunKind.DIFF_REVIEW, RunKind.JUDGE, RunKind.BRIEF);
+    /** Kinds that commit: in container mode they work on a clone, and their commits are brought home. */
+    private static final Set<RunKind> CODING = EnumSet.of(RunKind.IMPLEMENT, RunKind.CI_FIX);
+    /** How a run may have ended for its commits to come home; a cancelled or orphaned run's do not. */
+    private static final Set<String> KILLED_BUT_HOME = Set.of("timeout", "budget");
     /** How long to wait for the process to exit after a kill. */
     private static final Duration KILL_GRACE = Duration.ofSeconds(30);
     /** How long a shutdown waits for killed runs to be recorded. */
@@ -93,6 +108,8 @@ public class WorkerRunner implements RunExecutor {
     private final RolePrompts rolePrompts;
     private final WorkerMcpConfigWriter mcpConfigs;
     private final RunSecrets secrets;
+    private final ContainerRuntime containers;
+    private final RunWorkspaces workspaces;
 
     /** The runs this process is supervising, by run id, so a cancel can reach their processes. */
     private final Map<UUID, Active> active = new ConcurrentHashMap<>();
@@ -106,7 +123,8 @@ public class WorkerRunner implements RunExecutor {
                         HarnessProperties harnessProps, GatewayClient gateway, GatewayProperties gatewayProps,
                         BillingProperties billing, CostEstimator costs, RunsProperties props, RunRepository runs,
                         RunEventRepository runEvents, RunLifecycle lifecycle, RunPreparer preparer,
-                        RolePrompts rolePrompts, WorkerMcpConfigWriter mcpConfigs, RunSecrets secrets) {
+                        RolePrompts rolePrompts, WorkerMcpConfigWriter mcpConfigs, RunSecrets secrets,
+                        ContainerRuntime containers, RunWorkspaces workspaces) {
         this.routing = routing;
         this.routingProps = routingProps;
         this.harnesses = harnesses;
@@ -123,6 +141,8 @@ public class WorkerRunner implements RunExecutor {
         this.rolePrompts = rolePrompts;
         this.mcpConfigs = mcpConfigs;
         this.secrets = secrets;
+        this.containers = containers;
+        this.workspaces = workspaces;
     }
 
     @Override
@@ -252,10 +272,16 @@ public class WorkerRunner implements RunExecutor {
             log.error("run {}: cannot route or prompt role {}: {}", run.id(), prep.role(), e.getMessage());
             return conclude(run, RunResult.failed(run.id(), "start_failed"), null);
         }
+        // Only a task's runs execute what a task's agent wrote; everything else stays on the host.
+        boolean contained = containers.enabled() && run.taskId() != null;
+        boolean ownClone = contained && CODING.contains(run.kind());
         ToolPolicy policy = ToolPolicy.forRun(run.kind(), run.attendedSessionId() != null);
+        if (contained) policy = policy.inContainer();
         String alias = route.auth() == AuthMode.GATEWAY ? "run-" + run.id() : null;
         String mcpToken = policy.mcp() ? RunTokens.newToken() : null;
         Path runDir = harnessProps.runRoot().resolve(run.id().toString());
+        // A container holds its mounts at their own paths, and those have to be absolute.
+        if (contained) runDir = runDir.toAbsolutePath();
         runs.recordRoute(run.id(), route.tier(), route.model(), route.effort().cli(), route.harness(),
                 authName(route), route.budgetUsd(), alias, mcpToken == null ? null : RunTokens.hash(mcpToken),
                 runDir.toString());
@@ -291,21 +317,36 @@ public class WorkerRunner implements RunExecutor {
             }
             secrets.register(run.id(), secretsOf(credentials, mcpToken));
 
+            Path cwd = prep.cwd();
+            String startSha = null;
+            if (ownClone) {
+                // The task's worktree stays orange's own: the agent gets a clone, and its commits come back as a bundle.
+                try {
+                    startSha = Git.head(prep.cwd());
+                    cwd = workspaces.cloneOf(run.taskId(), runDir);
+                } catch (IOException | RuntimeException e) {
+                    log.error("run {}: could not clone the task's branch for its container: {}", run.id(), e.getMessage());
+                    return conclude(run, RunResult.failed(run.id(), "workspace_failed"), null);
+                }
+            }
             if (mcpToken != null) {
                 try {
-                    mcpConfig = mcpConfigs.write(runDir, mcpToken);
+                    mcpConfig = mcpConfigs.write(runDir, mcpToken, contained);
                 } catch (IOException e) {
                     log.error("run {}: could not write its MCP config: {}", run.id(), e.getMessage());
                     return conclude(run, RunResult.failed(run.id(), "start_failed"), null);
                 }
             }
+            Sandbox sandbox = contained ? new Sandbox(!ownClone,
+                    DockerCommand.labels(run.id(), run.kind().dbValue(), props.workerId())) : null;
             RunSpec spec = new RunSpec(run.id(), prep.prompt(), systemPrompt, route.model(), routingProps.smallModel(),
-                    route.effort(), prep.cwd(), policy.tools(), policy.allowedTools(), List.of(),
+                    route.effort(), cwd, policy.tools(), policy.allowedTools(), List.of(),
                     policy.permissionMode(), mcpConfig, credentials, timeout,
-                    mcpToken == null ? List.of() : List.of(mcpToken));
-            return supervise(run, route, spec, key, timeout);
+                    mcpToken == null ? List.of() : List.of(mcpToken), sandbox);
+            return supervise(run, route, spec, key, timeout, runDir, startSha);
         } finally {
             secrets.forget(run.id());
+            if (ownClone) workspaces.discard(runDir);
             if (key != null) {
                 try {
                     gateway.block(key.key());
@@ -323,7 +364,9 @@ public class WorkerRunner implements RunExecutor {
         }
     }
 
-    private RunResult supervise(Run run, RouteDecision route, RunSpec spec, VirtualKey key, Duration timeout) {
+    /** @param startSha for a coding run in a container, the head its clone started from; else null */
+    private RunResult supervise(Run run, RouteDecision route, RunSpec spec, VirtualKey key, Duration timeout,
+                                Path runDir, String startSha) {
         // Last look before an agent starts: a cancel during preparation finds no process to kill.
         if (stopping) return conclude(run, RunResult.failed(run.id(), "coordinator_restart"), null);
         if (lifecycle.taskEnded(run)) return lifecycle.finishCancelled(run);
@@ -331,6 +374,9 @@ public class WorkerRunner implements RunExecutor {
         RunHandle handle;
         try {
             handle = harnesses.get(route.harness()).start(spec, watch);
+        } catch (ContainerUnavailableException e) {
+            log.error("run {}: Docker cannot start its container: {}", run.id(), e.getMessage());
+            return conclude(run, RunResult.failed(run.id(), "container_unavailable"), null);
         } catch (IOException | RuntimeException e) {
             log.error("run {}: harness {} failed to start: {}", run.id(), route.harness(), e.getMessage());
             return conclude(run, RunResult.failed(run.id(), "start_failed"), null);
@@ -353,7 +399,19 @@ public class WorkerRunner implements RunExecutor {
         }
 
         RunEvent.Result result = exit.result();
-        String reason = failureReason(exit, watch.lastAssistant);
+        boolean contained = spec.sandbox() != null;
+        String reason = failureReason(exit, watch.lastAssistant, contained);
+        if ("container_unavailable".equals(reason)) {
+            log.error("run {}: docker could not start its container (exit {}): {}. Is the image {} built "
+                    + "(orange/worker/build.sh) and the Docker daemon running?", run.id(), exit.exitCode(),
+                    trim(watch.lastStderr), containers.settings().image());
+        } else if (startSha != null && (exit.killReason() == null || KILLED_BUT_HOME.contains(exit.killReason()))) {
+            // Commits come home from runs that failed, timed out or went over budget, as they stay
+            // in the worktree in process mode. Not from a cancelled run, a lost lease or a stopping coordinator.
+            RunWorkspaces.Home home = workspaces.bringHome(run, spec.cwd(), runDir, startSha);
+            log.info("run {}: its commits: {}", run.id(), home.name().toLowerCase(Locale.ROOT));
+            if (home == RunWorkspaces.Home.CONTAINER_UNAVAILABLE && reason == null) reason = "container_unavailable";
+        }
         RunOutcome outcome = RunOutcome.parse(row.outcome()).orElse(null);
         if (reason == null) {
             if (outcome == null && NEEDS_OUTCOME.contains(run.kind())) {
@@ -415,11 +473,17 @@ public class WorkerRunner implements RunExecutor {
         }
     }
 
-    /** PR 1's classification of how the harness ended; the MCP outcome is judged by the caller. */
-    static String failureReason(RunExit exit, String lastAssistant) {
+    /**
+     * PR 1's classification of how the harness ended; the MCP outcome is judged by the caller.
+     *
+     * @param contained whether the process was a docker client: its exit codes 125, 126 and 127
+     *                  without any result mean docker could not start the command (no image, no daemon)
+     */
+    static String failureReason(RunExit exit, String lastAssistant, boolean contained) {
         RunEvent.Result r = exit.result();
         if (exit.killReason() != null) return exit.killReason();
         if (exit.exitCode() == 0 && r != null && !r.isError()) return null;
+        if (contained && r == null && DockerCommand.dockerFailed(exit.exitCode())) return "container_unavailable";
         if ((r != null && PlanLimit.matches(r.text())) || PlanLimit.matches(lastAssistant)) return "plan_limit";
         if (r != null && r.isError() && AuthFailure.matches(r.text())) return "auth_failed";
         if (r == null) return "no_result";
@@ -471,6 +535,8 @@ public class WorkerRunner implements RunExecutor {
         private volatile boolean overBudget;
         private volatile String sessionId;
         volatile String lastAssistant;
+        /** The last thing on stderr; a docker client that could not start its container says why there. */
+        volatile String lastStderr;
 
         RunWatch(Run run, RouteDecision route) {
             this.run = run;
@@ -519,7 +585,11 @@ public class WorkerRunner implements RunExecutor {
                     usageByMessage.put(id, u);
                     checkBudget();
                 }
-                case RunEvent.Stderr s -> log.debug("run {} stderr: {}", run.id(), trim(s.line()));
+                case RunEvent.Stderr s -> {
+                    // docker ends with a pointer to its help, which says nothing.
+                    if (!s.line().isBlank() && !s.line().startsWith("Run 'docker ")) lastStderr = s.line();
+                    log.debug("run {} stderr: {}", run.id(), trim(s.line()));
+                }
                 case RunEvent.Unparsed u -> log.debug("run {} unparsed line: {}", run.id(), trim(u.line()));
             }
         }

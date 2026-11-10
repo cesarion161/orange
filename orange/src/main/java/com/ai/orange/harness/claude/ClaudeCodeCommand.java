@@ -27,6 +27,12 @@ public final class ClaudeCodeCommand {
     public static final String BOT_NAME = "orange[bot]";
     public static final String BOT_EMAIL = "orange-bot@users.noreply.github.com";
 
+    /**
+     * The variables of {@link #env} whose values are the run's credential. A contained run passes
+     * them to docker by name only, so the value is in no command line.
+     */
+    public static final Set<String> SECRET_ENV = Set.of("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN");
+
     private static final Set<String> NEVER_PASS = Set.of(
             "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN",
             "LITELLM_MASTER_KEY", "ORANGE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN", "GITHUB_WEBHOOK_SECRET");

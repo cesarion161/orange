@@ -1,14 +1,16 @@
 package com.ai.orange.mcp;
 
+import com.ai.orange.harness.container.ContainerUrls;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.web.server.servlet.context.ServletWebServerInitializedEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
 /**
- * Where a run's agent reaches the worker MCP endpoint. {@code orange.mcp.worker-url} wins when set
- * (containers will need it); otherwise it is this coordinator's own port on the loopback address,
- * learned when the web server starts.
+ * Where a run's agent reaches the worker MCP endpoint. {@code orange.mcp.worker-url} wins when
+ * set; otherwise it is this coordinator's own port on the loopback address, learned when the web
+ * server starts. A run in a container gets the same URL with the loopback address spelled as the
+ * container has to ({@link ContainerUrls}).
  */
 @Component
 public class WorkerMcpUrl {
@@ -34,5 +36,10 @@ public class WorkerMcpUrl {
             throw new IllegalStateException("the web server has not started, so the worker MCP URL is unknown");
         }
         return "http://127.0.0.1:" + port + WorkerMcpConfig.PATH;
+    }
+
+    /** {@link #url()} as a run reaches it: from inside a container the host is not {@code localhost}. */
+    public String url(boolean contained) {
+        return contained ? ContainerUrls.fromContainer(url()) : url();
     }
 }

@@ -28,15 +28,21 @@ import java.util.regex.Pattern;
  * marker: {@code brief-urgent} (one urgent entry as well), {@code brief-unknown-project} (a call
  * that is refused, and nothing after it) and {@code brief-corrected} (that call, then a valid one).
  *
+ * <p>{@code probe} says what the run can see: for every prompt line {@code probe: <path>}
+ * (indented or not) it writes {@code <path>=visible} or {@code <path>=hidden} to
+ * {@code fake-probe.txt} under {@code $CLAUDE_CONFIG_DIR}, then implements like the default.
+ *
  * <p>Every scenario records its arguments, environment and prompt as {@code fake-args.json},
  * {@code fake-env.json} and {@code fake-prompt.txt} under {@code $CLAUDE_CONFIG_DIR}; MCP replies
- * go to {@code fake-mcp.log}.
+ * go to {@code fake-mcp.log}, after a {@code POST <url>} line per tool call.
  */
 public class FakeClaude {
 
     private static final Pattern MARKER = Pattern.compile("\\[\\[fake:([a-z-]+)]]");
     /** How a brief prompt names the projects it wants a line for. */
     private static final Pattern PROJECT = Pattern.compile("(?m)^## Project: (.+)$");
+    /** What the {@code probe} scenario looks for. */
+    private static final Pattern PROBE = Pattern.compile("(?m)^\\s*probe: (.+)$");
     private static final String UNKNOWN_PROJECT_BRIEF = "{\"projects\":[{\"project\":\"no-such-project\","
             + "\"status_line\":\"All fine.\"}],\"focus\":[]}";
 
@@ -84,6 +90,18 @@ public class FakeClaude {
 
         switch (scenario) {
             case "implement" -> {
+                implement(cwd, prompt, firstLine);
+                callTool("report_result", "{\"status\":\"done\",\"summary\":" + q("Implemented: " + firstLine) + "}");
+                finishOk(model, session, "Done.");
+            }
+            case "probe" -> {
+                StringBuilder seen = new StringBuilder();
+                Matcher probe = PROBE.matcher(prompt);
+                while (probe.find()) {
+                    String path = probe.group(1).strip();
+                    seen.append(path).append(Files.exists(Path.of(path)) ? "=visible" : "=hidden").append('\n');
+                }
+                Files.writeString(configDir.resolve("fake-probe.txt"), seen.toString());
                 implement(cwd, prompt, firstLine);
                 callTool("report_result", "{\"status\":\"done\",\"summary\":" + q("Implemented: " + firstLine) + "}");
                 finishOk(model, session, "Done.");
@@ -300,6 +318,7 @@ public class FakeClaude {
         }
         String url = mcpField("url");
         String auth = mcpField("Authorization");
+        log("POST " + url);
         HttpClient http = HttpClient.newHttpClient();
         post(http, url, auth, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{"
                 + "\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"fake-claude\",\"version\":\"1\"}}}");

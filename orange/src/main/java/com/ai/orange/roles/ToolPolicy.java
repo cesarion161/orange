@@ -58,6 +58,15 @@ public record ToolPolicy(List<String> tools, List<String> allowedTools, String p
         return forKind(kind);
     }
 
+    /**
+     * The policy for a run inside a container. A run with Bash gets {@code bypassPermissions}: the
+     * container is its boundary, and a permission prompt nobody answers would only stop a build.
+     * A run without Bash (a review) keeps its mode.
+     */
+    public ToolPolicy inContainer() {
+        return tools.contains("Bash") ? new ToolPolicy(tools, allowedTools, "bypassPermissions", mcp) : this;
+    }
+
     private static List<String> plus(List<String> base, String... extra) {
         List<String> all = new ArrayList<>(base);
         all.addAll(List.of(extra));

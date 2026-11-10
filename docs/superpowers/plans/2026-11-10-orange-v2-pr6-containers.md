@@ -10,7 +10,7 @@ and is untouched.
 ## Tasks
 
 - [x] **C1. The container runtime: settings, the docker command, the test image.**
-- [ ] **C2. Agent runs in containers: the launcher, the clone, the way home.**
+- [x] **C2. Agent runs in containers: the launcher, the clone, the way home.**
 - [ ] **C3. Evidence commands, the reaper, the network guard, the loop end to end.**
 - [ ] **C4. The worker image, the docs, the live checks' code.**
 - [ ] **C5. Live gate** (one real implement run in a container; recorded below).
@@ -207,6 +207,14 @@ Claude Code 2.1.322 is what this laptop runs):
   `/sys/class/net` (Docker Desktop), but has no `eth0` and no route; an online one has two
   `host.docker.internal` lines in `/etc/hosts` (IPv4 and IPv6); `FakeClaude.java` runs on the test
   image's JDK 21; a `@TempDir` (`/var/folders/…`) mounts at its own path.
+- While building C2: git in a container bundles from a workspace mounted read-only (it writes
+  only the bundle and its lock, in the export directory); the bundle of an amended or longer
+  branch fetches into a linked worktree and `reset --hard FETCH_HEAD` moves its branch; a
+  container on the run network reaches the coordinator's random test port as
+  `host.docker.internal` (MCP answers 200, and 202 for the notification); a missing image prints
+  `docker: Error response from daemon: No such image: …` and then, as its last stderr line,
+  `Run 'docker run --help' for more information`; the fake starts in a container in about a
+  second, an export takes about half a second.
 - Not checked: source addresses on a Linux bridge; the installer inside a Linux image; Claude
   Code in a container (C4 and C5).
 
@@ -226,13 +234,16 @@ do today.
 - `ProcessRunHandle.start(pb, stdin, runDir, parser, sink, redact, Runnable alsoKill)` (new
   overload; the old one passes null). `kill(reason)`: set the reason, run `alsoKill` (exceptions
   logged), then destroy the process tree as today. When a reason was set, the wait thread runs
-  `alsoKill` once more after the process has exited, and a virtual thread runs it a last time 5 s
+  `alsoKill` once more after the process has exited and before the exit is reported (whoever
+  waits for the exit reads the workspace next), and a virtual thread runs it a last time 5 s
   later: a kill can arrive while the daemon is still creating the container.
 - `ClaudeCodeCommand`: `public static final Set<String> SECRET_ENV = Set.of("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN")`.
 - `ClaudeCodeAdapter`: the Spring constructor becomes `(HarnessProperties, ContainerRuntime)`; the
-  two existing constructors stay and leave the runtime null. `start`:
+  two existing constructors stay and leave the runtime null (all three end in one private
+  constructor). `start`:
   - `spec.sandbox() == null`: as today.
-  - otherwise (an `IllegalStateException` without a runtime):
+  - otherwise (an `IllegalStateException` without a runtime, never a host process instead), with
+    the run directory made absolute:
     `env = ClaudeCodeCommand.env(spec, Map.of(), List.of(), configDir)` (nothing of the host's
     environment, not even `PATH`: the image has its own); the `SECRET_ENV` entries move to
     `secretEnv`; `ANTHROPIC_BASE_URL`, when there, becomes `ContainerUrls.fromContainer(…)`;
@@ -253,7 +264,7 @@ do today.
 public class RunWorkspaces {
     public RunWorkspaces(WorktreeService worktrees, ContainerRuntime containers, RunsProperties runsProps);
     /** <runDir>/workspace: a clone of orange/<taskId> that shares nothing with the base repo. */
-    public Path cloneOf(UUID taskId, Path runDir);
+    public Path cloneOf(UUID taskId, Path runDir) throws IOException;   // and GitException
     /** Brings what the run committed into the task's worktree. */
     public Home bringHome(Run run, Path workspace, Path runDir, String startSha);
     /** Deletes <runDir>/workspace and <runDir>/export. Never throws. */
@@ -302,8 +313,10 @@ inside a container with no network; the host parses one regular file as a pack. 
 rather than a fast-forward: the branch becomes what the agent's `HEAD` is, as in process mode,
 where the agent may amend.
 
-`discard` deletes the two directories; when a delete is refused it makes the directories under
-them owner-writable and tries once more (build tools leave read-only trees), then logs.
+`discard` deletes the two directories without following links; when a delete is refused it tries
+once more, giving the owner every right on each directory as it comes to it (build tools leave
+read-only trees), then logs. The walk keeps its own stack, so a tree an agent made very deep
+cannot overflow orange's.
 
 ### `WorkerRunner`
 
@@ -311,7 +324,9 @@ New constructor parameters: `ContainerRuntime containers`, `RunWorkspaces worksp
 `run(Run, PreparedRun, Duration)`:
 
 - `contained = containers.enabled() && run.taskId() != null`;
-  `coding = kind is IMPLEMENT or CI_FIX`; the policy becomes `policy.inContainer()` when contained.
+  `coding = kind is IMPLEMENT or CI_FIX`; the policy becomes `policy.inContainer()` when contained,
+  and the run directory is made absolute (a mount needs it, and `--mcp-config` then names the
+  same file inside).
 - After the credentials, when `contained && coding`: `start = Git.head(prep.cwd())` and
   `cwd = workspaces.cloneOf(run.taskId(), runDir)`; a failure ends the run `workspace_failed`.
 - `mcpConfigs.write(runDir, mcpToken, contained)`.
@@ -326,11 +341,13 @@ In `supervise`:
 - After the "finished elsewhere" check and before the result is built, for a contained coding run
   whose `exit.killReason()` is null, `timeout` or `budget`: `workspaces.bringHome(run, spec.cwd(), runDir, start)`.
   `CONTAINER_UNAVAILABLE` with no other reason makes the reason `container_unavailable`. Nothing
-  comes home from a cancelled run, a lost lease or a stopping coordinator.
+  comes home from a cancelled run, a lost lease or a stopping coordinator, and nothing is asked
+  of docker when it could not even start the agent's container (the reason below).
 - `failureReason(RunExit, String lastAssistant, boolean contained)`: after the kill reason and the
   success check, `contained && exit.result() == null && DockerCommand.dockerFailed(exit.exitCode())`
-  → `container_unavailable`. `RunWatch` keeps the last stderr line, and that reason logs it at
-  ERROR with `orange/worker/build.sh` named (a missing image says
+  → `container_unavailable`. `RunWatch` keeps the last stderr line that is not docker's pointer
+  to its own help (`Run 'docker run --help' …` comes last), and that reason logs it at ERROR with
+  the image and `orange/worker/build.sh` named (a missing image says
   `docker: Error response from daemon: No such image: …`).
 
 `FailureReasons.PAUSING` gains `container_unavailable` (open-ended, like `start_failed`: a person
@@ -472,9 +489,11 @@ public static List<String> containersOf(UUID runId);       // docker ps -aq --fi
 public static String docker(String... args);               // runs the CLI, returns stdout, throws on a non-zero exit
 ```
 
-`FakeClaude.java` gets one scenario, `probe`: for every prompt line `probe: <path>` it writes
-`<path>=visible` or `<path>=hidden` (`Files.exists`) to `fake-probe.txt` under
-`$CLAUDE_CONFIG_DIR`, then does what `implement` does.
+`FakeClaude.java` gets one scenario, `probe`: for every prompt line `probe: <path>` (indented or
+not: the test sends the paths as a feedback item's detail, because a task's worktree path is not
+known before the task exists) it writes `<path>=visible` or `<path>=hidden` (`Files.exists`) to
+`fake-probe.txt` under `$CLAUDE_CONFIG_DIR`, then does what `implement` does. Every tool call now
+also logs `POST <url>` to `fake-mcp.log`, before the replies.
 
 | test | kind | what it proves |
 |---|---|---|
@@ -483,10 +502,10 @@ public static String docker(String... args);               // runs the CLI, retu
 | `ContainerUrlsTest` | unit | loopback spellings are rewritten, port and path kept; other hosts untouched |
 | `RunNetworkGuardTest` | unit | inside and outside a subnet, IPv6, no subnets, an unparsable address |
 | `ToolPolicyTest` (2 more) | unit | `inContainer()`: implement and ci_fix get `bypassPermissions`, a review keeps `dontAsk` |
-| `ContainerFailureTest` | unit | `failureReason`: exit 125/126/127 with no result is `container_unavailable` only when contained; the reason pauses open-ended and does not count |
+| `ContainerFailureTest` | unit | `failureReason`: exit 125/126/127 with no result is `container_unavailable` only when contained, never when there is a result or a kill reason; the reason pauses open-ended and does not count |
 | `ContainerRuntimeIT` | Docker | `run` as the caller's uid with `HOME=/home/agent`, a secret from the client's environment and nothing of the host's; the file it wrote is the caller's; the network exists afterwards (a bridge, icc off) and `subnets()` is not empty; an offline container has no route; the exit code and the end of the output; the timeout removes the container; `removeByRun` removes a run's containers and no other run's; a missing image is exit 125, a missing command 127; a missing docker binary is `ContainerUnavailableException` and never a failed start |
-| `ContainerAdapterIT` | Docker | the adapter with a sandbox: Init … Result, exit 0, the fake's commit in the mounted repo by `orange[bot]`; `fake-env.json` has the token and `HOME=/home/agent`, and nothing of a host environment that holds `ORANGE_GITHUB_TOKEN`; `kill` during `[[fake:hang]]` ends the run and leaves no container |
-| `ContainerRunIT` | Spring + Docker | see C2 and C3 |
+| `ContainerAdapterIT` | Docker | the adapter with a sandbox: Init … Result, exit 0, the fake's commit in the mounted repo by `orange[bot]`, its cwd the repo's own path; `fake-env.json` has the token and `HOME=/home/agent`, and nothing of a host environment that holds `ORANGE_GITHUB_TOKEN` (no `DOCKER_HOST`, `USER`, `TMPDIR`, not the host's `PATH`); the token the agent echoes is redacted; `kill` during `[[fake:hang]]` ends the run and leaves no container, also when it comes before the container exists; a read-only sandbox cannot write its cwd; a missing image is exit 125 with docker's reason on stderr; a sandbox without a runtime is refused |
+| `ContainerRunIT` | Spring + Docker | see C2 and C3; also `RunWorkspaces` by itself: what the clone holds, what `bringHome` refuses, what `discard` deletes |
 | `RunLoopE2EIT.InContainers` | Spring + Docker | ready → integrated → dependent promoted, all in containers, with an evidence command that fails if it can see a host file |
 | `ContainerLiveIT` | live | the real image: see C4 |
 
@@ -556,9 +575,23 @@ Tests:
   3. `[[fake:hang]]` as a `ci_fix` run ends `timeout` and `containersOf(run)` is empty;
   4. `[[fake:no-commit]]` ends `no_commits` (the export said nothing new), and a second implement
      run of a task whose first run committed starts from that commit (`orange-fake.txt` in the
-     worktree then has two lines);
+     worktree then has two lines). As built, the first run commits and then reports `failed`, so
+     the same test shows that a failed run's commit comes home;
   5. a task's `diff_review` run passes, its evidence row is there, and
-     `git status --porcelain` of the worktree is empty.
+     `git status --porcelain` of the worktree is empty; its cwd is the worktree and its permission
+     mode `dontAsk`;
+  6. (added) `cloneOf`: the clone's refs are the task's branch and the base, it has no remote, no
+     alternates and no other task's commit, and its config does not name the base repo;
+  7. (added) `bringHome`: a `HEAD` behind its start and a worktree that moved are `UNREADABLE` and
+     leave the task's branch alone; the same clone with the right start is `IMPORTED`; an amended
+     start commit comes home as the branch's one commit;
+  8. (added) `discard` deletes read-only trees, removes a link without following it and leaves
+     the run's other files.
+
+  In test 1 the fake's `fake-mcp.log` names `http://host.docker.internal:<port>/mcp/worker` and
+  every reply is 200 or 202 (the notification). In test 2 the comparison with the test JVM's
+  environment leaves out `LANGUAGE` as well (the image's own locale) and reports names only: a
+  value there may be a credential of whoever runs the suite.
 
 Run: `./gradlew test --tests '*ContainerAdapterIT' --tests '*ContainerRunIT' --tests '*ToolPolicyTest' --tests '*ContainerFailureTest' --tests '*WorkerRunnerIT' --tests '*ClaudeCodeAdapterIT'`.
 

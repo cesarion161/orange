@@ -11,7 +11,8 @@ import java.util.Set;
  *
  * <ul>
  *   <li><b>Infra, pausing</b>: the next run would fail the same way at once (no token, a plan
- *       limit, the gateway down, a missing binary, a broken base repo). Not counted against the
+ *       limit, the gateway down, a missing binary, a broken base repo, and in container mode
+ *       {@code container_unavailable}: no Docker, no daemon or no image). Not counted against the
  *       task; the scheduler pauses instead.</li>
  *   <li><b>Infra, not pausing</b>: the run was stopped from outside (cancel, a lost lease, a
  *       coordinator restart), integration hit git or remote trouble, or every worktree slot was
@@ -24,7 +25,7 @@ import java.util.Set;
 public final class FailureReasons {
 
     public static final Set<String> PAUSING = Set.of("subscription_token_missing", "auth_failed", "plan_limit",
-            "gateway_unavailable", "start_failed", "workspace_failed");
+            "gateway_unavailable", "start_failed", "workspace_failed", "container_unavailable");
     /**
      * {@code integrate_failed} (git or remote trouble while integrating) sends the task to a person
      * instead; {@code no_worktree_slot} waits for a slot.
@@ -58,7 +59,7 @@ public final class FailureReasons {
         ZonedDateTime until = switch (reason) {
             case "plan_limit" -> PlanLimit.resetsAt(resultText, now).orElse(now.plus(PLAN_LIMIT_FALLBACK));
             case "gateway_unavailable" -> now.plus(GATEWAY_RETRY);
-            default -> null; // open-ended: a person has to fix the token, the binary or the repo
+            default -> null; // open-ended: a person has to fix the token, the binary, the repo or Docker
         };
         return Optional.of(new SchedulerPause.Pause(reason, until == null ? null : until.toOffsetDateTime(),
                 now.toOffsetDateTime()));

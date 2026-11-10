@@ -41,6 +41,31 @@ class ToolPolicyTest {
     }
 
     @Test
+    void inAContainerImplementAndFixRunsBypassPermissions() {
+        for (RunKind kind : new RunKind[]{RunKind.IMPLEMENT, RunKind.CI_FIX}) {
+            ToolPolicy host = ToolPolicy.forKind(kind);
+            ToolPolicy p = host.inContainer();
+            assertThat(p.permissionMode()).isEqualTo("bypassPermissions");
+            // Nothing else changes: the container is the boundary, the tools are the same.
+            assertThat(p.tools()).isEqualTo(host.tools());
+            assertThat(p.allowedTools()).isEqualTo(host.allowedTools());
+            assertThat(p.mcp()).isEqualTo(host.mcp());
+        }
+    }
+
+    @Test
+    void inAContainerARunWithoutBashKeepsItsMode() {
+        ToolPolicy review = ToolPolicy.forKind(RunKind.DIFF_REVIEW);
+        assertThat(review.inContainer()).isSameAs(review);
+        assertThat(review.inContainer().permissionMode()).isEqualTo("dontAsk");
+        // Runs that never go into a container today would keep theirs too.
+        for (RunKind kind : new RunKind[]{RunKind.PLAN, RunKind.JUDGE, RunKind.BRIEF}) {
+            ToolPolicy p = ToolPolicy.forKind(kind);
+            assertThat(p.inContainer()).as(kind.dbValue()).isSameAs(p);
+        }
+    }
+
+    @Test
     void verifyAndIntegrateAreNotAgentRuns() {
         for (RunKind kind : new RunKind[]{RunKind.VERIFY, RunKind.INTEGRATE}) {
             assertThatThrownBy(() -> ToolPolicy.forKind(kind)).isInstanceOf(IllegalArgumentException.class);
