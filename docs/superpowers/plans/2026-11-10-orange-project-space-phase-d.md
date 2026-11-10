@@ -9,7 +9,7 @@ skipped or refused run costs the words, never the brief: the facts are always or
 ## Tasks
 
 - [x] **D1. Schema, the brief record, settings and the schedule rule.**
-- [ ] **D2. The snapshot: the facts in SQL, the quiet rule, the news rule.**
+- [x] **D2. The snapshot: the facts in SQL, the quiet rule, the news rule.**
 - [ ] **D3. `submit_brief` and the brief run's wiring.**
 - [ ] **D4. The prompt and the text (pure).**
 - [ ] **D5. Writing a brief: the service, the tick and the fake.**
