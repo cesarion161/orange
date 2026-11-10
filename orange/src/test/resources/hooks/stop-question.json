@@ -1,0 +1,1 @@
+{"session_id":"SESSION","transcript_path":"/tmp/t.jsonl","cwd":"CWD","permission_mode":"default","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"I sketched two designs for the retry.\n\n1. Exponential backoff in the client.\n2. A retry queue.\n\nShould I proceed with option 1?"}

@@ -7,3 +7,9 @@ orange:
   events:
     # Tests call EventProcessor.drain() themselves.
     processing-enabled: false
+  attention:
+    # Tests call SessionService.sweep() themselves.
+    sweep-enabled: false
+  notify:
+    # Tests call AttentionNotifier.flush() themselves.
+    enabled: false
