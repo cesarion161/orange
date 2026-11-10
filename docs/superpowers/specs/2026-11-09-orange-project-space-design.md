@@ -1,6 +1,6 @@
 # orange: project space, session attention and evidence-gated integration
 
-2026-11-09 · Status: approved by the user 2026-11-09; Phases A and B built 2026-11-10 · Amends: `2026-11-02-orange-factory-v2-design.md` (the "v2 spec")
+2026-11-09 · Status: approved by the user 2026-11-09; Phases A, B and C built 2026-11-10 · Amends: `2026-11-02-orange-factory-v2-design.md` (the "v2 spec")
 
 ## 1. Intent
 

@@ -53,11 +53,13 @@ public class SessionService {
     private final RunRepository runs;
     private final VerdictRepository verdicts;
     private final SchedulerPause pause;
+    private final SessionWorkRepository work;
 
     public SessionService(SessionRepository sessions, ProjectService projectService, ProjectRepository projects,
                           AttentionService attention, AttentionRepository attentionItems, AttentionProperties props,
                           JudgeProperties judge, Conventions conventions, RunRepository runs,
-                          VerdictRepository verdicts, SchedulerPause pause) {
+                          VerdictRepository verdicts, SchedulerPause pause, SessionWorkRepository work) {
+        this.work = work;
         this.judge = judge;
         this.conventions = conventions;
         this.runs = runs;
@@ -107,6 +109,14 @@ public class SessionService {
             }
         }
         String prompt = e.payloadText("prompt");
+        // The unit of work is an intent (spec decision 10): a prompt opens work when none is open, and
+        // after a close it states a new intent.
+        boolean newIntent = false;
+        if (d.userPrompt() && prompt != null) {
+            String first = s.intent() != null && !Session.CLOSED.equals(s.status()) ? s.intent() : cut(prompt, MAX_INTENT);
+            boolean opened = work.openIfNone(s.id(), first);
+            newIntent = opened && Session.CLOSED.equals(s.status());
+        }
         Session next = new Session(s.id(),
                 project != null ? project.id() : s.projectId(),
                 s.harness(), s.externalId(), e.node(),
@@ -115,7 +125,7 @@ public class SessionService {
                 // A session that left its branch (a detached head) reports none; only git events say so.
                 e.repoRoot() != null ? e.branch() : s.branch(),
                 e.repoRoot() != null ? e.worktree() : s.worktree(),
-                s.intent() == null && prompt != null ? cut(prompt, MAX_INTENT) : s.intent(),
+                (s.intent() == null || newIntent) && prompt != null ? cut(prompt, MAX_INTENT) : s.intent(),
                 d.status() != null ? d.status() : s.status(),
                 waitingReason, waitingSince,
                 NeutralEvent.STOPPED.equals(e.type()) ? tail(lastMessage, MAX_MESSAGE) : s.lastMessage(),

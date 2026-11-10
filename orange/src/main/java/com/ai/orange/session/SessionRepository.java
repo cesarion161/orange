@@ -101,8 +101,9 @@ public class SessionRepository {
     }
 
     /** Sessions orange is deciding for right now. */
+    /** Sessions whose stop orange is still deciding: being judged, or being verified. */
     public List<Session> findJudging() {
-        return dsl.selectFrom(SESSIONS).where(SESSIONS.STATUS.eq(Session.JUDGING)).fetch()
+        return dsl.selectFrom(SESSIONS).where(SESSIONS.STATUS.in(Session.JUDGING, Session.VERIFYING)).fetch()
                 .map(SessionRepository::toDomain);
     }
 

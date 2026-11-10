@@ -1,13 +1,17 @@
 package com.ai.orange.run;
 
 import com.ai.orange.json.Json;
+import com.ai.orange.harness.HarnessProperties;
 import com.ai.orange.session.JudgePrompt;
+import com.ai.orange.session.Session;
+import com.ai.orange.session.SessionRepository;
 import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskRepository;
 import com.ai.orange.worktree.Git;
 import com.ai.orange.worktree.WorktreeService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.MissingNode;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import org.jooq.JSONB;
@@ -32,9 +36,14 @@ public class RunPreparer {
     private final RunEventRepository runEvents;
     private final WorktreeService worktrees;
     private final JudgePrompt judgePrompt;
+    private final SessionRepository sessions;
+    private final HarnessProperties harness;
 
     public RunPreparer(TaskRepository tasks, RunRepository runs, RunEventRepository runEvents,
-                       WorktreeService worktrees, @Lazy JudgePrompt judgePrompt) {
+                       WorktreeService worktrees, @Lazy JudgePrompt judgePrompt, SessionRepository sessions,
+                       HarnessProperties harness) {
+        this.sessions = sessions;
+        this.harness = harness;
         this.judgePrompt = judgePrompt;
         this.tasks = tasks;
         this.runs = runs;
@@ -63,6 +72,7 @@ public class RunPreparer {
      * active while a task verifies), and its prompt carries the whole diff, since it has no shell.
      */
     private PreparedRun prepareReview(Run run) throws Exception {
+        if (run.attendedSessionId() != null) return prepareSessionReview(run);
         Task task = task(run);
         Path cwd = worktrees.ensure(task.id());
         String head = EvidenceRunner.inputHead(run);
@@ -74,6 +84,32 @@ public class RunPreparer {
         Git.Output diff = Git.runCapped(cwd, Git.QUICK, MAX_REVIEW_PROMPT + 1, "diff", range);
         JsonNode meta = json(task.metadata());
         return prepared(run, task, meta, cwd, reviewPrompt(task, baseRef, head, stat, diff));
+    }
+
+    /**
+     * The review of a session's work. Like the judge it runs in an empty directory of its own with
+     * no file tools: the diff is text a session wrote, and starting Claude Code inside the user's
+     * checkout would load that repo's settings and hooks.
+     */
+    private PreparedRun prepareSessionReview(Run run) throws Exception {
+        Session s = sessions.findById(run.attendedSessionId())
+                .orElseThrow(() -> new IllegalStateException("session " + run.attendedSessionId() + " does not exist"));
+        JsonNode in = json(run.input());
+        String head = in.path("head_sha").asText("");
+        String base = in.path("base_sha").asText("");
+        String where = s.worktree() != null ? s.worktree() : s.repoRoot();
+        if (head.isBlank() || base.isBlank() || where == null) {
+            throw new IllegalStateException("session " + s.id() + " has no diff to review");
+        }
+        Path repo = Path.of(where);
+        String stat = Git.run(repo, Git.QUICK, "diff", "--stat", base, head);
+        Git.Output diff = Git.runCapped(repo, Git.QUICK, MAX_REVIEW_PROMPT + 1, "diff", base, head);
+        String intent = s.intent() == null ? "(the session stated no intent)" : s.intent().strip();
+        String prompt = reviewPrompt("Work of an interactive session", "What the user asked the session for:\n\n"
+                + intent + "\n\nYou have no file tools here: judge from the diff below alone.", base, head, stat, diff,
+                "The rest of the diff is not shown: review what is shown and say in your summary that it was cut.");
+        Path cwd = Files.createDirectories(harness.runRoot().resolve(run.id().toString()).resolve("empty"));
+        return new PreparedRun(cwd, prompt, run.role(), DEFAULT_DIFFICULTY, false, 0, null);
     }
 
     private Task task(Run run) {
@@ -90,10 +126,16 @@ public class RunPreparer {
 
     /** The intent, the range under review, its stat and its diff; cut at {@link #MAX_REVIEW_PROMPT}. */
     String reviewPrompt(Task task, String baseRef, String head, String stat, Git.Output diff) {
+        return reviewPrompt(task.title(), task.description(), baseRef, head, stat, diff,
+                "The rest of the diff is not shown: read the changed files listed above in the worktree.");
+    }
+
+    String reviewPrompt(String title, String description, String baseRef, String head, String stat, Git.Output diff,
+                        String whenCut) {
         StringBuilder b = new StringBuilder();
-        b.append("# ").append(task.title().strip()).append("\n\n");
-        if (task.description() != null && !task.description().isBlank()) {
-            b.append(task.description().strip()).append("\n\n");
+        b.append("# ").append(title.strip()).append("\n\n");
+        if (description != null && !description.isBlank()) {
+            b.append(description.strip()).append("\n\n");
         }
         b.append("## Change under review\n\n")
                 .append("Base: `").append(baseRef).append("`\n")
@@ -112,7 +154,7 @@ public class RunPreparer {
             if (end > file) where = ", inside the diff of `" + cut.substring(file + "\ndiff --git a/".length(), end) + "`";
         }
         return cut + "\n```\n\n[orange: the prompt was cut here, at " + MAX_REVIEW_PROMPT + " characters" + where
-                + ". The rest of the diff is not shown: read the changed files listed above in the worktree.]\n";
+                + ". " + whenCut + "]\n";
     }
 
     /**

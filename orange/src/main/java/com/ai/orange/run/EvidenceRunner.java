@@ -30,7 +30,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /**
- * Executes {@code verify} runs: orange itself, not an agent, checks the task's head. The worktree
+ * Executes {@code verify} runs: orange itself, not an agent, checks the head of a task or of one
+ * of the user's sessions. A task's worktree
  * must be at the head the run was queued for and clean, and every configured evidence command
  * must pass. Each check becomes an {@code evidence} row; the failures come back as gaps.
  *
@@ -53,19 +54,28 @@ public class EvidenceRunner implements RunExecutor {
     private final RunsProperties runsProps;
     private final RunLifecycle lifecycle;
     private final Supplier<Map<String, String>> hostEnv;
+    private final SessionChecks sessionChecks;
     private final Set<Process> live = ConcurrentHashMap.newKeySet();
     private volatile boolean stopping;
 
     @Autowired
     public EvidenceRunner(RunRepository runs, EvidenceRepository evidence, WorktreeService worktrees,
                           EvidenceProperties props, HarnessProperties harnessProps, RunsProperties runsProps,
-                          RunLifecycle lifecycle) {
-        this(runs, evidence, worktrees, props, harnessProps, runsProps, lifecycle, System::getenv);
+                          RunLifecycle lifecycle, SessionChecks sessionChecks) {
+        this(runs, evidence, worktrees, props, harnessProps, runsProps, lifecycle, System::getenv, sessionChecks);
     }
 
     public EvidenceRunner(RunRepository runs, EvidenceRepository evidence, WorktreeService worktrees,
                           EvidenceProperties props, HarnessProperties harnessProps, RunsProperties runsProps,
                           RunLifecycle lifecycle, Supplier<Map<String, String>> hostEnv) {
+        this(runs, evidence, worktrees, props, harnessProps, runsProps, lifecycle, hostEnv, null);
+    }
+
+    public EvidenceRunner(RunRepository runs, EvidenceRepository evidence, WorktreeService worktrees,
+                          EvidenceProperties props, HarnessProperties harnessProps, RunsProperties runsProps,
+                          RunLifecycle lifecycle, Supplier<Map<String, String>> hostEnv,
+                          SessionChecks sessionChecks) {
+        this.sessionChecks = sessionChecks;
         this.runs = runs;
         this.evidence = evidence;
         this.worktrees = worktrees;
@@ -118,7 +128,7 @@ public class EvidenceRunner implements RunExecutor {
         String head = inputHead(run);
         lifecycle.started(run, Json.mapper().createObjectNode().put("head_sha", head));
         try {
-            return verify(run, head);
+            return run.attendedSessionId() != null ? verifySession(run) : verify(run, head);
         } catch (LeaseLost e) {
             log.warn("verify run {} lost its lease; stopping", run.id());
             return lifecycle.fromRow(run.id());
@@ -128,6 +138,20 @@ public class EvidenceRunner implements RunExecutor {
             log.error("verify run {} failed: {}", run.id(), e.toString());
             return lifecycle.finish(run, RunResult.failed(run.id(), "workspace_failed"));
         }
+    }
+
+    /** A session's work is checked where it is, at whatever its head is now (see {@link SessionChecks}). */
+    private RunResult verifySession(Run run) {
+        if (sessionChecks == null) throw new IllegalStateException("this runner does not check sessions");
+        long deadline = System.nanoTime() + runsProps.timeout(RunKind.VERIFY).toNanos();
+        RunOutcome.SessionCheck outcome = sessionChecks.check(run, (dir, command, budget) -> {
+            CommandResult r = runCommand(run, dir, command, budget);
+            return new SessionChecks.Commands.Result(r.exitCode(), r.outputTail());
+        }, deadline);
+        runs.recordOutcome(run.id(), outcome.toJsonb());
+        log.info("verify run {} for session {}: {}", run.id(), run.attendedSessionId(), outcome.status());
+        return lifecycle.finish(run, new RunResult(run.id(), RunStatus.SUCCEEDED, null, outcome, null, null,
+                BigDecimal.ZERO));
     }
 
     private RunResult verify(Run run, String head) {

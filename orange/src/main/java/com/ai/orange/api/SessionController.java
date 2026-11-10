@@ -11,6 +11,11 @@ import java.util.List;
 import java.util.Map;
 import org.jooq.JSONB;
 import org.springframework.http.ResponseEntity;
+import com.ai.orange.evidence.EvidenceRepository;
+import com.ai.orange.session.SessionWorkRepository;
+import java.util.LinkedHashMap;
+import java.util.UUID;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -37,8 +42,13 @@ public class SessionController {
 
     private final SessionRepository sessions;
     private final SessionJudgement judgement;
+    private final SessionWorkRepository work;
+    private final EvidenceRepository evidence;
 
-    public SessionController(EventRepository inbox, SessionRepository sessions, SessionJudgement judgement) {
+    public SessionController(EventRepository inbox, SessionRepository sessions, SessionJudgement judgement,
+                             SessionWorkRepository work, EvidenceRepository evidence) {
+        this.work = work;
+        this.evidence = evidence;
         this.judgement = judgement;
         this.inbox = inbox;
         this.sessions = sessions;
@@ -102,5 +112,38 @@ public class SessionController {
     public List<Map<String, Object>> list(@RequestParam(defaultValue = "false") boolean all,
                                           @RequestParam(defaultValue = "50") int limit) {
         return sessions.findRecent(all, null, Math.clamp(limit, 1, 200)).stream().map(SpaceViews::of).toList();
+    }
+
+    /** What a session worked on and how each piece closed, with the evidence orange collected; newest first. */
+    @GetMapping("/{id}/work")
+    public ResponseEntity<Map<String, Object>> work(@PathVariable UUID id) {
+        if (sessions.findById(id).isEmpty()) return ResponseEntity.notFound().build();
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("work", work.findBySession(id).stream().map(w -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", w.id().toString());
+            m.put("intent", w.intent());
+            m.put("status", w.status());
+            m.put("result", w.result());
+            m.put("head_sha", w.headSha());
+            m.put("branch", w.branch());
+            m.put("base_branch", w.baseBranch());
+            m.put("note", w.note());
+            m.put("opened_at", String.valueOf(w.openedAt()));
+            m.put("closed_at", w.closedAt() == null ? null : w.closedAt().toString());
+            return m;
+        }).toList());
+        out.put("evidence", evidence.findBySession(id).stream().map(e -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("head_sha", e.headSha());
+            m.put("kind", e.kind());
+            m.put("command", e.command());
+            m.put("exit_code", e.exitCode());
+            m.put("passed", e.passed());
+            m.put("output_tail", e.outputTail());
+            m.put("created_at", String.valueOf(e.createdAt()));
+            return m;
+        }).toList());
+        return ResponseEntity.ok(out);
     }
 }

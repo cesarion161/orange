@@ -75,6 +75,7 @@ class JudgeIT {
     @Autowired RunRepository runs;
     @Autowired RunsProperties runProps;
     @Autowired WorkerRunner runner;
+    @Autowired com.ai.orange.run.RunExecutors executors;
     @Autowired SchedulerPause pause;
     @Autowired DSLContext dsl;
     final HttpClient http = HttpClient.newHttpClient();
@@ -264,9 +265,15 @@ class JudgeIT {
     }
 
     @Test
-    void finishedWorkAndIdleStopsJustStop() throws Exception {
+    void finishedWorkIsCheckedAndIdleStopsJustStop() throws Exception {
         String stop = stop("All done and committed. [[fake:judge-verify]]");
         runJudges();
+        // "Finished" is a claim orange checks (SessionCloseIT); the hook goes on waiting meanwhile.
+        assertThat(session().status()).isEqualTo(Session.VERIFYING);
+        assertThat(poll(stop).state()).isEqualTo(Poll.State.PENDING);
+        // This session's checkout does not exist, so there is nothing to check: it stops as finished.
+        executors.forKind(RunKind.VERIFY).orElseThrow()
+                .execute(runs.claimNext(RunKind.VERIFY, runProps.workerId(), runProps.leaseTtl()).orElseThrow());
         assertThat(session().status()).isEqualTo(Session.STOPPED);
         assertThat(session().waitingReason()).isEqualTo(Session.WAIT_FINISHED);
         assertThat(questions()).isEmpty();

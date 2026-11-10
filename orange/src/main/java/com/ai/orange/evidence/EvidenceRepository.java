@@ -34,6 +34,38 @@ public class EvidenceRepository {
                 .fetchOne());
     }
 
+    /** A check of a head of one of the user's sessions. */
+    public Evidence recordForSession(UUID sessionId, UUID runId, String headSha, String kind, String command,
+                                     Integer exitCode, String outputTail, boolean passed) {
+        return toDomain(dsl.insertInto(EVIDENCE)
+                .set(EVIDENCE.SESSION_ID, sessionId)
+                .set(EVIDENCE.RUN_ID, runId)
+                .set(EVIDENCE.HEAD_SHA, headSha)
+                .set(EVIDENCE.KIND, kind)
+                .set(EVIDENCE.COMMAND, command)
+                .set(EVIDENCE.EXIT_CODE, exitCode)
+                .set(EVIDENCE.OUTPUT_TAIL, outputTail)
+                .set(EVIDENCE.PASSED, passed)
+                .returning()
+                .fetchOne());
+    }
+
+    /** All evidence of a session, newest first. */
+    public List<Evidence> findBySession(UUID sessionId) {
+        return dsl.selectFrom(EVIDENCE)
+                .where(EVIDENCE.SESSION_ID.eq(sessionId))
+                .orderBy(EVIDENCE.CREATED_AT.desc(), EVIDENCE.ID.desc())
+                .fetch().map(EvidenceRepository::toDomain);
+    }
+
+    /** Whether a session's head has a passing diff review (its own, or one carried over by a clean rebase). */
+    public boolean sessionHasPassingDiffReview(UUID sessionId, String headSha) {
+        return dsl.fetchExists(EVIDENCE, EVIDENCE.SESSION_ID.eq(sessionId)
+                .and(EVIDENCE.HEAD_SHA.eq(headSha))
+                .and(EVIDENCE.KIND.eq(DIFF_REVIEW))
+                .and(EVIDENCE.PASSED.isTrue()));
+    }
+
     /** Evidence for one head of a task, oldest first. */
     public List<Evidence> findByTaskAndHead(UUID taskId, String headSha) {
         return dsl.selectFrom(EVIDENCE)
@@ -60,6 +92,6 @@ public class EvidenceRepository {
 
     static Evidence toDomain(EvidenceRecord r) {
         return new Evidence(r.getId(), r.getTaskId(), r.getRunId(), r.getHeadSha(), r.getKind(), r.getCommand(),
-                r.getExitCode(), r.getOutputTail(), Boolean.TRUE.equals(r.getPassed()), r.getCreatedAt());
+                r.getExitCode(), r.getOutputTail(), Boolean.TRUE.equals(r.getPassed()), r.getCreatedAt(), r.getSessionId());
     }
 }
