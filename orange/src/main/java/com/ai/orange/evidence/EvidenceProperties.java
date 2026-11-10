@@ -7,8 +7,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
 /**
- * The evidence orange collects itself ({@code orange.evidence}). Global for now; per-project
- * conventions replace the command list in project-space Phase C.
+ * The evidence orange collects itself ({@code orange.evidence}). The command list is for orange's
+ * own tasks; the work of the user's sessions is checked with the project's {@code evidence}
+ * convention ({@link EvidenceCommands}).
  *
  * @param commands        run in order in the task's worktree at its head; none by default
  * @param outputTailChars how much of each command's output (the end) is kept

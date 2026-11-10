@@ -143,7 +143,12 @@ orange:
   conventions:
     # Global defaults of the conventions (project-space spec §8). A project's space and a session's
     # overrides take precedence; brief-times and quiet-hours are global only.
+    # What closing a session's work takes: committed, evidence (the project's evidence commands and a
+    # diff review pass), integrated. A project sets its own commands in its "evidence" convention;
+    # orange only proposes them.
     done: [evidence, integrated]
+    # merge (rebase, fast-forward the base, push it when there is an origin), branch (leave it),
+    # ask (the user integrates), pr (not built: treated as ask). "remote-push: false" keeps it local.
     integration: merge
     auto-answer: routine
     always-ask: []
@@ -159,8 +164,9 @@ orange:
     max-attempts: 5
   evidence:
     # Commands orange runs itself, in a task's worktree at its head, before the task can count as
-    # verified (project-space spec §7). Per-project conventions replace this list in project-space
-    # Phase C. They get only the harness's allowlisted environment. Each entry:
+    # verified (project-space spec §7). This list is for orange's own tasks; a session's work is
+    # checked with its project's "evidence" convention. Commands get only the harness's allowlisted
+    # environment. Each entry:
     #   - { kind: tests|build|lint|custom, command: "./gradlew test", timeout: 20m }
     commands: []
     # How much of each command's output (its end) an evidence row keeps.

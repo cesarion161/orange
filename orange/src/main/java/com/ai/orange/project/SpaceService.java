@@ -102,6 +102,24 @@ public class SpaceService {
                 status, author.kind(), author.ref(), null, supersedes);
     }
 
+    /**
+     * orange's own suggestion for a convention (the evidence commands it detected, say). It is
+     * only proposed: nothing changes until the user accepts it. Returns the proposal already
+     * waiting for this key when there is one, so the same guess is not filed twice.
+     */
+    @Transactional
+    public SpaceItem proposeConvention(UUID projectId, String key, JsonNode value) {
+        lock(projectId);
+        Optional<SpaceItem> waiting = items.find(projectId, Set.of(SpaceItem.PROPOSED)).stream()
+                .filter(i -> SpaceItem.CONVENTION.equals(i.kind()) && key.equals(i.key()) && i.sessionId() == null)
+                .findFirst();
+        if (waiting.isPresent()) return waiting.get();
+        ObjectNode body = Json.mapper().createObjectNode();
+        body.set("value", value);
+        return items.insert(projectId, null, SpaceItem.CONVENTION, key, JSONB.valueOf(body.toString()),
+                SpaceItem.PROPOSED, SpaceItem.ORANGE, null, null, null);
+    }
+
     /** Makes a proposal active. A proposed convention replaces the active value of its key. */
     @Transactional
     public SpaceItem accept(UUID id) {

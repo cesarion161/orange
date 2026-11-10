@@ -42,6 +42,18 @@ public record ToolPolicy(List<String> tools, List<String> allowedTools, String p
         };
     }
 
+    /**
+     * As {@link #forKind}, except for runs about one of the user's sessions: a session's diff review
+     * gets no built-in tools, like its judge. It runs outside the user's checkout and reads the diff
+     * in its prompt.
+     */
+    public static ToolPolicy forRun(RunKind kind, boolean attended) {
+        if (attended && kind == RunKind.DIFF_REVIEW) {
+            return new ToolPolicy(List.of(), List.of("mcp__orange__submit_review"), "dontAsk", true);
+        }
+        return forKind(kind);
+    }
+
     private static List<String> plus(List<String> base, String... extra) {
         List<String> all = new ArrayList<>(base);
         all.addAll(List.of(extra));

@@ -48,10 +48,12 @@ public class SessionJudgement {
     private final RunRepository runs;
     private final SchedulerPause pause;
     private final JudgeProperties props;
+    private final SessionClosing closing;
 
     public SessionJudgement(SessionRepository sessions, SessionService sessionService, VerdictRepository verdicts,
                             SpaceService space, Conventions conventions, EventRepository inbox, RunRepository runs,
-                            SchedulerPause pause, JudgeProperties props) {
+                            SchedulerPause pause, JudgeProperties props, SessionClosing closing) {
+        this.closing = closing;
         this.sessions = sessions;
         this.sessionService = sessionService;
         this.verdicts = verdicts;
@@ -110,8 +112,9 @@ public class SessionJudgement {
             }
             case Verdict.ESCALATE -> escalate(s, project, run, stopEventId, v.question(), v.proposedAnswer(),
                     AttentionItem.URGENCIES.contains(v.urgency()) ? v.urgency() : AttentionItem.NORMAL, v.rationale(), now);
-            // "It is finished" starts verification in Phase C; until then it waits like any finished session.
-            case Verdict.VERIFY, Verdict.IDLE -> {
+            // "It is finished" is a claim: orange checks it, and the stop hook goes on waiting.
+            case Verdict.VERIFY -> closing.start(s, stopEventId);
+            case Verdict.IDLE -> {
                 verdicts.insert(s.id(), run.id(), stopEventId, v.kind(), null, v.rationale(), null, Verdict.PENDING);
                 sessions.save(s.waiting(Session.STOPPED, Session.WAIT_FINISHED, now));
             }
@@ -179,7 +182,7 @@ public class SessionJudgement {
             if (!Verdict.CONTINUE.equals(v.kind())) verdicts.settle(v.id(), Verdict.DELIVERED);
             return new Poll(Poll.State.VERDICT, v.kind(), v.message());
         }
-        boolean waiting = Session.JUDGING.equals(s.status()) && s.waitingSince() != null
+        boolean waiting = deciding(s) && s.waitingSince() != null
                 && Duration.between(s.waitingSince(), OffsetDateTime.now()).compareTo(props.hookWait()) < 0;
         return waiting ? Poll.PENDING : Poll.NONE;
     }
@@ -196,8 +199,14 @@ public class SessionJudgement {
         Verdict v = verdicts.find(s.id(), stopEventId).orElse(null);
         if (v == null || !Verdict.CONTINUE.equals(v.kind()) || !verdicts.settle(v.id(), Verdict.DELIVERED)) return false;
         sessions.save(s.waiting(Session.ACTIVE, null, null));
-        recordDecision(s, v);
+        // A gap orange found by checking the work carries no confidence: it is a finding, not a decision.
+        if (v.confidence() != null) recordDecision(s, v);
         return true;
+    }
+
+    /** orange has this stop in hand: a judge is deciding it, or its work is being verified. */
+    private static boolean deciding(Session s) {
+        return Session.JUDGING.equals(s.status()) || Session.VERIFYING.equals(s.status());
     }
 
     /** A prompt of the user that is stored but not applied yet already counts: the user wins. */
@@ -210,7 +219,7 @@ public class SessionJudgement {
     /**
      * Decisions nobody collected, and stops nobody decided. An answer no hook took within the
      * pickup grace goes to the inbox as a question with that answer proposed, so it is not lost.
-     * A session still being judged falls back to the rules when nothing will decide it: its judge
+     * A session still being judged or verified falls back to the rules when nothing will decide it: its
      * run is gone (reaped, or its result could not be applied), has not started within the start
      * grace, the scheduler is paused, or the hook has given up. Returns how many sessions it moved.
      */
@@ -221,12 +230,14 @@ public class SessionJudgement {
         for (Verdict v : verdicts.findPendingBefore(now.minus(props.pickupGrace()))) {
             Session s = sessions.lock(v.sessionId()).orElse(null);
             if (!verdicts.settle(v.id(), Verdict.EXPIRED) || s == null) continue;
-            if (Verdict.CONTINUE.equals(v.kind()) && Session.JUDGING.equals(s.status())
-                    && v.stopEventId().equals(s.stopEventId())) {
+            if (Verdict.CONTINUE.equals(v.kind()) && deciding(s) && v.stopEventId().equals(s.stopEventId())) {
                 Session waiting = s.withAutoContinues(Math.max(0, s.autoContinues() - 1))
                         .waiting(Session.STOPPED, Session.WAIT_QUESTION, now.truncatedTo(ChronoUnit.MILLIS));
                 sessions.save(waiting);
-                sessionService.raise(waiting, sessionService.projectOf(waiting), AttentionItem.SESSION_QUESTION, null,
+                // A late result of a check (spec decision 12): the session has stopped, so the user hears of it.
+                String found = v.confidence() == null ? "orange checked this session's work after it stopped, and it "
+                        + "is not done. The proposed answer is what orange would have told it." : null;
+                sessionService.raise(waiting, sessionService.projectOf(waiting), AttentionItem.SESSION_QUESTION, found,
                         v.message(), AttentionItem.NORMAL);
                 moved++;
             }
@@ -234,7 +245,7 @@ public class SessionJudgement {
         boolean paused = pause.current().isPresent();
         for (Session seen : sessions.findJudging()) {
             Session s = sessions.lock(seen.id()).orElse(null);
-            if (s == null || !Session.JUDGING.equals(s.status()) || s.waitingSince() == null) continue;
+            if (s == null || !deciding(s) || s.waitingSince() == null) continue;
             if (s.stopEventId() != null && verdicts.find(s.id(), s.stopEventId()).isPresent()) continue;
             Duration waited = Duration.between(s.waitingSince(), now);
             List<Run> live = runs.findBySession(s.id()).stream()
@@ -244,6 +255,9 @@ public class SessionJudgement {
             boolean neverStarted = live.stream().allMatch(r -> r.status() == RunStatus.QUEUED)
                     && waited.compareTo(props.startGrace()) >= 0;
             boolean overdue = waited.compareTo(props.hookWait()) >= 0;
+            // A check may take longer than any hook waits; it is left to finish (spec decision 12) unless
+            // nothing will run it.
+            if (Session.VERIFYING.equals(s.status()) && !live.isEmpty() && !paused) continue;
             if (!live.isEmpty() && !neverStarted && !overdue && !paused) continue;
             runs.cancelQueuedForSession(s.id());
             sessionService.fallBackToRules(s);

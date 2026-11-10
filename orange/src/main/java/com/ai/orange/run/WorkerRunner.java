@@ -243,7 +243,7 @@ public class WorkerRunner implements RunExecutor {
             log.error("run {}: cannot route or prompt role {}: {}", run.id(), prep.role(), e.getMessage());
             return conclude(run, RunResult.failed(run.id(), "start_failed"), null);
         }
-        ToolPolicy policy = ToolPolicy.forKind(run.kind());
+        ToolPolicy policy = ToolPolicy.forRun(run.kind(), run.attendedSessionId() != null);
         String alias = route.auth() == AuthMode.GATEWAY ? "run-" + run.id() : null;
         String mcpToken = policy.mcp() ? RunTokens.newToken() : null;
         Path runDir = harnessProps.runRoot().resolve(run.id().toString());

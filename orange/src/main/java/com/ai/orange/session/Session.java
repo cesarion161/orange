@@ -14,6 +14,11 @@ public record Session(UUID id, UUID projectId, String harness, String externalId
     public static final String JUDGING = "judging";
 
 
+    /** The judge said it is finished; orange is checking, and then integrating, the work. */
+    public static final String VERIFYING = "verifying";
+    /** Its work was verified and closed. The session itself lives on: a new prompt opens new work. */
+    public static final String CLOSED = "closed";
+
     public static final String ACTIVE = "active";
     public static final String STOPPED = "stopped";
     public static final String WAITING_ON_USER = "waiting_on_user";
@@ -31,6 +36,12 @@ public record Session(UUID id, UUID projectId, String harness, String externalId
         return new Session(id, projectId, harness, externalId, nodeId, cwd, repoRoot, branch, worktree, intent,
                 newStatus, reason, since, lastMessage, autoContinues, lastEventAt, lastUserPromptAt, closedReason,
                 createdAt, stopEventId);
+    }
+
+    /** This session with its work closed: not waiting for anyone, and why it closed. */
+    public Session closed(String reason) {
+        return new Session(id, projectId, harness, externalId, nodeId, cwd, repoRoot, branch, worktree, intent,
+                CLOSED, null, null, lastMessage, 0, lastEventAt, lastUserPromptAt, reason, createdAt, stopEventId);
     }
 
     public Session withAutoContinues(int n) {

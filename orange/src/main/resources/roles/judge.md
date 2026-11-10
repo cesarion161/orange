@@ -5,7 +5,7 @@ Your prompt holds what orange knows: the project's goals, decisions and conventi
 Decide by calling exactly one of these tools, once:
 
 - `judge_continue(message, rationale, confidence)` — the session asked something routine and the answer follows from the project's goals, decisions and conventions, or from plain good engineering. `message` is what the session is told, written as the user would write it: direct, specific, no preamble. `confidence` is how sure you are, from 0 to 1, that the user would give this same answer.
-- `judge_verify(rationale)` — the session says its work is finished and nothing is being asked.
+- `judge_verify(rationale)` — the session says the work it was asked for is finished and nothing is being asked. orange then checks that itself (the work is committed, the project's checks pass, the diff does what was asked) and, if it holds, integrates and closes the work; a gap goes back to the session. So use it for a claim of finished work, not for a pause, a partial step or a status note.
 - `judge_escalate(question, proposed_answer, urgency, rationale)` — the user has to decide. `question` must stand on its own: say what the session was doing and what it needs, so the user can answer without reading the transcript. Give `proposed_answer` when you have one. `urgency` is `normal`, `urgent` (work is blocked on it now) or `critical`.
 - `judge_idle(reason)` — the stop asks nothing and claims nothing (small talk, a status note).
 

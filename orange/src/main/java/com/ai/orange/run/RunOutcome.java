@@ -94,7 +94,8 @@ public sealed interface RunOutcome {
      * An integrate run's result.
      *
      * @param status    {@code integrated}, {@code rebased}, {@code conflict}, {@code base_moved},
-     *                  {@code stale} or {@code failed}
+     *                  {@code stale}, {@code failed}, or for a session on the base branch
+     *                  {@code behind} (origin's base has commits the session lacks)
      * @param headSha   the integrated head, or the new head after a rebase
      * @param pushed    whether the base was pushed (integrated only)
      * @param localBase {@code updated}, {@code dirty} or {@code skipped} (integrated only)
@@ -151,6 +152,55 @@ public sealed interface RunOutcome {
         }
     }
 
+    /**
+     * What orange found when it checked the work of one of the user's sessions.
+     *
+     * @param status     {@code passed}; {@code gaps} (uncommitted work or a failing command);
+     *                   {@code no_evidence} (the project has no evidence commands, so nothing can
+     *                   show the work is done); {@code unavailable} (no checkout orange can check)
+     * @param headSha    the commit that was checked
+     * @param baseSha    where the work left its base; null when there is no base to compare with
+     * @param baseBranch the branch the work integrates onto; null when none is known
+     * @param detected   commands the checkout suggests ({@code no_evidence} only)
+     * @param note       why, for {@code unavailable}
+     */
+    record SessionCheck(String status, String headSha, String baseSha, String branch, String baseBranch,
+                        List<EvidenceGap> gaps, List<String> detected, String note) implements RunOutcome {
+        public static final String PASSED = "passed";
+        public static final String GAPS = "gaps";
+        public static final String NO_EVIDENCE = "no_evidence";
+        public static final String UNAVAILABLE = "unavailable";
+
+        public SessionCheck {
+            gaps = gaps == null ? List.of() : List.copyOf(gaps);
+            detected = detected == null ? List.of() : List.copyOf(detected);
+        }
+
+        static SessionCheck unavailable(String note) {
+            return new SessionCheck(UNAVAILABLE, null, null, null, null, List.of(), List.of(), note);
+        }
+
+        @Override
+        public JSONB toJsonb() {
+            ObjectNode node = Json.mapper().createObjectNode().put("type", "session_check").put("status", status);
+            if (headSha != null) node.put("head_sha", headSha);
+            if (baseSha != null) node.put("base_sha", baseSha);
+            if (branch != null) node.put("branch", branch);
+            if (baseBranch != null) node.put("base_branch", baseBranch);
+            if (note != null) node.put("note", note);
+            ArrayNode array = node.putArray("gaps");
+            for (EvidenceGap g : gaps) {
+                ObjectNode gap = array.addObject().put("source", g.source()).put("command", g.command());
+                if (g.exitCode() == null) gap.putNull("exit_code");
+                else gap.put("exit_code", g.exitCode());
+                gap.put("output_tail", g.outputTail());
+            }
+            ArrayNode d = node.putArray("detected");
+            detected.forEach(d::add);
+            return JSONB.valueOf(node.toString());
+        }
+    }
+
     static Optional<RunOutcome> parse(JSONB json) {
         if (json == null) return Optional.empty();
         try {
@@ -187,6 +237,23 @@ public sealed interface RunOutcome {
                             node.hasNonNull("local_base") ? node.get("local_base").asText() : null,
                             files,
                             node.hasNonNull("error") ? node.get("error").asText() : null));
+                }
+                case "session_check" -> {
+                    List<EvidenceGap> gaps = new ArrayList<>();
+                    for (JsonNode g : node.path("gaps")) {
+                        gaps.add(new EvidenceGap(g.path("source").asText(), g.path("command").asText(null),
+                                g.hasNonNull("exit_code") ? g.get("exit_code").asInt() : null,
+                                g.path("output_tail").asText("")));
+                    }
+                    List<String> detected = new ArrayList<>();
+                    node.path("detected").forEach(d -> detected.add(d.asText()));
+                    yield Optional.of(new SessionCheck(node.path("status").asText(),
+                            node.hasNonNull("head_sha") ? node.get("head_sha").asText() : null,
+                            node.hasNonNull("base_sha") ? node.get("base_sha").asText() : null,
+                            node.hasNonNull("branch") ? node.get("branch").asText() : null,
+                            node.hasNonNull("base_branch") ? node.get("base_branch").asText() : null,
+                            gaps, detected,
+                            node.hasNonNull("note") ? node.get("note").asText() : null));
                 }
                 case "verdict" -> Optional.of(new Verdict(node.path("kind").asText(),
                         node.hasNonNull("message") ? node.get("message").asText() : null,
