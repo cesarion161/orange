@@ -322,8 +322,11 @@ public class WorkerRunner implements RunExecutor {
             if (ownClone) {
                 // The task's worktree stays orange's own: the agent gets a clone, and its commits come back as a bundle.
                 try {
+                    long cloning = System.nanoTime();
                     startSha = Git.head(prep.cwd());
                     cwd = workspaces.cloneOf(run.taskId(), runDir);
+                    log.info("run {}: cloned the task's branch for its container in {} ms", run.id(),
+                            TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - cloning));
                 } catch (IOException | RuntimeException e) {
                     log.error("run {}: could not clone the task's branch for its container: {}", run.id(), e.getMessage());
                     return conclude(run, RunResult.failed(run.id(), "workspace_failed"), null);
@@ -408,8 +411,10 @@ public class WorkerRunner implements RunExecutor {
         } else if (startSha != null && (exit.killReason() == null || KILLED_BUT_HOME.contains(exit.killReason()))) {
             // Commits come home from runs that failed, timed out or went over budget, as they stay
             // in the worktree in process mode. Not from a cancelled run, a lost lease or a stopping coordinator.
+            long exporting = System.nanoTime();
             RunWorkspaces.Home home = workspaces.bringHome(run, spec.cwd(), runDir, startSha);
-            log.info("run {}: its commits: {}", run.id(), home.name().toLowerCase(Locale.ROOT));
+            log.info("run {}: its commits: {} ({} ms)", run.id(), home.name().toLowerCase(Locale.ROOT),
+                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - exporting));
             if (home == RunWorkspaces.Home.CONTAINER_UNAVAILABLE && reason == null) reason = "container_unavailable";
         }
         RunOutcome outcome = RunOutcome.parse(row.outcome()).orElse(null);

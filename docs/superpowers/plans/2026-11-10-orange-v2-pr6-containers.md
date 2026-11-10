@@ -13,7 +13,10 @@ and is untouched.
 - [x] **C2. Agent runs in containers: the launcher, the clone, the way home.**
 - [x] **C3. Evidence commands, the reaper, the network guard, the loop end to end.**
 - [x] **C4. The worker image, the docs, the live checks' code.**
-- [ ] **C5. Live gate** (one real implement run in a container; recorded below).
+- [ ] **C5. Live gate** (one real implement run in a container; recorded below). Open: everything
+  around it is done and recorded under Verified (the image, the invalid-token check, the loop by
+  hand with the fake, the whole suite), but the run with the real token has not been made. See
+  "Live check" at the end.
 
 ## Design
 
@@ -235,7 +238,15 @@ Claude Code 2.1.322 is what this laptop runs):
   the host's git 2.54.0 and bundles from it when it is mounted read-only; the host fetches that
   bundle. An empty `ORANGE_RUNNER_ISOLATION` binds as `process`: Spring reads an empty string as
   no enum constant, and the default steps in.
-- Not checked: source addresses on a Linux bridge; a model call from inside the container (C5).
+- While building C5: a coordinator started by hand (`bootTestRun`, the shipped
+  `application.yaml`) takes container mode, the image, the image's Claude command and one
+  evidence command from environment variables alone (`ORANGE_RUNNER_ISOLATION`,
+  `ORANGE_WORKER_IMAGE`, `ORANGE_RUNNER_CONTAINER_CLAUDECOMMAND_0` and `_1`,
+  `ORANGE_EVIDENCE_COMMANDS_0_KIND` and `_COMMAND`); a run root and a worktree root under
+  `/private/tmp` mount at their own paths (Docker Desktop shares it); with the fake, the clone
+  takes about 0.15 s and the export with its import about 0.4 s.
+- Not checked: source addresses on a Linux bridge; a model call from inside the container (the
+  live gate of C5, still to be run).
 
 ### The launcher (`harness`)
 
@@ -348,6 +359,7 @@ New constructor parameters: `ContainerRuntime containers`, `RunWorkspaces worksp
   same file inside).
 - After the credentials, when `contained && coding`: `start = Git.head(prep.cwd())` and
   `cwd = workspaces.cloneOf(run.taskId(), runDir)`; a failure ends the run `workspace_failed`.
+  The clone's time is logged at INFO (`cloned the task's branch for its container in … ms`).
 - `mcpConfigs.write(runDir, mcpToken, contained)`.
 - `sandbox = contained ? new Sandbox(!coding, DockerCommand.labels(run.id(), run.kind().dbValue(), props.workerId())) : null`;
   the `RunSpec` gets `cwd` and the sandbox.
@@ -361,7 +373,8 @@ In `supervise`:
   whose `exit.killReason()` is null, `timeout` or `budget`: `workspaces.bringHome(run, spec.cwd(), runDir, start)`.
   `CONTAINER_UNAVAILABLE` with no other reason makes the reason `container_unavailable`. Nothing
   comes home from a cancelled run, a lost lease or a stopping coordinator, and nothing is asked
-  of docker when it could not even start the agent's container (the reason below).
+  of docker when it could not even start the agent's container (the reason below). The INFO
+  line `its commits: imported (… ms)` carries the time of the export and the import.
 - `failureReason(RunExit, String lastAssistant, boolean contained)`: after the kill reason and the
   success check, `contained && exit.result() == null && DockerCommand.dockerFailed(exit.exitCode())`
   → `container_unavailable`. `RunWatch` keeps the last stderr line that is not docker's pointer
@@ -735,7 +748,10 @@ Run: `./gradlew compileJava compileTestJava`, `./gradlew test`.
 
 `./worker/build.sh`, then `./gradlew liveTest --tests '*ContainerLiveIT'` with
 `CLAUDE_CODE_OAUTH_TOKEN` in `orange/.env` (`liveTest` reads it). That is the gate: one real
-implement run in a container on a throwaway local repo.
+implement run in a container on a throwaway local repo. The test prints the image, the model,
+the cost estimate and the seconds; the log has the clone's time
+(`cloned the task's branch for its container in … ms`) and the export's
+(`its commits: imported (… ms)`).
 
 Then once by hand, the whole loop: a throwaway repo (`git init`, one commit, no origin), and
 `./gradlew bootRun` with `ORANGE_RUNNER_ISOLATION=container`, `WORKTREES_BASE_REPO` at that repo
@@ -745,6 +761,23 @@ for `HELLO.md`; watch it reach `integrated` (implement, verify and the diff revi
 container). Record under "Live check" in this file: the Claude Code version in the image, the
 Docker version, the times of the clone, the run and the export, the cost estimate, and anything
 that had to change.
+
+Two things to know before that hand run, found while rehearsing it:
+
+- `bootRun` works on the compose Postgres, which is the development database: its run loop takes
+  up whatever tasks are waiting there. `./gradlew bootTestRun` starts a Postgres of its own
+  instead, but reads no `orange/.env` (the variables have to be in the shell) and the test
+  configuration on its classpath switches the loop off, so it also needs
+  `ORANGE_RUNS_LOOPENABLED=true`.
+- Set `ORANGE_API_TOKEN` for it: on Docker Desktop a container reaches the whole open API (known
+  limits), and orange says so in a WARN at start.
+
+As built (2026-11-10): the engineer of C5 worked under the instruction to make no model call and
+to put no real credential anywhere, so the gate itself is still open. Done instead, and recorded
+under Verified: the image rebuilt and checked, `ContainerLiveIT` without a token (the
+invalid-token test passes, the real run is skipped), the hand loop above with the suite's fake in
+the test image in place of Claude Code, the whole suite, and the two log lines that give the
+clone's and the export's time.
 
 ## Builder's rulings
 
@@ -872,8 +905,8 @@ that had to change.
 - The worker image holds Debian's git (2.39 on bookworm), older than a host's may be. A
   repository format the host's git writes and the image's cannot read (a later git's defaults)
   would fail the run inside the container; with git 2.54 on the host it works.
-- Not checked before C5: a model call from inside the container (the invalid-token check of C4
-  stops at Anthropic's 401).
+- Not checked yet: a model call from inside the container (the invalid-token check of C4 stops
+  at Anthropic's 401). That is the live gate of C5, which has not been run.
 
 ## Review
 
@@ -896,3 +929,79 @@ Docker 29.7.2 (Docker Desktop, linux/arm64), built as uid 501, gid 20.
 - By hand, the export path with the real image: a clone made by the host's git, a commit made in
   a container as `orange[bot]`, the bundle written by a second container with no network from the
   clone mounted read-only, fetched and reset into a linked worktree on the host.
+
+### The whole suite (C5, 2026-11-10)
+
+`./gradlew test` on the final code: 88 suites, 663 tests, 0 failures, 0 errors, 0 skipped, 5m38s
+(Docker 29.7.2, Docker Desktop, linux/arm64). The container tests among them, all against the
+real daemon with the test image: `ContainerRuntimeIT` 12, `DockerCommandTest` 12,
+`RunnerPropertiesTest` 9, `ContainerUrlsTest` 2, `ContainerAdapterIT` 8, `ContainerRunIT` 19,
+`ContainerFailureTest` 5, `RunNetworkGuardTest` 12, `RunLoopE2EIT` 3 (`InContainers` one of
+them). No model call and no credential. Afterwards no fake Claude Code process and no container
+with an `orange.run` label is left.
+
+The docs the plan names are in place: `CLAUDE.md` (layout, the worker image, the tests and the
+live tests, the contained path under "Running Claude Code", the "Isolation" section, the reaper,
+the pause, the evidence runner, `probe`, the `orange.runner` knobs, the two variables) and
+`orange/.env.example` (`ORANGE_RUNNER_ISOLATION`, `ORANGE_WORKER_IMAGE`).
+
+### The loop in containers by hand, with the fake (C5, 2026-11-10)
+
+The hand loop of C5 with the suite's fake in the test image where the live check has Claude Code
+in the worker image: no model, no credential (a made-up token in the shell). It checks what the
+suite does not: a coordinator started from the command line with the shipped `application.yaml`,
+configured by environment variables alone, and a task that comes in through `POST /tasks`.
+
+- A throwaway repository (`git init -b main`, one commit, no origin) and a canary file next to
+  it, all under `/private/tmp`.
+- `./gradlew bootTestRun` (a Postgres of its own, not the development database) with
+  `SERVER_PORT=18473`, `ORANGE_RUNNER_ISOLATION=container`,
+  `ORANGE_WORKER_IMAGE=orange-worker-test:local`,
+  `ORANGE_RUNNER_CONTAINER_CLAUDECOMMAND_0=java`,
+  `ORANGE_RUNNER_CONTAINER_CLAUDECOMMAND_1=/opt/fake-claude/FakeClaude.java`,
+  `WORKTREES_BASE_REPO`, `WORKTREES_ROOT`, `WORKTREES_BASE_BRANCH=main`, `ORANGE_RUN_ROOT`,
+  `ORANGE_EVIDENCE_COMMANDS_0_KIND=tests`,
+  `ORANGE_EVIDENCE_COMMANDS_0_COMMAND='test -f orange-fake.txt && test ! -e <canary> && id -u'`
+  and `ORANGE_RUNS_LOOPENABLED=true` (the test configuration on that classpath switches the loop
+  off). Started in 6.7 s; orange warned that container mode runs without `ORANGE_API_TOKEN`.
+- `POST /tasks` with role `chore`: `integrated` 5.8 s later, every run at its first attempt.
+  - implement (small tier): clone 143 ms, the fake in its container about 1.4 s until it
+    reported, export and import 370 ms, 2.7 s in all. Its MCP calls went to
+    `http://host.docker.internal:18473/mcp/worker`.
+  - verify: 0.6 s; the evidence row has exit code 0 and the output `501`, so the command ran as
+    orange's uid in a container that does not hold the canary.
+  - diff review (medium tier, the worktree read-only): 2.1 s, `pass`.
+  - integrate: 0.3 s; `main` of the throwaway repository is at the task's commit, its checkout
+    clean with the new file in it, and the task's worktree is gone.
+- Afterwards: no container with an `orange.run` label; the implement run's directory holds
+  `stream.jsonl`, `stderr.log` and `claude-config` and no clone, export or `mcp.json`; the
+  made-up token is in no `stream.jsonl`, no `stderr.log` and not in the coordinator's log. (It
+  is in `claude-config/fake-env.json`: the fake writes down the environment it was given, for
+  the suite to read.)
+
+Nothing had to change for it. Added on the way: the two INFO lines of `WorkerRunner` that give
+the clone's and the export's time, which the record below asks for.
+
+### Live check
+
+Not run yet. C5's engineer was told to make no model call and to put no real credential in a
+file, so `oneRealImplementRunInAContainer` has still only been compiled, and what stays unchecked
+is the one thing the fake cannot show: Claude Code in the worker image getting an answer from
+Anthropic with the subscription token and working through a real implement run.
+
+What was checked again on the final code, without a token (2026-11-10, Docker 29.7.2, Docker
+Desktop, linux/arm64): `./worker/build.sh` builds `orange-worker:local` (Claude Code 2.1.322 on
+`debian:bookworm-slim`, agent user 501:20; `claude --version` prints `2.1.322 (Claude Code)`,
+`id -u` prints `501`), and `./gradlew liveTest --tests 'com.ai.orange.e2e.ContainerLiveIT'` runs
+2 tests: `realClaudeInTheImageTakesOrangesCommandLineAndReachesTheWorkerMcp` passes in 4.4 s
+(`orange` connected), `oneRealImplementRunInAContainer` is skipped.
+
+To close the gate, in `orange/` of this branch, with `CLAUDE_CODE_OAUTH_TOKEN` in `orange/.env`:
+
+1. `./gradlew liveTest --tests 'com.ai.orange.e2e.ContainerLiveIT'`: both tests must pass. It is
+   one implement run on the small tier at low effort, capped at that tier's budget.
+2. The hand loop of C5 with the real image.
+
+Then record here: the Claude Code version in the image, the Docker version, the times of the
+clone, the run and the export (the two log lines, and the seconds the test prints), the cost
+estimate, and anything that had to change. Then tick C5.
