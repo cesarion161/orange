@@ -22,7 +22,11 @@ import java.util.regex.Pattern;
  * {@code --append-system-prompt} text. Without a marker it acts like the run it was started as:
  * with {@code mcp__orange__report_result} allowed it implements (edits, commits and reports
  * {@code done} through the worker MCP endpoint), with {@code mcp__orange__submit_review} allowed
- * it reviews and passes.
+ * it reviews and passes, with {@code mcp__orange__judge_continue} allowed it answers the session,
+ * and with {@code mcp__orange__submit_brief} allowed it writes a brief: a status line for every
+ * {@code ## Project: <name>} line of its prompt and one focus item. The brief scenarios with a
+ * marker: {@code brief-urgent} (one urgent entry as well), {@code brief-unknown-project} (a call
+ * that is refused, and nothing after it) and {@code brief-corrected} (that call, then a valid one).
  *
  * <p>Every scenario records its arguments, environment and prompt as {@code fake-args.json},
  * {@code fake-env.json} and {@code fake-prompt.txt} under {@code $CLAUDE_CONFIG_DIR}; MCP replies
@@ -31,6 +35,10 @@ import java.util.regex.Pattern;
 public class FakeClaude {
 
     private static final Pattern MARKER = Pattern.compile("\\[\\[fake:([a-z-]+)]]");
+    /** How a brief prompt names the projects it wants a line for. */
+    private static final Pattern PROJECT = Pattern.compile("(?m)^## Project: (.+)$");
+    private static final String UNKNOWN_PROJECT_BRIEF = "{\"projects\":[{\"project\":\"no-such-project\","
+            + "\"status_line\":\"All fine.\"}],\"focus\":[]}";
 
     private static Path configDir;
     private static Path mcpConfig;
@@ -66,6 +74,7 @@ public class FakeClaude {
         else if (allowed.contains("mcp__orange__report_result")) scenario = "implement";
         else if (allowed.contains("mcp__orange__submit_review")) scenario = "review";
         else if (allowed.contains("mcp__orange__judge_continue")) scenario = "judge-continue";
+        else if (allowed.contains("mcp__orange__submit_brief")) scenario = "brief";
         else scenario = "success";
         Path cwd = Path.of("").toAbsolutePath();
         String firstLine = prompt.lines().filter(l -> !l.isBlank()).findFirst().orElse("work").replaceFirst("^#+\\s*", "").trim();
@@ -138,6 +147,26 @@ public class FakeClaude {
                 callTool("propose_item", "{\"kind\":\"decision\",\"text\":\"Retries use exponential backoff.\"}");
                 callTool("judge_continue", "{\"message\":\"Go ahead.\",\"rationale\":\"Routine.\",\"confidence\":0.9}");
                 finishOk(model, session, "Answered and proposed.");
+            }
+            case "brief" -> {
+                callTool("submit_brief", briefArguments(briefProjects(prompt), ""));
+                finishOk(model, session, "Brief written.");
+            }
+            case "brief-urgent" -> {
+                List<String> projects = briefProjects(prompt);
+                String urgent = projects.isEmpty() ? "" : "{\"project\":" + q(projects.get(0))
+                        + ",\"title\":\"The milestone is close with nothing closed\",\"why\":\"It is due tomorrow.\"}";
+                callTool("submit_brief", briefArguments(projects, urgent));
+                finishOk(model, session, "Brief written, with something urgent.");
+            }
+            case "brief-unknown-project" -> {
+                callTool("submit_brief", UNKNOWN_PROJECT_BRIEF);
+                finishOk(model, session, "Tried a project that is not there.");
+            }
+            case "brief-corrected" -> {
+                callTool("submit_brief", UNKNOWN_PROJECT_BRIEF);
+                callTool("submit_brief", briefArguments(briefProjects(prompt), ""));
+                finishOk(model, session, "Brief written at the second try.");
             }
             case "review-gaps" -> {
                 callTool("submit_review", "{\"verdict\":\"gaps\",\"summary\":\"Two gaps\",\"gaps\":["
@@ -235,6 +264,30 @@ public class FakeClaude {
             run(cwd, "git", "add", "-A");
             run(cwd, "git", "-c", "user.email=fake@orange", "-c", "user.name=fake", "commit", "-q", "-m", "fake: " + firstLine);
         }
+    }
+
+    /** The projects a brief prompt wants a line for, in its order. */
+    private static List<String> briefProjects(String prompt) {
+        List<String> names = new ArrayList<>();
+        Matcher m = PROJECT.matcher(prompt);
+        while (m.find()) names.add(m.group(1).strip());
+        return names;
+    }
+
+    /**
+     * {@code submit_brief} arguments: a status line per project and one focus item for the first.
+     *
+     * @param urgentJson the entries of {@code urgent} as a JSON fragment; empty for none
+     */
+    private static String briefArguments(List<String> projects, String urgentJson) {
+        List<String> lines = new ArrayList<>();
+        for (String p : projects) {
+            lines.add("{\"project\":" + q(p) + ",\"status_line\":" + q(p + ": steady, nothing blocked.") + "}");
+        }
+        String focus = projects.isEmpty() ? "" : "{\"project\":" + q(projects.get(0))
+                + ",\"item\":\"Answer the open question\",\"why\":\"A session waits on it.\"}";
+        return "{\"projects\":[" + String.join(",", lines) + "],\"focus\":[" + focus + "],\"urgent\":["
+                + urgentJson + "]}";
     }
 
     // ─────────────────────────── worker MCP client ───────────────────────────
