@@ -204,6 +204,8 @@ class BriefSnapshotTest {
         // Line ends that are not \n: a line separator, a next-line control, a vertical tab.
         assertThat(BriefSnapshot.one("a ## Project: b\u0085c\u000Bd e", 200))
                 .isEqualTo("a ## Project: b c d e");
+        // Nothing unseen stays: a bidi override, a zero-width space, an escape.
+        assertThat(BriefSnapshot.one("a‮b​c\u001Bd ⁦e⁩", 200)).isEqualTo("a b c d e");
         // Never half of a character.
         assertThat(BriefSnapshot.one("ab🍊cd", 4)).isEqualTo("ab…");
     }

@@ -193,8 +193,11 @@ public record BriefSnapshot(String at, String since, String zone, List<ProjectFa
         return status;
     }
 
-    /** Whatever would end a line or cannot be seen: white space of any kind and control characters. */
-    private static final Pattern BREAKS = Pattern.compile("(?U)[\\s\\p{Cntrl}]+");
+    /**
+     * Whatever would end a line or cannot be seen: white space of any kind, control characters and
+     * format characters (zero-width ones, and the bidi marks that reorder the text around them).
+     */
+    private static final Pattern BREAKS = Pattern.compile("(?U)[\\s\\p{Cntrl}\\p{Cf}]+");
 
     /** A text as one line of at most {@code max} characters, cut with a final {@code …}; null stays null. */
     static String one(String text, int max) {

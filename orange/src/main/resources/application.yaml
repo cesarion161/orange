@@ -134,7 +134,7 @@ orange:
   brief:
     # The focus brief (project-space spec, Phase D): at each brief time (the brief-times convention)
     # orange reads where the active projects stand and a short run adds what to focus on.
-    # Off = no scheduled briefs; orange_focus still writes one when asked.
+    # Off = no scheduled briefs and no brief pushes; orange_focus still writes one when asked.
     enabled: ${ORANGE_BRIEF_ENABLED:true}
     # How often the schedule is looked at.
     sweep: 60s
@@ -153,6 +153,7 @@ orange:
     # Briefs older than this are deleted (their snapshots hold session text).
     retention: 30d
   notify:
+    # Off = nothing is pushed: no attention items and no brief.
     enabled: ${ORANGE_NOTIFY_ENABLED:true}
     sweep: 30s
     # At most one push of urgent items per window; critical items always go at once.
@@ -163,8 +164,9 @@ orange:
       # No pushes while the url is blank. On a public server the topic's name is the secret.
       url: ${ORANGE_NTFY_URL:}
       attention-topic: ${ORANGE_NTFY_ATTENTION_TOPIC:attention}
-      # The focus brief goes to a topic of its own, so the phone can ring differently for it.
-      brief-topic: ${ORANGE_NTFY_BRIEF_TOPIC:brief}
+      # A topic of its own for the focus brief, so the phone can ring differently for it. Blank = the
+      # attention topic: there is no built-in name, which anyone on a public server could guess.
+      brief-topic: ${ORANGE_NTFY_BRIEF_TOPIC:}
       token: ${ORANGE_NTFY_TOKEN:}
   conventions:
     # Global defaults of the conventions (project-space spec §8). A project's space and a session's

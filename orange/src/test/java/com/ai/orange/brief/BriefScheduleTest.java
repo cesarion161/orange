@@ -77,6 +77,45 @@ class BriefScheduleTest {
     }
 
     @Test
+    void aBriefTimeTheClocksSkipComesAnHourLater() {
+        // Europe/Berlin, 2027-03-28: 02:00 becomes 03:00, so there is no 02:30 that day.
+        ZoneId berlin = ZoneId.of("Europe/Berlin");
+        List<LocalTime> halfPastTwo = List.of(LocalTime.of(2, 30));
+        ZonedDateTime moved = ZonedDateTime.of(2027, 3, 28, 3, 30, 0, 0, berlin);
+        assertThat(moved.getOffset().getTotalSeconds()).as("summer time by then").isEqualTo(7200);
+
+        assertThat(BriefSchedule.due(halfPastTwo, moved.minusMinutes(1), QuietHours.NONE, CATCH_UP)).isEmpty();
+        assertThat(BriefSchedule.due(halfPastTwo, moved.minusMinutes(35), QuietHours.NONE, CATCH_UP))
+                .as("01:55 winter time: yesterday's 02:30 is long past, today's has not come").isEmpty();
+        assertThat(BriefSchedule.due(halfPastTwo, moved.plusMinutes(5), QuietHours.NONE, CATCH_UP))
+                .hasValueSatisfying(slot -> assertThat(slot.toInstant()).isEqualTo(moved.toInstant()));
+        // Quiet hours are asked about the time it moved to, not the one that was written down.
+        assertThat(BriefSchedule.due(halfPastTwo, moved.plusMinutes(5),
+                new QuietHours(LocalTime.of(3, 15), LocalTime.of(4, 0)), CATCH_UP)).isEmpty();
+        assertThat(BriefSchedule.due(halfPastTwo, moved.plusMinutes(5),
+                new QuietHours(LocalTime.of(2, 15), LocalTime.of(3, 0)), CATCH_UP)).isPresent();
+    }
+
+    @Test
+    void aBriefTimeTheClocksRepeatIsDueOnce() {
+        // Europe/Berlin, 2026-10-25: 03:00 becomes 02:00, so 02:30 comes twice. The first one is the brief time.
+        ZoneId berlin = ZoneId.of("Europe/Berlin");
+        List<LocalTime> halfPastTwo = List.of(LocalTime.of(2, 30));
+        ZonedDateTime first = ZonedDateTime.of(2026, 10, 25, 2, 30, 0, 0, berlin);
+        ZonedDateTime second = first.plusHours(1);
+        assertThat(first.getOffset().getTotalSeconds()).as("still summer time").isEqualTo(7200);
+        assertThat(second.toLocalTime()).as("the same time on the clock, an hour later").isEqualTo(LocalTime.of(2, 30));
+
+        assertThat(BriefSchedule.due(halfPastTwo, first.plusMinutes(5), QuietHours.NONE, CATCH_UP))
+                .hasValueSatisfying(slot -> assertThat(slot.toInstant()).isEqualTo(first.toInstant()));
+        // The second 02:30 is the same brief time, caught up: one slot, so one brief.
+        assertThat(BriefSchedule.due(halfPastTwo, second.plusMinutes(5), QuietHours.NONE, CATCH_UP))
+                .hasValueSatisfying(slot -> assertThat(slot.toInstant()).isEqualTo(first.toInstant()));
+        assertThat(BriefSchedule.due(halfPastTwo, second.plusMinutes(5), QuietHours.NONE, Duration.ofMinutes(30)))
+                .as("and no brief time of its own").isEmpty();
+    }
+
+    @Test
     void noTimesMeanNoBrief() {
         assertThat(BriefSchedule.due(List.of(), at(9, 0), NIGHT, CATCH_UP)).isEmpty();
     }

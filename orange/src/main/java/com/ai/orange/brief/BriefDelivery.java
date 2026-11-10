@@ -14,10 +14,13 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * Pushes a scheduled brief to the user's phone, on the brief's own ntfy topic. A brief counts as
+ * Pushes a scheduled brief to the user's phone, on the brief's ntfy topic (its own when one is
+ * set, else the attention topic). A brief counts as
  * delivered only once ntfy took it, so a failed push is tried again at the next tick, until the
  * brief time is older than {@code catch-up}: a late brief is noise. Briefs that were asked for
- * and briefs with nothing new are never pushed, and attention items are not touched here.
+ * and briefs with nothing new are never pushed, and attention items are not touched here. Whether
+ * anything is pushed at all ({@code orange.notify.enabled}) is the sweep's to decide, as it is for
+ * attention items.
  */
 @Component
 public class BriefDelivery {

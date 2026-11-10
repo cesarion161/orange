@@ -175,18 +175,19 @@ public class BriefService {
             return latest.map(b -> new Focus(Focus.READY, b, null))
                     .orElseGet(() -> new Focus(Focus.NONE, null, "no brief yet; ask with fresh: true to write one"));
         }
-        if (latest.isPresent()) {
-            Duration age = Duration.between(latest.get().snapshotAt(), at.toOffsetDateTime());
-            if (age.compareTo(props.freshMinInterval()) < 0) {
-                return new Focus(Focus.READY, latest.get(), "written " + BriefPrompt.span(age)
-                        + " ago; a fresh brief is written at most every " + BriefPrompt.span(props.freshMinInterval()));
-            }
+        Optional<Brief> recent = latest.filter(b -> tooRecent(b, at));
+        if (recent.isPresent()) {
+            Duration age = Duration.between(recent.get().snapshotAt(), at.toOffsetDateTime());
+            return new Focus(Focus.READY, recent.get(), "written " + BriefPrompt.span(age)
+                    + " ago; a fresh brief is written at most every " + BriefPrompt.span(props.freshMinInterval()));
         }
         CompletableFuture<Written> writing = new CompletableFuture<>();
         Thread.ofVirtual().name("brief-on-demand").start(() -> {
             try {
                 writing.complete(write(null, at));
             } catch (Throwable t) {
+                // The caller may have stopped waiting (focus-wait): then this line is all that says so.
+                log.warn("the brief that was asked for could not be written: {}", t.toString());
                 writing.completeExceptionally(t);
             }
         });
@@ -211,6 +212,11 @@ public class BriefService {
         };
     }
 
+    /** Whether {@code brief} is too young for a fresh one to be written at {@code at}. */
+    private boolean tooRecent(Brief brief, ZonedDateTime at) {
+        return Duration.between(brief.snapshotAt(), at.toOffsetDateTime()).compareTo(props.freshMinInterval()) < 0;
+    }
+
     private Focus beingWritten() {
         return new Focus(Focus.WRITING, briefs.latest().orElse(null),
                 "a brief is being written; ask again without fresh in a minute");
@@ -218,6 +224,7 @@ public class BriefService {
 
     /**
      * Writes one brief: for the brief time {@code slotOrNull}, or one that was asked for (null).
+     * A brief that is asked for within {@code fresh-min-interval} of the latest one is that one.
      *
      * @param now the moment the facts are read at, in the user's zone
      */
@@ -226,6 +233,11 @@ public class BriefService {
         try {
             OffsetDateTime slotAt = slotOrNull == null ? null : slotOrNull.toOffsetDateTime();
             if (slotAt != null && briefs.existsForSlot(slotAt)) return Written.not(Written.TAKEN);
+            if (slotAt == null) {
+                // Asked for while another brief was being written: that one is the fresh brief, not a second run.
+                Optional<Brief> recent = briefs.latest().filter(b -> tooRecent(b, now));
+                if (recent.isPresent()) return new Written(recent.get(), null);
+            }
 
             // A brief covers what happened since the last scheduled one; briefs that were asked for
             // do not move that window, so a session cannot empty the next scheduled brief.
@@ -322,8 +334,12 @@ public class BriefService {
             UUID projectId = project.map(p -> uuid(p.id())).orElse(null);
             if (projectId == null) continue;
             if (attentionItems.hasUnresolved(projectId, AttentionItem.BRIEF_URGENT)) continue;
+            // One line each with nothing unseen in it, whatever the content went through before: these
+            // go to the inbox and the log, not only to the brief's own text.
+            String title = BriefSnapshot.one(urgent.title(), BriefContent.MAX_TITLE);
+            String why = BriefSnapshot.one(urgent.why(), BriefContent.MAX_WHY);
             attention.raise(AttentionItem.BRIEF_URGENT, "brief:" + brief.id() + ":" + projectId, AttentionItem.NORMAL,
-                    projectId, null, project.get().name() + ": " + urgent.title(), urgent.why());
+                    projectId, null, project.get().name() + ": " + title, why);
         }
     }
 

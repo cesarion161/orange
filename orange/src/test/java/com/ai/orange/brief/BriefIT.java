@@ -30,6 +30,7 @@ import com.ai.orange.run.RunStatus;
 import com.ai.orange.run.RunTestSupport;
 import com.ai.orange.run.RunsProperties;
 import com.ai.orange.run.SchedulerPause;
+import com.ai.orange.run.WorkerRunner;
 import com.ai.orange.session.NeutralEvent;
 import com.ai.orange.session.Session;
 import com.ai.orange.session.SessionService;
@@ -42,6 +43,7 @@ import java.math.BigDecimal;
 import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
@@ -49,8 +51,12 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import org.jooq.DSLContext;
@@ -62,6 +68,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
@@ -128,6 +135,8 @@ class BriefIT {
     @Autowired RunsProperties runProps;
     @Autowired SchedulerPause pause;
     @Autowired NotifyProperties notify;
+    @Autowired BriefProperties briefProps;
+    @Autowired WorkerRunner runner;
     @Autowired DSLContext dsl;
 
     /** Tomorrow at 09:05 in the user's zone: what the test creates lies before it, and the 09:00 brief is due. */
@@ -211,6 +220,25 @@ class BriefIT {
     static ProjectFacts facts(Brief b, String name) {
         return BriefSnapshot.parse(b.snapshot()).projects().stream().filter(p -> name.equals(p.name()))
                 .findFirst().orElseThrow();
+    }
+
+    /**
+     * A scheduler as the application runs it, with the two switches the test configuration turns
+     * off ({@code orange.brief.enabled}, {@code orange.notify.enabled}) set by the test.
+     */
+    BriefScheduler sweeper(boolean briefs, boolean pushes) {
+        BriefProperties b = new BriefProperties(briefs, briefProps.sweep(), briefProps.catchUp(),
+                briefProps.firstWindow(), briefProps.freshMinInterval(), briefProps.focusWait(), briefProps.publicUrl(),
+                briefProps.linkTtl(), briefProps.retention());
+        NotifyProperties n = new NotifyProperties(pushes, notify.sweep(), notify.batchWindow(), notify.zone(),
+                notify.ntfy());
+        return new BriefScheduler(service, delivery, this.briefs, b, n);
+    }
+
+    /** Waits for a sweep's tick to end. */
+    static void finish(Thread tick) throws InterruptedException {
+        assertThat(tick).as("the sweep started a tick").isNotNull();
+        assertThat(tick.join(Duration.ofSeconds(120))).as("the tick ended").isTrue();
     }
 
     List<AttentionItem> urgentItems() {
@@ -386,6 +414,109 @@ class BriefIT {
     }
 
     @Test
+    @DirtiesContext
+    void orangeStoppingDuringABriefRunWritesNothingNow() throws Exception {
+        working("alpha", "hang");
+        ZonedDateTime slot = now.withMinute(0);
+        CompletableFuture<BriefService.Written> writing = CompletableFuture.supplyAsync(() -> service.write(slot, now));
+        long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+        while (runner.activeRunIds().isEmpty()) {
+            assertThat(System.nanoTime()).as("the brief run never started").isLessThan(deadline);
+            Thread.sleep(100);
+        }
+
+        runner.shutdown();
+
+        assertThat(writing.get(30, TimeUnit.SECONDS).why()).isEqualTo(BriefService.Written.STOPPING);
+        assertThat(allBriefs()).as("no brief from the facts while orange stops: the next start writes it").isEmpty();
+        assertThat(briefRuns()).singleElement().satisfies(r -> {
+            assertThat(r.status()).isEqualTo(RunStatus.FAILED);
+            assertThat(r.error()).isEqualTo("coordinator_restart");
+        });
+        assertThat(pause.current()).isEmpty();
+
+        // What the next start finds: the run and no brief. The facts, and the model is not asked again.
+        scheduler.tick(now.plusMinutes(1));
+        assertThat(brief().note()).isEqualTo(BriefService.RUN_DID_NOT_FINISH);
+        assertThat(brief().slotAt().toInstant()).isEqualTo(slot.toInstant());
+        assertThat(briefRuns()).hasSize(1);
+    }
+
+    // ─────────────────────────── the sweep ───────────────────────────
+
+    @Test
+    void aSweepRunsOneTickAtATimeAndReadsTheTimeAtEachStep() throws Exception {
+        working("alpha", null);
+        BriefScheduler sweeper = sweeper(true, true);
+        // The clock stands at 09:05 until the test lets it go; by the time the brief is written it is 09:09.
+        CountDownLatch looked = new CountDownLatch(1);
+        CountDownLatch go = new CountDownLatch(1);
+        AtomicInteger looks = new AtomicInteger();
+        Supplier<ZonedDateTime> clock = () -> {
+            if (looks.getAndIncrement() > 0) return now.plusMinutes(4);
+            looked.countDown();
+            try {
+                go.await(60, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return now;
+        };
+
+        Thread tick = sweeper.sweep(clock);
+        assertThat(tick).isNotNull();
+        assertThat(tick.getName()).as("on a thread of its own, not the scheduler's").isEqualTo("brief-tick");
+        assertThat(looked.await(30, TimeUnit.SECONDS)).isTrue();
+        assertThat(sweeper.sweep(clock)).as("a tick is running: this sweep does nothing").isNull();
+        go.countDown();
+        finish(tick);
+
+        Brief b = brief();
+        assertThat(b.snapshotAt().toInstant()).isEqualTo(now.toInstant());
+        assertThat(briefRuns()).hasSize(1);
+        assertThat(PUBLISHED).hasSize(1);
+        assertThat(b.deliveredAt().toInstant()).as("pushed at the time after the brief run, not the one before it")
+                .isEqualTo(now.plusMinutes(4).toInstant());
+        assertThat(looks.get()).as("one look per step, none by the sweep that did nothing").isEqualTo(3);
+
+        // The tick is over, so the next sweep runs; the brief time has its brief.
+        finish(sweeper.sweep(() -> now.plusMinutes(5)));
+        assertThat(allBriefs()).hasSize(1);
+        assertThat(PUBLISHED).hasSize(1);
+    }
+
+    @Test
+    void switchedOffTheSweepOnlyDeletesOldBriefs() throws Exception {
+        working("alpha", null);
+        // orange_focus still writes briefs with the switch off, session text included: they must not stay for ever.
+        Brief asked = service.focus(true, now.minusMinutes(30)).brief();
+        dsl.update(BRIEFS).set(BRIEFS.CREATED_AT, now.minusDays(31).toOffsetDateTime()).where(BRIEFS.ID.eq(asked.id()))
+                .execute();
+
+        finish(sweeper(false, true).sweep(() -> now));
+
+        assertThat(allBriefs()).as("the old brief is gone, and none was written for 09:00").isEmpty();
+        assertThat(briefRuns()).as("only the run of the brief that was asked for").hasSize(1);
+        assertThat(PUBLISHED).isEmpty();
+    }
+
+    @Test
+    void withPushesSwitchedOffABriefIsWrittenAndStaysOnItsPage() throws Exception {
+        working("alpha", null);
+
+        finish(sweeper(true, false).sweep(() -> now));
+
+        Brief b = brief();
+        assertThat(b.pushable()).isTrue();
+        assertThat(b.deliveredAt()).isNull();
+        assertThat(PUBLISHED).as("orange.notify.enabled is the switch for every push").isEmpty();
+
+        finish(sweeper(true, true).sweep(() -> now.plusMinutes(1)));
+        assertThat(PUBLISHED).hasSize(1);
+        assertThat(brief().deliveredAt().toInstant()).isEqualTo(now.plusMinutes(1).toInstant());
+    }
+
+    @Test
     void nothingNewIsWrittenButNotPushable() {
         working("alpha", null);
         scheduler.tick(now);
@@ -543,6 +674,25 @@ class BriefIT {
         assertThat(none.hint()).contains("no active project");
         assertThat(allBriefs()).isEmpty();
         assertThat(briefRuns()).hasSize(1);
+    }
+
+    @Test
+    void aFreshBriefAskedForRightAfterAnotherIsThatOne() {
+        working("alpha", null);
+        // Two sessions asked while there was no brief; the second reaches the write as the first one ends.
+        Brief first = service.write(null, now).brief();
+        BriefService.Written second = service.write(null, now.plusSeconds(5));
+
+        assertThat(second.why()).isNull();
+        assertThat(second.brief().id()).isEqualTo(first.id());
+        assertThat(allBriefs()).hasSize(1);
+        assertThat(briefRuns()).as("no second run inside fresh-min-interval").hasSize(1);
+
+        // Past the interval a fresh brief is a new one again, and a brief time is never held up by it.
+        assertThat(service.write(null, now.plusMinutes(11)).brief().id()).isNotEqualTo(first.id());
+        assertThat(briefRuns()).hasSize(2);
+        assertThat(service.write(now.plusMinutes(12).withMinute(0), now.plusMinutes(12)).brief().scheduled()).isTrue();
+        assertThat(allBriefs()).hasSize(3);
     }
 
     @Test

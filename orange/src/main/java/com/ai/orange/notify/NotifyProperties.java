@@ -8,7 +8,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 /**
  * Pushes to the user's phone ({@code orange.notify}).
  *
- * @param enabled     whether the notifier runs (tests turn it off and flush by hand)
+ * @param enabled     whether anything is pushed: attention items and the brief (tests turn it off and flush by hand)
  * @param sweep       how often unpushed items are looked at, besides the {@code attention} notification
  * @param batchWindow at most one push of urgent items per this long
  * @param zone        the user's time zone, for quiet hours; blank = the coordinator's
@@ -33,17 +33,20 @@ public record NotifyProperties(@DefaultValue("true") boolean enabled,
     /**
      * @param url            base URL of the ntfy server, e.g. {@code https://ntfy.sh} or the VPS's own
      * @param attentionTopic topic for urgent and critical attention items; on a public server its name is the secret
-     * @param briefTopic     topic for the focus brief, so the phone can treat it differently from what needs the user now
+     * @param briefTopic     topic for the focus brief, so the phone can treat it differently from what needs the user
+     *                       now; blank = the attention topic. It has no name of its own by default: a word anyone
+     *                       can guess would publish the brief on a public server
      * @param token          ntfy access token, when the server wants one
      */
     public record Ntfy(String url, @DefaultValue("attention") String attentionTopic,
-                       @DefaultValue("brief") String briefTopic, String token,
+                       String briefTopic, String token,
                        @DefaultValue("5s") Duration connectTimeout, @DefaultValue("15s") Duration readTimeout) {
 
         public Ntfy {
             // An empty variable in .env binds as an empty string, which must not mean an empty topic.
             attentionTopic = attentionTopic == null || attentionTopic.isBlank() ? "attention" : attentionTopic.strip();
-            briefTopic = briefTopic == null || briefTopic.isBlank() ? "brief" : briefTopic.strip();
+            // The brief follows the attention topic, the name the user chose, never a fixed word.
+            briefTopic = briefTopic == null || briefTopic.isBlank() ? attentionTopic : briefTopic.strip();
         }
 
         public boolean configured() {

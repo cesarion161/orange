@@ -98,6 +98,15 @@ skipped or refused run costs the words, never the brief: the facts are always or
 20. Deferred: node health in the brief (Phase V), ntfy action buttons, milestone-to-work links,
     `tasks.project_id`, per-project brief times, file tools for the brief (they come back with
     node-hosted runs).
+21. The brief topic has no built-in name (spec §14 names the topics `attention` and `brief`):
+    with none set, the brief goes to the attention topic. Reason: on a public ntfy server a
+    topic's name is the only secret, and an install from before this phase has a secret attention
+    topic and no brief topic; a fixed word would publish its briefs at the first brief time after
+    the upgrade. (From the review.)
+22. `orange.notify.enabled` switches the brief's push off too, and `orange.brief.enabled` off
+    stops the scheduled write and the push but not the retention. Both are asked by the sweep, not
+    by `BriefScheduler.tick` and `BriefDelivery.deliver`, which tests call, as `AttentionNotifier`
+    does it. (From the review.)
 
 ## Known limits
 
@@ -106,7 +115,13 @@ skipped or refused run costs the words, never the brief: the facts are always or
 - orange's own tasks have no project: they are one block, and a task waiting for a person shows
   only there.
 - A status line can still paraphrase session text or claim something the facts do not show;
-  orange's facts sit beside it, and it is one line with no links.
+  orange's facts sit beside it, and it is one line with no links. A link is known by its
+  `scheme://` or its `www.`: a bare domain name (`example.com/x`) passes, because file and
+  setting names look the same.
+- A model text with a tab, a soft hyphen or a zero-width joiner (some emoji) is refused like any
+  other invisible character; the model is told and must submit again.
+- Without a brief topic the brief arrives on the attention topic, where only its priority (3) and
+  its title tell it from what needs the user now.
 - `orange_focus` read inside a session carries lines the model derived from other sessions' text.
 - The model's tool call is in `run_events`, readable at the open `/runs/{id}/events`, like a
   judge's.
@@ -135,7 +150,7 @@ skipped or refused run costs the words, never the brief: the facts are always or
 - Whether Claude Code's MCP client waits 60 seconds for a tool call is not checked; it is part of
   the live check.
 - With `ORANGE_BRIEF_ENABLED=false` no brief is scheduled, but `orange_focus` with `fresh` still
-  writes one. The variable must be `true`, `false` or absent: left empty in `.env` it stops the
+  writes one (and retention still deletes it). The variable must be `true`, `false` or absent: left empty in `.env` it stops the
   start (an empty string does not bind to a switch), so `.env.example` lists it commented out.
   The topics and the public url take an empty variable as "the default".
 - `GET /brief` shows the latest brief of any kind, so after an `orange_focus` with `fresh` it is
@@ -143,12 +158,30 @@ skipped or refused run costs the words, never the brief: the facts are always or
 - Outside the projects, the urgent count in "Waiting on you" covers only the five items listed;
   the snapshot has no urgent count for the rest.
 - When a fresh brief cannot be written at all (the run could not be started), `orange_focus`
-  answers `orange_focus failed: RuntimeException`; the cause is in orange's log.
+  answers `orange_focus failed: RuntimeException`; the cause is in orange's log, also when the
+  caller had stopped waiting.
+- The time is read again before each step of a tick, not during one: a push that ntfy takes
+  slowly is still judged by the time it was started at.
 - No test covers `orange_focus` when `focus-wait` runs out while the run goes on (it needs a run
   slower than the wait); the `writing` answer is tested through the held write lock.
 - The exit (a week of briefs the user finds accurate) is the user's to judge, not a test's.
 
-## Review
+## Review (2026-11-10, fresh-context reviewers, each finding checked by a second one)
+
+One blocking finding: with no brief topic set, briefs went to the fixed ntfy topic `brief`, so an
+install with a secret attention topic on a public server would have published its briefs at the
+first brief time after the upgrade. Fixed: the brief topic has no built-in name and falls back to
+the attention topic (ruling 21). Also fixed: each step of a tick reads the time again, so the push
+after a brief run is judged and recorded at its own time; `orange.notify.enabled` switches the
+brief's push off, and with `orange.brief.enabled` off old briefs are still deleted (ruling 22);
+`fresh-min-interval` is checked again under the write lock; a fresh write that fails after the
+caller stopped waiting is logged; `submit_brief` refuses control and invisible characters and
+links by any scheme or `www.`, the snapshot's one-line texts drop format characters, and an
+urgent entry reaches the inbox as one clean line. Tests added for the sweep itself (one tick at a
+time, the switches), orange stopping during a brief run, and brief times on the days the clocks
+change; `SteeringMcpIT` now checks that reading writes no brief and starts no run. Left as known
+limits above: bare domain names, the shared topic's single ring, `focus-wait` running out
+untested.
 
 ## Open
 
@@ -164,6 +197,6 @@ skipped or refused run costs the words, never the brief: the facts are always or
 
 ## Verified
 
-- `./gradlew test`: 570 tests, 0 failures (2026-11-10, after D7 and before the review; 406 before
-  the phase). No model was called: the brief runs are the fake `claude`'s, the pushes a fake
-  ntfy's. The live check is still open (above).
+- `./gradlew test`: 581 tests, 0 failures (2026-11-10, after the review fixes; 570 before the
+  review, 406 before the phase). No model was called: the brief runs are the fake `claude`'s, the
+  pushes a fake ntfy's. The live check is still open (above).

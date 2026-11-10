@@ -56,6 +56,6 @@ The first session in a repo orange has not seen proposes a project for it: answe
 
 ## The focus brief
 
-At the brief times (09:00 and 14:00 by default, never in quiet hours) orange writes a brief across your active projects: where each one stands, what is waiting on you and what to focus on next. It pushes the brief to the `brief` ntfy topic, unless nothing happened since the one before.
+At the brief times (09:00 and 14:00 by default, never in quiet hours) orange writes a brief across your active projects: where each one stands, what is waiting on you and what to focus on next. It pushes the brief to ntfy (to `ORANGE_NTFY_BRIEF_TOPIC`, or without one to the attention topic), unless nothing happened since the one before.
 
 `orange_focus` returns the latest brief from any session; `fresh: true` writes a new one, which can take a minute (at most one every 10 minutes). Every brief has a page (`page` in the tool's answer; `/brief` on the coordinator for the latest) that shows the lines beside the facts they were written from. The counts and the dates are orange's own, read from its database; the model only adds the words, and when it cannot be asked the brief is written from the facts alone.

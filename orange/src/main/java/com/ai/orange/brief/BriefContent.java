@@ -37,6 +37,11 @@ public record BriefContent(List<Line> projects, List<Focus> focus, List<Urgent> 
     /** Whatever ends a line, the Unicode separators included: a brief's texts are one line each. */
     private static final Pattern LINE_BREAK = Pattern.compile("[\\n\\r\\u000B\\u000C\\u0085\\u2028\\u2029]");
 
+    /** What cannot be seen: control characters, zero-width ones and the bidi marks that reorder a line. */
+    private static final Pattern UNSEEN = Pattern.compile("[\\p{Cc}\\p{Cf}]");
+    /** A link by its scheme, whichever it is, or by its www. */
+    private static final Pattern LINK = Pattern.compile("(?i)\\b[a-z][a-z0-9+.-]*://|\\bwww\\.");
+
     public BriefContent {
         projects = projects == null ? List.of() : List.copyOf(projects);
         focus = focus == null ? List.of() : List.copyOf(focus);
@@ -215,8 +220,10 @@ public record BriefContent(List<Line> projects, List<Focus> focus, List<Urgent> 
         if (LINE_BREAK.matcher(text).find()) {
             throw new IllegalArgumentException(where + " must be one line, with no line break");
         }
-        String lower = text.toLowerCase(Locale.ROOT);
-        if (lower.contains("http://") || lower.contains("https://")) {
+        if (UNSEEN.matcher(text).find()) {
+            throw new IllegalArgumentException(where + " must be plain text, with no tab, control or invisible character");
+        }
+        if (LINK.matcher(text).find()) {
             throw new IllegalArgumentException(where + " must not contain a link; name things in words");
         }
         if (text.length() > max) {

@@ -191,6 +191,40 @@ class BriefContentTest {
     }
 
     @Test
+    void aLinkWithoutHttpIsRefusedToo() {
+        refused(withStatus("See www.x.test/page for the rest")).hasMessageContaining("link");
+        refused(withStatus("See WWW.x.test")).hasMessageContaining("link");
+        refused(withStatus("Fetch it from ftp://x.test/file")).hasMessageContaining("link");
+        refused(withStatus("Open file:///etc/hosts")).hasMessageContaining("link");
+
+        // Names with dots, slashes and colons are words, not links.
+        String words = "BriefContent.java landed in orange/brief; 3:1 for main, see the swww.md note";
+        assertThat(BriefContent.parse(withStatus(words), PROJECTS).projects().get(0).statusLine()).isEqualTo(words);
+    }
+
+    @Test
+    void whatCannotBeSeenIsRefused() {
+        refused(withStatus("Auth landed.\u001B[2J")).as("an escape sequence").hasMessageContaining("plain text");
+        refused(withStatus("Auth landed\b\b\b\b\b\bfailed")).as("a backspace").hasMessageContaining("plain text");
+        refused(withStatus("Auth\tlanded")).as("a tab").hasMessageContaining("plain text");
+        refused(withStatus("Auth ‮dednal‬ today")).as("a bidi override reorders the line")
+                .hasMessageContaining("status_line in projects").hasMessageContaining("plain text");
+        refused(withStatus("Auth​landed")).as("a zero-width space").hasMessageContaining("plain text");
+        refused(withStatus("Auth⁦landed⁩")).as("a bidi isolate").hasMessageContaining("plain text");
+
+        ObjectNode title = valid();
+        ((ObjectNode) title.path("urgent").path(0)).put("title", "The certificate ‮expires");
+        refused(title).hasMessageContaining("title in urgent").hasMessageContaining("plain text");
+        ObjectNode why = valid();
+        ((ObjectNode) why.path("urgent").path(0)).put("why", "Nothing else\u0007 says so.");
+        refused(why).hasMessageContaining("why in urgent").hasMessageContaining("plain text");
+
+        // Letters of any script, accents and emoji are plain text.
+        String plain = "Größe geprüft, naïve façade — готово 完成 🍊";
+        assertThat(BriefContent.parse(withStatus(plain), PROJECTS).projects().get(0).statusLine()).isEqualTo(plain);
+    }
+
+    @Test
     void fourFocusItemsAreRefused() {
         ObjectNode args = valid();
         for (int i = 0; i < 3; i++) focus(args, "beta", "Item " + i, "Because.");
