@@ -2,6 +2,8 @@
 
 2026-11-02 · Status: draft for approval · Source design: "Agent Factory — Stack & Architecture" (Claude Doc by the user, 2026-11-02)
 
+> **Amended** by `2026-11-09-orange-project-space-design.md` (PR core removed, evidence-gated integration) and `2026-11-12-orange-remote-first-design.md` (review optional, everything on the VPS, the remaining PRs re-planned as R1–R5). Read those first where they disagree.
+
 ## 1. Intent
 
 orange is meant to turn a spec into merged pull requests. Agents do the planning, coding, review and CI fixes; the human steers and merges.

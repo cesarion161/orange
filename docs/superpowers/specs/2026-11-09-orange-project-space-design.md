@@ -2,6 +2,8 @@
 
 2026-11-09 · Status: approved by the user 2026-11-09; Phases A, B, C and D built 2026-11-10 · Amends: `2026-11-02-orange-factory-v2-design.md` (the "v2 spec")
 
+> **Amended 2026-11-12 by `2026-11-12-orange-remote-first-design.md`.** Diff review is optional (testing is the gate); §6.1's laptop node is replaced by GitHub as the meeting point, with everything on the VPS; Phase C's session close runs on the VPS from what the session pushed; Phase V is re-planned there. Read that document first where they disagree.
+
 ## 1. Intent
 
 The user works on several things at once: several interactive Claude Code sessions, sometimes OpenCode, across more than one project. They either get distracted or go into full focus on one session. Either way, the other sessions finish or stall and then sit idle until the user happens to look. By then the user has lost the context of what each one was doing. Idle time is too long, and switching back costs too much.
