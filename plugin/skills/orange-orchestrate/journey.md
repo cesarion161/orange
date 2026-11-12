@@ -70,7 +70,7 @@ Or dispatch an edited plan inline: `orange_dispatch(plan=<plan.json content>)`. 
 For each `ready` task the coordinator:
 1. starts an **implement run** (Claude Code in the task's own worktree, on the Max plan);
 2. when the agent reports done and has committed, moves the task to **`verifying`**;
-3. **verifies** it: runs the configured evidence commands itself (tests, build), checks the worktree is clean, then has an LLM **diff review** compare the change with the task's intent. Any gap sends the task back to `running` with the gaps as feedback for a fix run;
+3. **verifies** it: runs the configured evidence commands itself (tests, build), checks the worktree is clean, and, for risky tasks or when the project's `review` convention asks, has an LLM **diff review** compare the change with the task's intent. Any gap sends the task back to `running` with the gaps as feedback for a fix run;
 4. **integrates** a `verified` task: rebases it onto the base branch (re-verifying if that changed anything), fast-forwards the base and pushes it. The task is `integrated`, and its dependents become `ready`.
 
 A task whose runs keep failing, or whose agent asks a question, moves to `needs_human`. Tell the user what it is waiting on; `orange_reopen_task(task_id, reason)` retries it.
