@@ -161,6 +161,7 @@ class SessionCloseIT {
     }
 
     void commit(String file, String content) throws Exception {
+        Files.createDirectories(repo.resolve(file).getParent());
         Files.writeString(repo.resolve(file), content);
         git(repo, "add", ".");
         git(repo, "commit", "-q", "-m", "add " + file);
@@ -189,6 +190,7 @@ class SessionCloseIT {
     void finishedWorkIsCheckedReviewedIntegratedAndClosed() throws Exception {
         prompt("Add the feature file");
         convention("evidence", "[\"test -f feature.txt\"]");
+        convention("review", "\"always\"");
         commit("feature.txt", "the feature\n");
         String head = git(repo, "rev-parse", "HEAD");
         String stop = stop();
@@ -239,6 +241,46 @@ class SessionCloseIT {
                 .doesNotContain(repo.toString());
         assertThat(Files.readString(config.resolve("fake-prompt.txt"))).contains("Add the feature file")
                 .contains("+the feature");
+    }
+
+    @Test
+    void finishedWorkOutsideTheRiskPathsIsIntegratedWithoutAReview() throws Exception {
+        prompt("Add the feature file");
+        convention("evidence", "[\"test -f feature.txt\"]");
+        commit("feature.txt", "the feature\n");
+        stop();
+
+        // The default (risky): the tests are the gate, and nothing here is risky.
+        assertThat(runAll()).as("judge, verify, integrate").isEqualTo(3);
+        assertThat(runsOf(RunKind.DIFF_REVIEW)).isEmpty();
+        assertThat(evidence.findBySession(session().id())).extracting(Evidence::kind).containsExactly("tests");
+        assertThat(session().status()).isEqualTo(Session.CLOSED);
+        assertThat(lastWork().result()).isEqualTo(SessionWork.INTEGRATED);
+    }
+
+    @Test
+    void workTouchingARiskPathIsReviewed() throws Exception {
+        prompt("Add a migration");
+        convention("evidence", "[\"true\"]");
+        commit("db/migration/V1__x.sql", "select 1;\n");
+        stop();
+
+        assertThat(runAll()).as("judge, verify, diff review, integrate").isEqualTo(4);
+        assertThat(runsOf(RunKind.DIFF_REVIEW)).hasSize(1);
+        assertThat(lastWork().result()).isEqualTo(SessionWork.INTEGRATED);
+    }
+
+    @Test
+    void reviewNeverSkipsEvenRiskyWork() throws Exception {
+        prompt("Add a migration");
+        convention("evidence", "[\"true\"]");
+        convention("review", "\"never\"");
+        commit("db/migration/V1__x.sql", "select 1;\n");
+        stop();
+
+        assertThat(runAll()).as("judge, verify, integrate").isEqualTo(3);
+        assertThat(runsOf(RunKind.DIFF_REVIEW)).isEmpty();
+        assertThat(lastWork().result()).isEqualTo(SessionWork.INTEGRATED);
     }
 
     @Test
@@ -304,6 +346,7 @@ class SessionCloseIT {
     void reviewGapsGoBackIntoTheSession() throws Exception {
         prompt("Add the feature file");
         convention("evidence", "[\"true\"]");
+        convention("review", "\"always\"");
         commit("feature.txt", "half of it [[fake:review-gaps]]\n");
         String stop = stop();
         assertThat(runAll()).as("judge, verify, diff review").isEqualTo(3);
@@ -355,7 +398,7 @@ class SessionCloseIT {
         commit("README.md", "# demo, fixed\n");
         String head = git(repo, "rev-parse", "HEAD");
         stop();
-        assertThat(runAll()).isEqualTo(4);
+        assertThat(runAll()).as("judge, verify, integrate: a readme fix needs no review").isEqualTo(3);
 
         assertThat(session().status()).isEqualTo(Session.CLOSED);
         assertThat(git(origin, "rev-parse", "main")).isEqualTo(head);
@@ -395,6 +438,7 @@ class SessionCloseIT {
     void aMovedBaseIsRebasedCheckedAgainAndThenIntegrated() throws Exception {
         prompt("Add the feature file");
         convention("evidence", "[\"test -f feature.txt\"]");
+        convention("review", "\"always\"");
         commit("feature.txt", "the feature\n");
         String before = git(repo, "rev-parse", "HEAD");
         pushFromElsewhere("other.txt", "someone else\n");
@@ -434,6 +478,7 @@ class SessionCloseIT {
     void integrationLeftToTheUserClosesTheWorkAndSaysSo() throws Exception {
         prompt("Add the feature file");
         convention("evidence", "[\"true\"]");
+        convention("review", "\"always\"");
         convention("integration", "\"ask\"");
         commit("feature.txt", "the feature\n");
         stop();
@@ -503,6 +548,7 @@ class SessionCloseIT {
         reportDefaultBranch = false;
         prompt("Add the feature file");
         convention("evidence", "[\"test -f feature.txt\"]");
+        convention("review", "\"always\"");
         commit("feature.txt", "the feature\n");
         stop();
         assertThat(runAll()).as("judge, verify, diff review, integrate").isEqualTo(4);
@@ -530,6 +576,7 @@ class SessionCloseIT {
     void anIntegrationThatLandsAfterTheUserSpokeIsStillOnRecord() throws Exception {
         prompt("Add the feature file");
         convention("evidence", "[\"true\"]");
+        convention("review", "\"always\"");
         commit("feature.txt", "the feature\n");
         String head = git(repo, "rev-parse", "HEAD");
         stop();
@@ -556,6 +603,7 @@ class SessionCloseIT {
     void aPromptNotYetAppliedAlreadyStopsTheIntegration() throws Exception {
         prompt("Add the feature file");
         convention("evidence", "[\"true\"]");
+        convention("review", "\"always\"");
         commit("feature.txt", "the feature\n");
         String head = git(repo, "rev-parse", "HEAD");
         stop();

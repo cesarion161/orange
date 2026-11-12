@@ -9,8 +9,10 @@ import com.ai.orange.project.Project;
 import com.ai.orange.project.SpaceItem;
 import com.ai.orange.project.SpaceService;
 import com.ai.orange.project.WorkConventions;
+import com.ai.orange.routing.RiskPaths;
 import com.ai.orange.run.EvidenceGap;
 import com.ai.orange.run.ReviewGap;
+import com.ai.orange.run.ReviewPolicy;
 import com.ai.orange.run.Run;
 import com.ai.orange.run.RunKind;
 import com.ai.orange.run.RunOutcome;
@@ -20,6 +22,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.MissingNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.nio.file.Path;
 import java.time.OffsetDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.stream.Collectors;
@@ -35,7 +38,8 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <p>The steps are runs of the session, one at a time, each queued by the one before:
  * {@code verify} (the work is committed and the project's evidence commands pass),
- * {@code diff_review} (the diff does what the intent asked), {@code integrate} (onto the base,
+ * {@code diff_review} (the diff does what the intent asked; only when the {@code review} convention
+ * asks for one, see {@link ReviewPolicy}), {@code integrate} (onto the base,
  * as the {@code integration} convention says). The session is {@code verifying} throughout and
  * its stop hook waits. A gap at any step goes back into the session as a {@code continue}; a
  * pass at the last one closes the work and lets the session stop.
@@ -68,11 +72,12 @@ public class SessionClosing {
     private final SpaceService space;
     private final AttentionService attention;
     private final AttentionRepository attentionItems;
+    private final RiskPaths riskPaths;
 
     public SessionClosing(SessionRepository sessions, SessionService sessionService, VerdictRepository verdicts,
                           RunRepository runs, EvidenceRepository evidence, SessionWorkRepository work,
                           WorkConventions conventions, SpaceService space, AttentionService attention,
-                          AttentionRepository attentionItems) {
+                          AttentionRepository attentionItems, RiskPaths riskPaths) {
         this.sessions = sessions;
         this.sessionService = sessionService;
         this.verdicts = verdicts;
@@ -83,6 +88,7 @@ public class SessionClosing {
         this.space = space;
         this.attention = attention;
         this.attentionItems = attentionItems;
+        this.riskPaths = riskPaths;
     }
 
     /** The judge said this stop ends the work: check it. Called with the session's row locked. */
@@ -140,7 +146,8 @@ public class SessionClosing {
                 if (check.baseBranch() != null) next.put("base_branch", check.baseBranch());
                 boolean reviewable = conventions.done(s.projectId(), s.id()).contains(WorkConventions.EVIDENCE)
                         && check.baseSha() != null && !check.baseSha().equals(check.headSha())
-                        && !evidence.sessionHasPassingDiffReview(s.id(), check.headSha());
+                        && !evidence.sessionHasPassingDiffReview(s.id(), check.headSha())
+                        && reviewRequired(s, check);
                 boolean nothingNew = check.baseSha() != null && check.baseSha().equals(check.headSha());
                 if (nothingNew) {
                     // The base already has this commit: there is nothing to review, rebase or push, and
@@ -270,6 +277,15 @@ public class SessionClosing {
     // ─────────────────────────── the ends ───────────────────────────
 
     /** A gap goes back into the session: the stop hook blocks the stop with it. */
+    /** Whether the {@code review} convention asks for a diff review of this work (remote-first spec §7.3). */
+    private boolean reviewRequired(Session s, RunOutcome.SessionCheck check) {
+        ReviewPolicy.Mode mode = conventions.review(s.projectId(), s.id());
+        if (mode != ReviewPolicy.Mode.RISKY) return ReviewPolicy.required(mode, false, false);
+        String where = s.worktree() != null ? s.worktree() : s.repoRoot();
+        boolean risky = where == null || riskPaths.touches(Path.of(where), check.baseSha(), check.headSha());
+        return ReviewPolicy.required(mode, false, risky);
+    }
+
     private void sendBack(Session s, Run run, String stop, String message) {
         // No confidence: this is what orange found, not an answer it gives on the user's behalf.
         verdicts.insert(s.id(), run.id(), stop, Verdict.CONTINUE, message, "verification", null, Verdict.PENDING);
