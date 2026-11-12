@@ -70,7 +70,7 @@ public class PlanGraphService {
 
     // ─────────────────────────── helpers ────────────────────────────────
 
-    /** Converts each plan task into a {@link TaskDef}, stamping {@code overrides} onto metadata. */
+    /** Converts each plan task into a {@link TaskDef}, with its metadata. */
     private static List<TaskDef> toDefs(List<PlanJson.PlanTask> tasks) {
         List<TaskDef> defs = new ArrayList<>(tasks.size());
         for (PlanJson.PlanTask t : tasks) {
@@ -80,7 +80,7 @@ public class PlanGraphService {
                     t.description(),
                     t.role(), // TaskDef normalises it to implementer or chore
                     t.priority(),
-                    overridesToMetadata(t.overrides())));
+                    metadata(t)));
         }
         return defs;
     }
@@ -90,11 +90,18 @@ public class PlanGraphService {
                 : raw.stream().map(e -> new EdgeKey(e.from(), e.to())).toList();
     }
 
-    private static JSONB overridesToMetadata(Map<String, Object> overrides) {
-        if (overrides == null || overrides.isEmpty()) return null;
+    /**
+     * The task's metadata: its {@code overrides} (advisory), and its {@code risk} and {@code review}
+     * flags at the top level, where routing and the review policy read them. Null when it has none.
+     */
+    private static JSONB metadata(PlanJson.PlanTask t) {
+        Map<String, Object> meta = new java.util.LinkedHashMap<>();
+        if (t.overrides() != null && !t.overrides().isEmpty()) meta.put("overrides", t.overrides());
+        if (t.risk() != null) meta.put("risk", t.risk());
+        if (t.review() != null) meta.put("review", t.review());
+        if (meta.isEmpty()) return null;
         try {
-            String json = Json.mapper().writeValueAsString(Map.of("overrides", overrides));
-            return JSONB.valueOf(json);
+            return JSONB.valueOf(Json.mapper().writeValueAsString(meta));
         } catch (Exception e) {
             // Overrides are advisory — never block plan ingestion over a serialization quirk.
             return null;

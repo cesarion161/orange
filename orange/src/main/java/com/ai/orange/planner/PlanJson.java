@@ -24,7 +24,15 @@ public record PlanJson(List<PlanTask> tasks, List<PlanEdge> edges) {
             String description,
             String role,
             Integer priority,
-            Map<String, Object> overrides) {
+            Map<String, Object> overrides,
+            Boolean risk,
+            Boolean review) {
+
+        /** A task without the {@code risk} and {@code review} flags. */
+        public PlanTask(String key, String title, String description, String role, Integer priority,
+                        Map<String, Object> overrides) {
+            this(key, title, description, role, priority, overrides, null, null);
+        }
 
         // Compact constructor only enforces non-null key; the rest is enforced
         // when we turn this into a TaskDef.

@@ -104,12 +104,16 @@ class RunLoopE2EIT {
 
         abstract Path origin();
 
-        /** A → B: B is pending until A is integrated. */
+        /** The dependent of the last {@link #readyToIntegrated} graph. */
+        Task lastB;
+
+        /** A → B: B is pending until A is integrated. A asks for a review; B is left to the default (risky). */
         List<Task> graph(String titleA) {
             String a = "a-" + UUID.randomUUID();
             String b = "b-" + UUID.randomUUID();
             return taskService.createGraph(List.of(
-                    new TaskDef(a, titleA, "Make orange-fake.txt.", "implementer", null, null),
+                    new TaskDef(a, titleA, "Make orange-fake.txt.", "implementer", null,
+                            org.jooq.JSONB.valueOf("{\"review\": true}")),
                     new TaskDef(b, "Then B", "Builds on A.", "implementer", null, null)), List.of(new EdgeKey(a, b)));
         }
 
@@ -130,6 +134,7 @@ class RunLoopE2EIT {
             List<Task> graph = graph(title);
             Task a = graph.get(0);
             Task b = graph.get(1);
+            lastB = b;
             assertThat(b.status()).isEqualTo(TaskStatus.PENDING);
 
             await("A is integrated", () -> fresh(a).get().status() == TaskStatus.INTEGRATED);
@@ -178,7 +183,15 @@ class RunLoopE2EIT {
 
         @Test
         void readyToIntegratedPromotesDependents() throws Exception {
-            readyToIntegrated("Ship A");
+            Task a = readyToIntegrated("Ship A");
+
+            // B touches no risk path and asks for nothing: its tests are its gate, and no review runs.
+            Task b = lastB;
+            await("B is integrated", () -> fresh(b).get().status() == TaskStatus.INTEGRATED);
+            assertThat(runs.findByTask(b.id())).extracting(r -> r.kind()).doesNotContain(RunKind.DIFF_REVIEW)
+                    .contains(RunKind.IMPLEMENT, RunKind.VERIFY, RunKind.INTEGRATE);
+            assertThat(evidence.findByTaskAndHead(b.id(), fresh(b).get().headSha()))
+                    .extracting(Evidence::kind).containsOnly("tests");
         }
     }
 

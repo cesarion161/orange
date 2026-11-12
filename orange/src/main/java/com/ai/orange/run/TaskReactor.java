@@ -3,6 +3,8 @@ package com.ai.orange.run;
 import com.ai.orange.evidence.EvidenceRepository;
 import com.ai.orange.json.Json;
 import com.ai.orange.listener.PgNotificationEvent;
+import com.ai.orange.project.WorkConventions;
+import com.ai.orange.routing.RiskPaths;
 import com.ai.orange.routing.RoutingProperties;
 import com.ai.orange.run.ReactorDecision.Action;
 import com.ai.orange.run.ReactorDecision.LastRun;
@@ -12,6 +14,7 @@ import com.ai.orange.task.TaskEventRepository;
 import com.ai.orange.task.TaskRepository;
 import com.ai.orange.task.TaskStatus;
 import com.ai.orange.worktree.WorktreeService;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.nio.file.Files;
 import java.util.Optional;
@@ -44,12 +47,15 @@ public class TaskReactor {
     private final SchedulerPause pause;
     private final WorktreeService worktrees;
     private final RoutingProperties routing;
+    private final WorkConventions conventions;
+    private final RiskPaths riskPaths;
     private final RunsProperties props;
     private final TransactionTemplate tx;
 
     public TaskReactor(TaskRepository tasks, RunRepository runs, EvidenceRepository evidence,
                        TaskEventRepository taskEvents, SchedulerPause pause, WorktreeService worktrees,
-                       RoutingProperties routing, RunsProperties props, PlatformTransactionManager txManager) {
+                       RoutingProperties routing, WorkConventions conventions, RiskPaths riskPaths,
+                       RunsProperties props, PlatformTransactionManager txManager) {
         this.tasks = tasks;
         this.runs = runs;
         this.evidence = evidence;
@@ -57,6 +63,8 @@ public class TaskReactor {
         this.pause = pause;
         this.worktrees = worktrees;
         this.routing = routing;
+        this.conventions = conventions;
+        this.riskPaths = riskPaths;
         this.props = props;
         this.tx = new TransactionTemplate(txManager);
     }
@@ -115,8 +123,33 @@ public class TaskReactor {
         String head = t.headSha();
         boolean verifyPassed = head != null && runs.hasSucceeded(t.id(), RunKind.VERIFY, head);
         boolean reviewPassed = head != null && evidence.hasPassingDiffReview(t.id(), head);
+        // Only a head that passed its checks and has no review yet needs the answer; it may read git.
+        boolean reviewRequired = t.status() == TaskStatus.VERIFYING && verifyPassed && !reviewPassed
+                && reviewRequired(t, head);
         return new TaskSnapshot(t.status(), t.failures(), active, paused, workspace, head, last, verifyPassed,
-                reviewPassed);
+                reviewRequired, reviewPassed);
+    }
+
+    /**
+     * Whether {@code head} needs a diff review (remote-first spec §7.3). Tasks have no project yet, so
+     * the global {@code review} convention applies; the task's own {@code review} and {@code risk}
+     * flags decide before its diff is read.
+     */
+    private boolean reviewRequired(Task t, String head) {
+        ReviewPolicy.Mode mode = conventions.review(null, null);
+        if (mode != ReviewPolicy.Mode.RISKY) return ReviewPolicy.required(mode, false, false);
+        JsonNode meta = metadata(t);
+        if (meta.path("review").asBoolean(false) || meta.path("risk").asBoolean(false)) return true;
+        return ReviewPolicy.required(mode, false, riskPaths.touches(worktrees.resolve(t.id()), worktrees.baseRef(), head));
+    }
+
+    private static JsonNode metadata(Task t) {
+        if (t.metadata() == null) return Json.mapper().createObjectNode();
+        try {
+            return Json.mapper().readTree(t.metadata().data());
+        } catch (Exception e) {
+            return Json.mapper().createObjectNode();
+        }
     }
 
     private void act(Task task, Action action) {

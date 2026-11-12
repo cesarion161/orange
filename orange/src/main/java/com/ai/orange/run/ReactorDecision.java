@@ -22,7 +22,7 @@ import org.jooq.JSONB;
  *       failed fix; otherwise implement (with review gaps as feedback, or a failed attempt's own
  *       feedback);</li>
  *   <li>verifying or verified, and the worktree moved under orange → a person;</li>
- *   <li>verifying → verify, then diff review, then verified;</li>
+ *   <li>verifying → verify, then a diff review when the review policy asks for one, then verified;</li>
  *   <li>verified → integrate;</li>
  *   <li>anything else → nothing.</li>
  * </ol>
@@ -42,11 +42,12 @@ public final class ReactorDecision {
     /**
      * @param workspaceAvailable the task has a worktree, or there is room for one more
      * @param verifyPassed       a verify run of {@code headSha} succeeded with every check passing
+     * @param reviewRequired     {@link ReviewPolicy} asks for a diff review of {@code headSha}
      * @param reviewPassed       {@code headSha} has a passing diff review
      */
     public record TaskSnapshot(TaskStatus status, int failures, boolean hasActiveRun, boolean paused,
                                boolean workspaceAvailable, String headSha, LastRun lastRun, boolean verifyPassed,
-                               boolean reviewPassed) {}
+                               boolean reviewRequired, boolean reviewPassed) {}
 
     public sealed interface Action {
         /** @param feedback a JSON array of {@code {source, summary, detail}}, or null */
@@ -82,7 +83,7 @@ public final class ReactorDecision {
                 if (worktreeMoved(last)) yield new Action.NeedsHuman("worktree_moved");
                 if (s.headSha() == null || s.headSha().isBlank()) yield new Action.None();
                 if (!s.verifyPassed()) yield new Action.QueueVerify(s.headSha());
-                if (!s.reviewPassed()) yield new Action.QueueDiffReview(s.headSha());
+                if (s.reviewRequired() && !s.reviewPassed()) yield new Action.QueueDiffReview(s.headSha());
                 yield new Action.MarkVerified();
             }
             case VERIFIED -> {
