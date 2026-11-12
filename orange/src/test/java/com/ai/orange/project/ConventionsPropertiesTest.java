@@ -11,7 +11,7 @@ class ConventionsPropertiesTest {
 
     static ConventionsProperties with(List<String> briefTimes, List<String> quietHours) {
         return new ConventionsProperties(List.of("evidence", "integrated"), "merge", "routine", List.of(), 0.8,
-                briefTimes, quietHours);
+                briefTimes, quietHours, "risky");
     }
 
     @Test
@@ -19,6 +19,7 @@ class ConventionsPropertiesTest {
         ConventionsProperties p = with(List.of("09:00", "14:00"), List.of("22:00", "08:00"));
         assertThat(p.get("brief-times").get(1).asText()).isEqualTo("14:00");
         assertThat(p.get("quiet-hours").get(0).asText()).isEqualTo("22:00");
+        assertThat(p.get("review").asText()).isEqualTo("risky");
     }
 
     @Test
@@ -42,7 +43,7 @@ class ConventionsPropertiesTest {
 
     @Test
     void missingListsAreEmpty() {
-        ConventionsProperties p = new ConventionsProperties(null, "merge", "routine", null, 0.8, null, null);
+        ConventionsProperties p = new ConventionsProperties(null, "merge", "routine", null, 0.8, null, null, null);
         assertThat(p.done()).isEmpty();
         assertThat(p.alwaysAsk()).isEmpty();
         assertThat(p.briefTimes()).isEmpty();

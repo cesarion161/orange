@@ -171,10 +171,14 @@ orange:
   conventions:
     # Global defaults of the conventions (project-space spec §8). A project's space and a session's
     # overrides take precedence; brief-times and quiet-hours are global only.
-    # What closing a session's work takes: committed, evidence (the project's evidence commands and a
-    # diff review pass), integrated. A project sets its own commands in its "evidence" convention;
-    # orange only proposes them.
+    # What closing a session's work takes: committed, evidence (the project's evidence commands pass,
+    # plus a diff review when "review" asks for one), integrated. A project sets its own commands in
+    # its "evidence" convention; orange only proposes them.
     done: [evidence, integrated]
+    # When a diff review is part of verification, for tasks and session work: never, risky (a task
+    # flagged risk or review, and work whose diff touches orange.routing.risk.paths) or always.
+    # Evidence commands are the gate; a review is optional (remote-first spec §7.3).
+    review: risky
     # merge (rebase, fast-forward the base, push it when there is an origin), branch (leave it),
     # ask (the user integrates), pr (not built: treated as ask). "remote-push: false" keeps it local.
     integration: merge
