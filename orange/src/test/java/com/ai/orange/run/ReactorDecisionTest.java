@@ -28,6 +28,7 @@ class ReactorDecisionTest {
         String head;
         LastRun last;
         boolean verify;
+        boolean reviewRequired;
         boolean review;
 
         S(TaskStatus status) {
@@ -41,11 +42,12 @@ class ReactorDecisionTest {
         S head(String h) { head = h; return this; }
         S last(LastRun r) { last = r; return this; }
         S verifyPassed() { verify = true; return this; }
+        S reviewRequired() { reviewRequired = true; return this; }
         S reviewPassed() { review = true; return this; }
 
         Action decide() {
             return ReactorDecision.decide(new TaskSnapshot(status, failures, active, paused, workspace, head, last,
-                    verify, review), NEEDS_HUMAN_AFTER);
+                    verify, reviewRequired, review), NEEDS_HUMAN_AFTER);
         }
     }
 
@@ -194,10 +196,22 @@ class ReactorDecisionTest {
     @Test
     void verifyingRunsTheChecksThenTheReviewThenMarksVerified() {
         assertThat(task(TaskStatus.VERIFYING).head(HEAD).decide()).isEqualTo(new Action.QueueVerify(HEAD));
-        assertThat(task(TaskStatus.VERIFYING).head(HEAD).verifyPassed().decide())
+        assertThat(task(TaskStatus.VERIFYING).head(HEAD).verifyPassed().reviewRequired().decide())
                 .isEqualTo(new Action.QueueDiffReview(HEAD));
-        assertThat(task(TaskStatus.VERIFYING).head(HEAD).verifyPassed().reviewPassed().decide())
+        assertThat(task(TaskStatus.VERIFYING).head(HEAD).verifyPassed().reviewRequired().reviewPassed().decide())
                 .isEqualTo(new Action.MarkVerified());
+    }
+
+    @Test
+    void verifyingWithoutAReviewMarksVerifiedOnceTheChecksPass() {
+        assertThat(task(TaskStatus.VERIFYING).head(HEAD).decide()).isEqualTo(new Action.QueueVerify(HEAD));
+        assertThat(task(TaskStatus.VERIFYING).head(HEAD).verifyPassed().decide()).isEqualTo(new Action.MarkVerified());
+    }
+
+    @Test
+    void aReviewTurnedOffWhileWaitingIsNotWaitedFor() {
+        // Checks passed, no review on record, and the policy no longer asks for one.
+        assertThat(task(TaskStatus.VERIFYING).head(HEAD).verifyPassed().decide()).isEqualTo(new Action.MarkVerified());
     }
 
     @Test

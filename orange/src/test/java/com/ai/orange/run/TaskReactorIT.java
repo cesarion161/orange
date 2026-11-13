@@ -66,8 +66,12 @@ class TaskReactorIT {
     }
 
     Task readyTask() {
+        return readyTask(null);
+    }
+
+    Task readyTask(String metadata) {
         return taskService.createGraph(List.of(new TaskDef("reactor-" + UUID.randomUUID(), "React to me", "x",
-                "implementer", 70, null)), List.of()).get(0);
+                "implementer", 70, metadata == null ? null : JSONB.valueOf(metadata))), List.of()).get(0);
     }
 
     /** A run of {@code kind} that already ran and finished with {@code outcome}. */
@@ -172,7 +176,7 @@ class TaskReactorIT {
 
     @Test
     void verifyingRunsVerifyThenDiffReview() throws Exception {
-        Task task = verifying(readyTask(), HEAD);
+        Task task = verifying(readyTask("{\"review\": true}"), HEAD);
 
         reactor.react(task.id());
         Run verify = onlyRun(task.id());
@@ -193,6 +197,16 @@ class TaskReactorIT {
         evidence.record(task.id(), review.id(), HEAD, "diff_review", null, null, "fine", true);
         reactor.react(task.id());
         assertThat(tasks.findById(task.id()).orElseThrow().status()).isEqualTo(TaskStatus.VERIFIED);
+    }
+
+    @Test
+    void aTaskWhoseDiffCannotBeReadIsReviewed() throws Exception {
+        // No flags, and no worktree to read the diff from: under the default (risky) that counts as risky.
+        Task task = verifying(readyTask(), HEAD);
+        reactor.react(task.id());
+        complete(RunKind.VERIFY, new RunOutcome.Verification(false, true, List.of()));
+        reactor.react(task.id());
+        assertThat(onlyRun(task.id()).kind()).isEqualTo(RunKind.DIFF_REVIEW);
     }
 
     @Test

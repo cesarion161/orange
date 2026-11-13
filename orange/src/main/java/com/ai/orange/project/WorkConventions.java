@@ -2,6 +2,7 @@ package com.ai.orange.project;
 
 import com.ai.orange.evidence.EvidenceCommands;
 import com.ai.orange.evidence.EvidenceProperties;
+import com.ai.orange.run.ReviewPolicy;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -12,8 +13,8 @@ import org.springframework.stereotype.Component;
 
 /**
  * The conventions that say what closing a piece of work takes (project-space spec §8): {@code done},
- * {@code integration}, {@code evidence}, {@code base-branch} and {@code remote-push}, each resolved
- * session → project → global.
+ * {@code integration}, {@code evidence}, {@code base-branch}, {@code remote-push} and {@code review},
+ * each resolved session → project → global.
  */
 @Component
 public class WorkConventions {
@@ -23,6 +24,7 @@ public class WorkConventions {
     public static final String EVIDENCE = "evidence";
     public static final String BASE_BRANCH = "base-branch";
     public static final String REMOTE_PUSH = "remote-push";
+    public static final String REVIEW = "review";
 
     /** {@code done} entries orange can check. */
     public static final String COMMITTED = "committed";
@@ -63,6 +65,11 @@ public class WorkConventions {
     /** Whether the base is pushed after an integration when the repo has a remote; yes unless turned off. */
     public boolean remotePush(UUID projectId, UUID sessionId) {
         return conventions.resolve(REMOTE_PUSH, projectId, sessionId).map(v -> v.asBoolean(true)).orElse(true);
+    }
+
+    /** When a diff review is part of verification: {@code never}, {@code risky} (the default) or {@code always}. */
+    public ReviewPolicy.Mode review(UUID projectId, UUID sessionId) {
+        return ReviewPolicy.Mode.parse(conventions.resolve(REVIEW, projectId, sessionId).orElse(null));
     }
 
     /**

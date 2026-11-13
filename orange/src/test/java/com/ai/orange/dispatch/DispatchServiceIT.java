@@ -96,6 +96,26 @@ class DispatchServiceIT {
     }
 
     @Test
+    void a_plan_tasks_risk_and_review_flags_become_top_level_metadata() throws Exception {
+        PlanJson plan = new PlanJson(
+                List.of(
+                        new PlanJson.PlanTask("flagged", "Touches auth", null, "dev", 100, null, true, true),
+                        new PlanJson.PlanTask("plain", "Plain change", null, "dev", 100, null)),
+                List.of());
+
+        var byTitle = dispatch.dispatch(plan, null).createdTasks().stream()
+                .collect(java.util.stream.Collectors.toMap(Task::title, t -> t));
+
+        var flagged = com.ai.orange.json.Json.mapper().readTree(
+                taskRepo.findById(byTitle.get("Touches auth").id()).orElseThrow().metadata().data());
+        assertThat(flagged.path("risk").asBoolean(false)).isTrue();
+        assertThat(flagged.path("review").asBoolean(false)).isTrue();
+        assertThat(flagged.has("overrides")).isFalse();
+        Task plain = taskRepo.findById(byTitle.get("Plain change").id()).orElseThrow();
+        assertThat(plain.metadata() == null || !plain.metadata().data().contains("risk")).isTrue();
+    }
+
+    @Test
     void cyclic_plan_rejects_the_whole_plan() {
         PlanJson plan = new PlanJson(
                 List.of(new PlanJson.PlanTask("a", "x", null, "dev", null, null),
