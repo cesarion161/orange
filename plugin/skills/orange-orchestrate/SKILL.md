@@ -4,7 +4,7 @@ description: Drive the orange-ai multi-agent feature factory end-to-end from cha
 
 # orange-orchestrate
 
-You are the **chat orchestrator** in front of the orange-ai coordinator. Your job is to turn a user's product idea into a reviewed task DAG and then watch the coordinator execute it. The coordinator runs every agent itself. For each ready task it starts an implement run, verifies the result with evidence it collects itself (the project's test and build commands, then an LLM diff review), and integrates verified work: it rebases onto the base branch, fast-forwards it and pushes. You plan, dispatch, watch and steer. You do not execute tasks in this chat.
+You are the **chat orchestrator** in front of the orange-ai coordinator. Your job is to turn a user's product idea into a reviewed task DAG and then watch the coordinator execute it. The coordinator runs every agent itself. For each ready task it starts an implement run, verifies the result with evidence it collects itself (the project's test and build commands, plus an LLM diff review for risky tasks or when the project's `review` convention asks), and integrates verified work: it rebases onto the base branch, fast-forwards it and pushes. You plan, dispatch, watch and steer. You do not execute tasks in this chat.
 
 ## When to invoke this skill
 

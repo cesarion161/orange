@@ -24,7 +24,7 @@ class RiskPathsTest {
     void setUp() throws Exception {
         RoutingProperties d = RoutingTableTest.defaults(RoutingTableTest.defaultRules());
         RoutingProperties props = new RoutingProperties(d.tierOrder(), d.tiers(), d.rules(),
-                new Risk("large", Effort.HIGH, List.of("**/db/migration/**")), d.escalation(), d.smallModel());
+                new Risk("large", Effort.HIGH, List.of("**/db/migration/**", "infra/**")), d.escalation(), d.smallModel());
         riskPaths = new RiskPaths(new RoutingTable(props));
         git("init", "-q", "-b", "main");
         git("config", "user.email", "test@example.com");
@@ -42,6 +42,32 @@ class RiskPathsTest {
     void aDiffOutsideTheRiskPathsDoesNot() throws Exception {
         String later = commit("README.md", "hello again\n");
         assertThat(riskPaths.touches(repo, migration, later)).isFalse();
+    }
+
+    @Test
+    void aFileMovedOutOfARiskPathTouchesIt() throws Exception {
+        git("mv", "src/main/resources/db/migration/V1__x.sql", "notes.sql");
+        git("commit", "-q", "-m", "move it");
+        String moved = git("rev-parse", "HEAD").strip();
+        assertThat(riskPaths.touches(repo, migration, moved)).isTrue();
+    }
+
+    @Test
+    void aNonAsciiNameInARiskPathTouchesIt() throws Exception {
+        // git quotes such a name ("infra/\303\251.tf") unless told not to; a top-level glob then misses it.
+        String later = commit("infra/é.tf", "x = 1\n");
+        assertThat(riskPaths.touches(repo, migration, later)).isTrue();
+    }
+
+    @Test
+    void aRiskyCommitTheBaseGainedAfterTheForkDoesNotCount() throws Exception {
+        // A branch forks at the migration commit and changes only the readme; then the base gains a
+        // migration of its own. The branch's own change is what counts, not how far the base moved.
+        git("checkout", "-q", "-b", "feature");
+        String branchHead = commit("README.md", "feature\n");
+        git("checkout", "-q", "main");
+        String baseHead = commit("src/main/resources/db/migration/V3__later.sql", "select 3;\n");
+        assertThat(riskPaths.touches(repo, baseHead, branchHead)).isFalse();
     }
 
     @Test

@@ -4,7 +4,7 @@ MCP server that exposes the [orange-ai](../orange) coordinator's REST API as
 tools Claude Code can call. Lets you stay in your Claude Code session and
 say "build a TODO app with auth": Claude calls the planner to get a DAG,
 you review it, then dispatch it. Orange then runs every task itself
-(implement → verify with its own evidence commands → diff review → integrate),
+(implement → verify with its own evidence commands → a diff review when the `review` convention asks → integrate),
 and Claude narrates progress and relays the tasks that need a person.
 
 Planning and dispatch are **two independent steps**: `orange_plan` produces a

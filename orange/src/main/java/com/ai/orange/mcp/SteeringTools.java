@@ -98,8 +98,8 @@ public class SteeringTools {
                                 + "\"supersedes\":{\"type\":\"string\",\"description\":\"Id of the item this replaces.\"}},"
                                 + "\"required\":[\"project\",\"kind\",\"text\"]}", this::add),
                 spec("orange_set", "Set a convention for a project (or for one session of it, as an override). "
-                        + "Keys include done, integration, evidence, base-branch, remote-push, auto-answer, always-ask, "
-                        + "auto-answer-confidence, cadence; value is any JSON.",
+                        + "Keys include done, integration, evidence, base-branch, remote-push, review (never, risky, always), "
+                        + "auto-answer, always-ask, auto-answer-confidence, cadence; value is any JSON.",
                         "{\"type\":\"object\",\"properties\":{" + PROJECT_ARG + ","
                                 + "\"key\":{\"type\":\"string\"},\"value\":{},"
                                 + "\"session\":{\"type\":\"string\",\"description\":\"orange's session id, for a per-session override.\"}},"

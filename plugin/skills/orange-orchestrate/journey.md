@@ -29,7 +29,7 @@ cd /Users/<user>/path/to/orange-ai/orange && docker compose up -d postgres && ./
 
 ## Step 3 — Follow-up questions
 
-Use `AskUserQuestion` only for what the request leaves open: scope boundaries, constraints (libraries, platforms), whether auth already exists. Don't ask about review or test gates — orange verifies every task with the configured evidence commands and a diff review before it integrates it.
+Use `AskUserQuestion` only for what the request leaves open: scope boundaries, constraints (libraries, platforms), whether auth already exists. Don't ask about review or test gates — orange verifies every task with the configured evidence commands before it integrates it, and reviews the diff of risky ones (the `review` convention: never, risky, always).
 
 ## Step 4 — Plan
 

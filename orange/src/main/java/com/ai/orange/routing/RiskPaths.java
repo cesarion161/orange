@@ -2,6 +2,7 @@ package com.ai.orange.routing;
 
 import com.ai.orange.worktree.Git;
 import java.nio.file.Path;
+import java.util.Arrays;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -22,15 +23,20 @@ public class RiskPaths {
         this.routing = routing;
     }
 
-    /** Whether any path changed between {@code from} and {@code to} in {@code repo} is a risk path. */
+    /**
+     * Whether a path the work changed is a risk path: the diff from where {@code to} left
+     * {@code from} (their merge base, as the reviewer reads it) to {@code to}, so a base that moved on
+     * since does not count. Renames count by both their paths, and names are read raw (NUL-separated),
+     * so a move out of a risk path or a quoted non-ASCII name is not missed.
+     */
     public boolean touches(Path repo, String from, String to) {
         if (from == null || from.isBlank() || to == null || to.isBlank()) {
             log.warn("no diff to read in {} ({}..{}): counting it as risky", repo, from, to);
             return true;
         }
         try {
-            String names = Git.run(repo, Git.QUICK, "diff", "--name-only", from, to);
-            return names.lines().map(String::strip).filter(n -> !n.isEmpty()).anyMatch(routing::isRiskPath);
+            String names = Git.run(repo, Git.QUICK, "diff", "--name-only", "--no-renames", "-z", from + "..." + to);
+            return Arrays.stream(names.split("\0")).filter(n -> !n.isEmpty()).anyMatch(routing::isRiskPath);
         } catch (RuntimeException e) {
             log.warn("could not read the diff {}..{} in {}: counting it as risky ({})", from, to, repo, e.toString());
             return true;
