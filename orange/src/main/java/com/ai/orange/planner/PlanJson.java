@@ -15,7 +15,15 @@ import java.util.Map;
  * preserved but ignored.
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
-public record PlanJson(List<PlanTask> tasks, List<PlanEdge> edges) {
+public record PlanJson(List<PlanTask> tasks, List<PlanEdge> edges, String project, String repo) {
+
+    /**
+     * A plan of no project (the legacy base repo). {@code project} names one (id or name) and
+     * {@code repo} one of its repos ({@code owner/name}); a project with one repo needs no repo.
+     */
+    public PlanJson(List<PlanTask> tasks, List<PlanEdge> edges) {
+        this(tasks, edges, null, null);
+    }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record PlanTask(
@@ -26,12 +34,19 @@ public record PlanJson(List<PlanTask> tasks, List<PlanEdge> edges) {
             Integer priority,
             Map<String, Object> overrides,
             Boolean risk,
-            Boolean review) {
+            Boolean review,
+            String repo) {
 
         /** A task without the {@code risk} and {@code review} flags. */
         public PlanTask(String key, String title, String description, String role, Integer priority,
                         Map<String, Object> overrides) {
-            this(key, title, description, role, priority, overrides, null, null);
+            this(key, title, description, role, priority, overrides, null, null, null);
+        }
+
+        /** A task in the plan's own repo. */
+        public PlanTask(String key, String title, String description, String role, Integer priority,
+                        Map<String, Object> overrides, Boolean risk, Boolean review) {
+            this(key, title, description, role, priority, overrides, risk, review, null);
         }
 
         // Compact constructor only enforces non-null key; the rest is enforced

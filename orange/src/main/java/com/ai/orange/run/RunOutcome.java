@@ -170,6 +170,8 @@ public sealed interface RunOutcome {
         public static final String GAPS = "gaps";
         public static final String NO_EVIDENCE = "no_evidence";
         public static final String UNAVAILABLE = "unavailable";
+        /** The session's repo is not on GitHub: orange cannot fetch, check or integrate its work. */
+        public static final String NO_REMOTE = "no_remote";
 
         public SessionCheck {
             gaps = gaps == null ? List.of() : List.copyOf(gaps);

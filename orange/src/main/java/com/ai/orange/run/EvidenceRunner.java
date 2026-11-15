@@ -2,6 +2,9 @@ package com.ai.orange.run;
 
 import com.ai.orange.evidence.EvidenceProperties;
 import com.ai.orange.evidence.EvidenceRepository;
+import com.ai.orange.evidence.TaskEvidence;
+import com.ai.orange.task.TaskRepository;
+import com.ai.orange.worktree.RepoUnavailableException;
 import com.ai.orange.harness.HarnessProperties;
 import com.ai.orange.harness.claude.ClaudeCodeCommand;
 import com.ai.orange.harness.container.ContainerRuntime;
@@ -24,8 +27,10 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -69,6 +74,8 @@ public class EvidenceRunner implements RunExecutor {
     private final SessionChecks sessionChecks;
     private final ContainerRuntime containers;
     private final RunWorkspaces workspaces;
+    /** A task's evidence commands: its project's, or {@code orange.evidence.commands}. */
+    private final Function<UUID, List<EvidenceProperties.Command>> taskCommands;
     private final Set<Started> live = ConcurrentHashMap.newKeySet();
     private volatile boolean stopping;
 
@@ -76,9 +83,10 @@ public class EvidenceRunner implements RunExecutor {
     public EvidenceRunner(RunRepository runs, EvidenceRepository evidence, WorktreeService worktrees,
                           EvidenceProperties props, HarnessProperties harnessProps, RunsProperties runsProps,
                           RunLifecycle lifecycle, SessionChecks sessionChecks, ContainerRuntime containers,
-                          RunWorkspaces workspaces) {
+                          RunWorkspaces workspaces, TaskRepository tasks, TaskEvidence taskEvidence) {
         this(runs, evidence, worktrees, props, harnessProps, runsProps, lifecycle, System::getenv, sessionChecks,
-                containers, workspaces);
+                containers, workspaces,
+                id -> tasks.findById(id).map(taskEvidence::commands).orElseGet(props::commands));
     }
 
     public EvidenceRunner(RunRepository runs, EvidenceRepository evidence, WorktreeService worktrees,
@@ -91,6 +99,16 @@ public class EvidenceRunner implements RunExecutor {
                           EvidenceProperties props, HarnessProperties harnessProps, RunsProperties runsProps,
                           RunLifecycle lifecycle, Supplier<Map<String, String>> hostEnv,
                           SessionChecks sessionChecks, ContainerRuntime containers, RunWorkspaces workspaces) {
+        this(runs, evidence, worktrees, props, harnessProps, runsProps, lifecycle, hostEnv, sessionChecks, containers,
+                workspaces, id -> props.commands());
+    }
+
+    public EvidenceRunner(RunRepository runs, EvidenceRepository evidence, WorktreeService worktrees,
+                          EvidenceProperties props, HarnessProperties harnessProps, RunsProperties runsProps,
+                          RunLifecycle lifecycle, Supplier<Map<String, String>> hostEnv,
+                          SessionChecks sessionChecks, ContainerRuntime containers, RunWorkspaces workspaces,
+                          Function<UUID, List<EvidenceProperties.Command>> taskCommands) {
+        this.taskCommands = taskCommands;
         this.sessionChecks = sessionChecks;
         this.containers = containers;
         this.workspaces = workspaces;
@@ -158,18 +176,28 @@ public class EvidenceRunner implements RunExecutor {
                     + "(orange/worker/build.sh) and the Docker daemon running?", run.id(), e.getMessage(),
                     containers.settings().image());
             return lifecycle.finish(run, RunResult.failed(run.id(), "container_unavailable"));
+        } catch (RepoUnavailableException e) {
+            log.error("verify run {}: {}", run.id(), e.getMessage());
+            return lifecycle.finish(run, RunResult.failed(run.id(), "repo_unavailable"));
+        } catch (BadConvention e) {
+            // The project's own setting: its task fails and says why, orange goes on with the others.
+            log.error("verify run {}: the project's evidence convention is broken: {}", run.id(), e.getMessage());
+            return lifecycle.finish(run, RunResult.failed(run.id(), "bad_convention"));
         } catch (RuntimeException e) {
             log.error("verify run {} failed: {}", run.id(), e.toString());
             return lifecycle.finish(run, RunResult.failed(run.id(), "workspace_failed"));
         }
     }
 
-    /** A session's work is checked where it is, at whatever its head is now (see {@link SessionChecks}). */
+    /** A session's work is checked from GitHub, at the head its stop reported (see {@link SessionChecks}). */
     private RunResult verifySession(Run run) {
         if (sessionChecks == null) throw new IllegalStateException("this runner does not check sessions");
         long deadline = System.nanoTime() + runsProps.timeout(RunKind.VERIFY).toNanos();
-        RunOutcome.SessionCheck outcome = sessionChecks.check(run, (dir, command, budget) -> {
-            CommandResult r = runCommand(run, dir, command, budget, null);
+        boolean contained = containers != null && containers.enabled();
+        // The commands run the session's code: in container mode each gets a container of its own.
+        RunOutcome.SessionCheck outcome = sessionChecks.check(run, (dir, n, command, budget) -> {
+            CommandResult r = runCommand(run, dir, command, budget,
+                    contained ? DockerCommand.runName(run.id()) + "-c" + n : null);
             return new SessionChecks.Commands.Result(r.exitCode(), r.outputTail());
         }, deadline);
         runs.recordOutcome(run.id(), outcome.toJsonb());
@@ -199,8 +227,14 @@ public class EvidenceRunner implements RunExecutor {
         }
 
         long deadline = System.nanoTime() + runsProps.timeout(RunKind.VERIFY).toNanos();
+        List<EvidenceProperties.Command> commands;
+        try {
+            commands = taskCommands.apply(run.taskId());
+        } catch (IllegalArgumentException e) {
+            throw new BadConvention(e.getMessage());
+        }
         boolean contained = containers != null && containers.enabled();
-        boolean ownClone = contained && !props.commands().isEmpty();
+        boolean ownClone = contained && !commands.isEmpty();
         Path runDir = harnessProps.runRoot().resolve(run.id().toString()).toAbsolutePath();
         Path where = wt;
         try {
@@ -212,7 +246,7 @@ public class EvidenceRunner implements RunExecutor {
                 if (Boolean.FALSE.equals(lifecycle.renewLease(run))) throw new LeaseLost();
             }
             int n = 0;
-            for (EvidenceProperties.Command c : props.commands()) {
+            for (EvidenceProperties.Command c : commands) {
                 n++;
                 Duration budget = Duration.ofNanos(Math.max(0, Math.min(c.timeout().toNanos(), deadline - System.nanoTime())));
                 CommandResult r = runCommand(run, where, c.command(), budget,
@@ -449,6 +483,13 @@ public class EvidenceRunner implements RunExecutor {
             int room = Math.max(0, max - suffix.length());
             if (body.length() > room) body = body.substring(body.length() - room);
             return body + suffix;
+        }
+    }
+
+    /** A project's {@code evidence} convention that is not a list of commands. */
+    private static final class BadConvention extends RuntimeException {
+        BadConvention(String message) {
+            super(message, null, false, false);
         }
     }
 }

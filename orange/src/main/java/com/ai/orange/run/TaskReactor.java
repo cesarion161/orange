@@ -1,6 +1,10 @@
 package com.ai.orange.run;
 
+import com.ai.orange.evidence.EvidenceAsk;
+import com.ai.orange.evidence.EvidenceDetector;
 import com.ai.orange.evidence.EvidenceRepository;
+import com.ai.orange.evidence.TaskEvidence;
+import com.ai.orange.project.ProjectRepository;
 import com.ai.orange.json.Json;
 import com.ai.orange.listener.PgNotificationEvent;
 import com.ai.orange.project.WorkConventions;
@@ -50,12 +54,22 @@ public class TaskReactor {
     private final WorkConventions conventions;
     private final RiskPaths riskPaths;
     private final RunsProperties props;
+    private final TaskEvidence taskEvidence;
+    private final EvidenceAsk evidenceAsk;
+    private final ProjectRepository projects;
+    private final IntegrationProperties integration;
     private final TransactionTemplate tx;
 
     public TaskReactor(TaskRepository tasks, RunRepository runs, EvidenceRepository evidence,
                        TaskEventRepository taskEvents, SchedulerPause pause, WorktreeService worktrees,
                        RoutingProperties routing, WorkConventions conventions, RiskPaths riskPaths,
-                       RunsProperties props, PlatformTransactionManager txManager) {
+                       RunsProperties props, TaskEvidence taskEvidence, EvidenceAsk evidenceAsk,
+                       ProjectRepository projects, IntegrationProperties integration,
+                       PlatformTransactionManager txManager) {
+        this.integration = integration;
+        this.taskEvidence = taskEvidence;
+        this.evidenceAsk = evidenceAsk;
+        this.projects = projects;
         this.tasks = tasks;
         this.runs = runs;
         this.evidence = evidence;
@@ -73,7 +87,8 @@ public class TaskReactor {
     public void react(UUID taskId) {
         tx.executeWithoutResult(status -> tasks.lockForUpdate(taskId).ifPresent(task -> {
             Action action = ReactorDecision.decide(snapshot(task), needsHumanAfter());
-            if (!(action instanceof Action.None)) log.info("task {} ({}): {}", task.id(), task.status().dbValue(), action);
+            // Waiting for evidence is said once, by the attention item; the sweep would repeat it.
+            if (!(action instanceof Action.None) && !(action instanceof Action.WaitForEvidence)) log.info("task {} ({}): {}", task.id(), task.status().dbValue(), action);
             act(task, action);
         }));
     }
@@ -126,21 +141,24 @@ public class TaskReactor {
         // Only a head that passed its checks and has no review yet needs the answer; it may read git.
         boolean reviewRequired = t.status() == TaskStatus.VERIFYING && verifyPassed && !reviewPassed
                 && reviewRequired(t, head);
+        boolean evidenceMissing = t.status() == TaskStatus.VERIFYING && !verifyPassed && taskEvidence.missing(t);
         return new TaskSnapshot(t.status(), t.failures(), active, paused, workspace, head, last, verifyPassed,
-                reviewRequired, reviewPassed);
+                reviewRequired, reviewPassed, evidenceMissing,
+                t.status() == TaskStatus.VERIFIED && t.repoId() != null
+                        && !(integration.remotePush() && conventions.remotePush(t.projectId(), null)));
     }
 
     /**
-     * Whether {@code head} needs a diff review (remote-first spec §7.3). Tasks have no project yet, so
-     * the global {@code review} convention applies; the task's own {@code review} and {@code risk}
-     * flags decide before its diff is read.
+     * Whether {@code head} needs a diff review (remote-first spec §7.3): the {@code review} convention
+     * of the task's project (the global one for a task of no project); the task's own {@code review}
+     * and {@code risk} flags decide before its diff is read.
      */
     private boolean reviewRequired(Task t, String head) {
-        ReviewPolicy.Mode mode = conventions.review(null, null);
+        ReviewPolicy.Mode mode = conventions.review(t.projectId(), null);
         if (mode != ReviewPolicy.Mode.RISKY) return ReviewPolicy.required(mode, false, false);
         JsonNode meta = metadata(t);
         if (meta.path("review").asBoolean(false) || meta.path("risk").asBoolean(false)) return true;
-        return ReviewPolicy.required(mode, false, riskPaths.touches(worktrees.resolve(t.id()), worktrees.baseRef(), head));
+        return ReviewPolicy.required(mode, false, riskPaths.touches(worktrees.resolve(t.id()), worktrees.base(t.id()).ref(), head));
     }
 
     private static JsonNode metadata(Task t) {
@@ -174,6 +192,8 @@ public class TaskReactor {
                     event(task, "needs_human", Json.mapper().createObjectNode().put("reason", a.reason()));
                 }
             }
+            case Action.WaitForEvidence a -> evidenceAsk.ask(projects.findById(task.projectId()).orElse(null),
+                    EvidenceDetector.detect(worktrees.resolve(task.id())));
             case Action.None a -> { }
         }
     }

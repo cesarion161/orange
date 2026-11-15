@@ -107,7 +107,7 @@ public class PostRunSteps {
         String head;
         try {
             Path wt = worktrees.resolve(run.taskId());
-            if (Git.commitsAhead(wt, worktrees.baseRef()) == 0) return r.withFailure("no_commits");
+            if (Git.commitsAhead(wt, worktrees.base(run.taskId()).ref()) == 0) return r.withFailure("no_commits");
             head = Git.head(wt);
         } catch (RuntimeException e) {
             log.error("run {}: cannot read the task's branch: {}", run.id(), e.getMessage());

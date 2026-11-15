@@ -6,5 +6,7 @@ public record TaskCreateRequest(
         @NotBlank String title,
         String description,
         String role,
-        Integer priority) {
+        Integer priority,
+        String project,
+        String repo) {
 }

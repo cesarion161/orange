@@ -14,6 +14,8 @@ import org.jooq.JSONB;
  * @param headSha  the branch head being verified or integrated
  * @param prNumber PR integration mode only (a later phase)
  * @param prUrl    PR integration mode only (a later phase)
+ * @param projectId the project the task belongs to; null for a task of the legacy base repo
+ * @param repoId    the project's repo the work is done in; null with {@code projectId}
  */
 public record Task(
         UUID id,
@@ -30,5 +32,7 @@ public record Task(
         String headSha,
         JSONB metadata,
         OffsetDateTime createdAt,
-        OffsetDateTime updatedAt) {
+        OffsetDateTime updatedAt,
+        UUID projectId,
+        UUID repoId) {
 }

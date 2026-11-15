@@ -1,5 +1,6 @@
 package com.ai.orange.task;
 
+import com.ai.orange.project.TaskPlacement;
 import org.jooq.JSONB;
 
 /**
@@ -10,6 +11,9 @@ import org.jooq.JSONB;
  * <p>{@code role} is normalised to {@code implementer} or {@code chore}: v1 roles
  * ({@code dev}, {@code tester}, {@code reviewer}, {@code triage}) and blanks become
  * {@code implementer}, matching what V14 did to existing rows.
+ *
+ * <p>{@code placement} is the project and repo the task's work is done in; {@link TaskPlacement#NONE}
+ * (or null) is the legacy base repo.
  */
 public record TaskDef(
         String key,
@@ -17,7 +21,8 @@ public record TaskDef(
         String description,
         String role,
         Integer priority,
-        JSONB metadata) {
+        JSONB metadata,
+        TaskPlacement placement) {
 
     public static final String IMPLEMENTER = "implementer";
     public static final String CHORE = "chore";
@@ -26,6 +31,12 @@ public record TaskDef(
         if (key == null || key.isBlank()) throw new IllegalArgumentException("key required");
         if (title == null || title.isBlank()) throw new IllegalArgumentException("title required");
         role = normalizeRole(role);
+        if (placement == null) placement = TaskPlacement.NONE;
+    }
+
+    /** A task of no project: the legacy base repo. */
+    public TaskDef(String key, String title, String description, String role, Integer priority, JSONB metadata) {
+        this(key, title, description, role, priority, metadata, TaskPlacement.NONE);
     }
 
     public static String normalizeRole(String requested) {

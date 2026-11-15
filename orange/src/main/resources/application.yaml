@@ -26,6 +26,13 @@ management:
       application: ${spring.application.name}
 
 orange:
+  repos:
+    # One bare mirror per GitHub repo (remote-first spec §7.1): <root>/<owner>/<name>.git. Blank: ~/.orange/repos.
+    root: ${ORANGE_REPOS_ROOT:}
+    github-url: ${ORANGE_GITHUB_URL:https://github.com/}
+    # A fine-grained personal access token per owner, owner=token[,owner=token]. orange's own git
+    # gets it through a credential helper; it never reaches a container, a log or a file.
+    tokens: ${ORANGE_GITHUB_TOKENS:}
   worktrees:
     # Outside every repository (v2 decision 15): one directory per task, named by its id.
     root: ${WORKTREES_ROOT:${user.home}/.orange/worktrees}

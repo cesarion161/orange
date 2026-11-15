@@ -58,10 +58,6 @@ public class WorktreeDisposer {
     @Scheduled(fixedDelayString = "${orange.worktrees.disposer-delay:5m}",
                initialDelayString = "${orange.worktrees.disposer-initial-delay:1m}")
     public void sweep() {
-        if (worktreeProps.baseRepo() == null || worktreeProps.baseRepo().isBlank()) {
-            // No baseRepo means worktrees are never created → nothing to dispose.
-            return;
-        }
         List<Task> candidates = tasks.findTerminalWithLiveWorktree();
         if (candidates.isEmpty()) return;
 
@@ -72,7 +68,8 @@ public class WorktreeDisposer {
                 stampRemoved(t);
                 events.append(t.id(), "orchestrator", "worktree_disposed",
                         asJsonb(Map.of("status", t.status().dbValue())));
-            } catch (IOException | InterruptedException e) {
+            } catch (IOException | InterruptedException | RuntimeException e) {
+                // One task's trouble (its repo cannot be had) must not hold up the candidates behind it.
                 if (e instanceof InterruptedException) Thread.currentThread().interrupt();
                 log.warn("dispose worktree for task {} failed: {}", t.id(), e.getMessage());
                 // Leave metadata flag unset so the next sweep retries.

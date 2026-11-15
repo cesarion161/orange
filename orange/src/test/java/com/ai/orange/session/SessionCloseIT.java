@@ -14,6 +14,8 @@ import com.ai.orange.harness.FakeClaude;
 import com.ai.orange.json.Json;
 import com.ai.orange.project.SpaceItem;
 import com.ai.orange.project.SpaceService;
+import com.ai.orange.repo.FakeGithub;
+import com.ai.orange.repo.RepoKey;
 import com.ai.orange.run.Run;
 import com.ai.orange.run.RunExecutors;
 import com.ai.orange.run.RunKind;
@@ -24,6 +26,7 @@ import com.ai.orange.run.RunsProperties;
 import com.ai.orange.run.SchedulerPause;
 import com.ai.orange.session.SessionJudgement.Poll;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -47,21 +50,28 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 /**
- * Closing a session's work on real git repositories with a fake {@code claude}: the judge says
- * it is finished, orange checks that (committed, the project's evidence commands, a diff review),
- * integrates it as the conventions say and closes it; a gap goes back into the session.
+ * Closing a session's work from GitHub (remote-first spec §7.4) on bare repositories standing in
+ * for it, with a fake {@code claude}: the judge says it is finished, orange fetches what the
+ * session pushed into its mirror, checks it (committed, pushed, the project's evidence commands,
+ * a diff review when the review convention asks), integrates it as the conventions say and closes
+ * it; a gap goes back into the session. orange never reads or writes the session's checkout: the
+ * reporter's facts (head, uncommitted files) are all it knows of it.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = "orange.judge.enabled=true")
 @Import(TestcontainersConfiguration.class)
 class SessionCloseIT {
 
     static final Path RUN_ROOT = RunTestSupport.tempDir("close-it-");
+    static final FakeGithub GITHUB = new FakeGithub(RunTestSupport.tempDir("close-gh-"));
+    static final Path MIRRORS = RunTestSupport.tempDir("close-mirrors-");
     /** The judge's fake answer for "this work is finished". */
     static final String FINISHED = "All done. [[fake:judge-verify]]";
 
     @DynamicPropertySource
     static void props(DynamicPropertyRegistry r) {
         FakeClaude.register(r, RUN_ROOT);
+        r.add("orange.repos.root", MIRRORS::toString);
+        r.add("orange.repos.github-url", GITHUB::url);
     }
 
     @Value("${local.server.port}") int port;
@@ -82,29 +92,31 @@ class SessionCloseIT {
     final HttpClient http = HttpClient.newHttpClient();
 
     @TempDir Path tmp;
+    RepoKey key;
+    /** The repo on "GitHub". */
     Path origin;
+    /** The session's checkout, on the user's machine. */
     Path repo;
     String sessionId;
     String branch;
     boolean reportDefaultBranch = true;
+    /** Whether stops carry the checkout's head and uncommitted files, as a current reporter's do. */
+    boolean reportCheckout = true;
+    /** A remote other than the GitHub one, as the reporter would see it. */
+    String remoteUrl;
 
     @BeforeEach
     void fresh() throws Exception {
         pause.resume();
         sessionId = "close-" + UUID.randomUUID();
-        origin = tmp.resolve("origin.git");
-        git(tmp, "init", "-q", "--bare", "-b", "main", origin.toString());
-        // Each test gets its own project: the repo's path names it.
-        repo = tmp.resolve("repo-" + UUID.randomUUID().toString().substring(0, 8));
-        Files.createDirectories(repo);
-        git(repo, "init", "-q", "-b", "main");
+        // Each test gets its own repo, and so its own project.
+        String name = "repo-" + UUID.randomUUID().toString().substring(0, 8);
+        key = GITHUB.create("me/" + name);
+        origin = GITHUB.bare(key);
+        repo = tmp.resolve(name);
+        git(tmp, "clone", "-q", key.cloneUrl(GITHUB.url()), repo.toString());
         git(repo, "config", "user.email", "t@e");
         git(repo, "config", "user.name", "T");
-        Files.writeString(repo.resolve("README.md"), "# demo\n");
-        git(repo, "add", ".");
-        git(repo, "commit", "-q", "-m", "initial");
-        git(repo, "remote", "add", "origin", origin.toString());
-        git(repo, "push", "-q", "-u", "origin", "main");
         git(repo, "checkout", "-q", "-b", "feat");
         branch = "feat";
     }
@@ -116,9 +128,17 @@ class SessionCloseIT {
         ObjectNode e = Json.mapper().createObjectNode().put("event_id", eventId).put("harness", "claude-code")
                 .put("session_id", sessionId).put("type", type).put("cwd", repo.toString())
                 .put("repo_root", repo.toString()).put("worktree", repo.toString()).put("branch", branch)
-                .put("default_branch", "main");
+                .put("default_branch", "main").put("remote_url", key.cloneUrl(GITHUB.url()));
         if (!reportDefaultBranch) e.remove("default_branch");
-        if (payloadField != null) e.putObject("payload").put(payloadField, payloadText);
+        if (remoteUrl != null) e.put("remote_url", remoteUrl);
+        ObjectNode payload = e.putObject("payload");
+        if (payloadField != null) payload.put(payloadField, payloadText);
+        if ("stopped".equals(type) && reportCheckout && Files.exists(repo)) {
+            // What the reporter adds at a stop: the head and what is not committed.
+            payload.put("head_sha", git(repo, "rev-parse", "HEAD"));
+            ArrayNode dirty = payload.putArray("dirty_files");
+            gitRaw(repo, "status", "--porcelain").lines().filter(l -> !l.isBlank()).forEach(dirty::add);
+        }
         HttpResponse<String> res = http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/sessions/events"))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(e.toString())).build(), HttpResponse.BodyHandlers.ofString());
@@ -160,11 +180,23 @@ class SessionCloseIT {
         space.setConvention(session().projectId(), null, key, Json.mapper().readTree(json), SpaceService.Author.USER);
     }
 
+    /** Commits {@code file} and pushes the branch, as a session that works with GitHub does. */
     void commit(String file, String content) throws Exception {
-        Files.createDirectories(repo.resolve(file).getParent());
-        Files.writeString(repo.resolve(file), content);
+        commitOnly(file, content);
+        git(repo, "push", "-q", "origin", "HEAD:refs/heads/" + branch);
+    }
+
+    void commitOnly(String file, String content) throws Exception {
+        Path target = repo.resolve(file);
+        if (target.getParent() != null) Files.createDirectories(target.getParent());
+        Files.writeString(target, content);
         git(repo, "add", ".");
         git(repo, "commit", "-q", "-m", "add " + file);
+    }
+
+    /** git's stdout as it is, leading spaces included (status lines start with one). */
+    static String gitRaw(Path dir, String... args) {
+        return com.ai.orange.worktree.Git.run(dir, com.ai.orange.worktree.Git.QUICK, args);
     }
 
     List<Run> runsOf(RunKind kind) {
@@ -202,11 +234,12 @@ class SessionCloseIT {
         assertThat(s.status()).isEqualTo(Session.CLOSED);
         assertThat(s.waitingSince()).isNull();
         assertThat(s.closedReason()).isEqualTo(SessionWork.INTEGRATED);
-        assertThat(git(origin, "rev-parse", "main")).as("the base was pushed").isEqualTo(head);
-        assertThat(git(repo, "rev-parse", "main")).as("and the local base moved along").isEqualTo(head);
+        assertThat(git(origin, "rev-parse", "main")).as("the base was pushed, fast-forwarded with its SHAs").isEqualTo(head);
+        assertThat(git(repo, "rev-parse", "main")).as("the user's checkout is not touched").isNotEqualTo(head);
         assertThat(git(repo, "rev-parse", "--abbrev-ref", "HEAD")).as("the session's checkout stays on its branch")
                 .isEqualTo("feat");
-        assertThat(git(repo, "worktree", "list").lines().count()).as("the scratch checkout is gone").isEqualTo(1);
+        assertThat(git(MIRRORS.resolve("me").resolve(key.name() + ".git"), "worktree", "list").lines().count())
+                .as("the scratch checkouts are gone").isEqualTo(1);
 
         List<Evidence> rows = evidence.findBySession(s.id());
         assertThat(rows).extracting(Evidence::kind).containsExactlyInAnyOrder("tests", "diff_review");
@@ -331,15 +364,111 @@ class SessionCloseIT {
     }
 
     @Test
-    void theChecksRunInAScratchCheckoutNotInTheUsersTree() throws Exception {
+    void theWorkIsVerifiedAndMergedWithoutItsCheckout() throws Exception {
         prompt("Add the feature file");
         convention("evidence", "[\"touch ran.marker && test -f feature.txt\"]");
+        commit("feature.txt", "the feature\n");
+        String head = git(repo, "rev-parse", "HEAD");
+        stop();
+        // The laptop is gone: only what the session pushed is left.
+        FakeGithub.delete(repo);
+
+        assertThat(runAll()).as("judge, verify, integrate").isEqualTo(3);
+
+        assertThat(session().status()).isEqualTo(Session.CLOSED);
+        assertThat(lastWork().result()).isEqualTo(SessionWork.INTEGRATED);
+        assertThat(GITHUB.head(key, "main")).isEqualTo(head);
+    }
+
+    @Test
+    void unpushedWorkIsSentBackWithPush() throws Exception {
+        prompt("Add the feature file");
+        convention("evidence", "[\"test -f feature.txt\"]");
+        commitOnly("feature.txt", "the feature\n");
+        String stop = stop();
+        assertThat(runAll()).as("judge, verify").isEqualTo(2);
+
+        Poll verdict = poll(stop);
+        assertThat(verdict.kind()).isEqualTo("continue");
+        assertThat(verdict.message()).contains("git push origin feat").contains("stop again");
+        assertThat(evidence.findBySession(session().id())).noneMatch(e -> "test -f feature.txt".equals(e.command()));
+        assertThat(session().status()).isEqualTo(Session.VERIFYING);
+
+        // Pushed, and stopped again: it closes.
+        assertThat(judgement.acknowledge("claude-code", sessionId, stop)).isTrue();
+        git(repo, "push", "-q", "origin", "feat");
+        stop();
+        runAll();
+        assertThat(session().status()).isEqualTo(Session.CLOSED);
+        assertThat(GITHUB.head(key, "main")).isEqualTo(git(repo, "rev-parse", "HEAD"));
+    }
+
+    @Test
+    void aBranchPushedFurtherThanTheStopStillVerifiesTheStoppedHead() throws Exception {
+        prompt("Add the feature file");
+        convention("evidence", "[\"test -f feature.txt\"]");
+        commit("feature.txt", "the feature\n");
+        String head = git(repo, "rev-parse", "HEAD");
+        stop();
+        // More work lands on the branch on GitHub before orange gets to it.
+        commit("more.txt", "later\n");
+
+        runAll();
+
+        assertThat(session().status()).isEqualTo(Session.CLOSED);
+        assertThat(GITHUB.head(key, "main")).as("the head the session stopped at, nothing later").isEqualTo(head);
+    }
+
+    @Test
+    void aRepoNotOnGithubCannotBeClosedAndSaysSoOnce() throws Exception {
+        remoteUrl = "https://git.example.com/me/elsewhere.git";
+        prompt("Add the feature file");
+        convention("evidence", "[\"true\"]");
+        commit("feature.txt", "the feature\n");
+        stop();
+        runAll();
+        assertThat(session().status()).isEqualTo(Session.STOPPED);
+        prompt("and more");
+        stop();
+        runAll();
+
+        assertThat(session().status()).isEqualTo(Session.STOPPED);
+        assertThat(attention.findByKey(SessionClosing.notOnGithubKey(session()))).hasValueSatisfying(i -> {
+            assertThat(i.kind()).isEqualTo(SessionClosing.REPO_NOT_ON_GITHUB);
+            assertThat(i.body()).contains("GitHub");
+        });
+        assertThat(runsOf(RunKind.INTEGRATE)).isEmpty();
+    }
+
+    @Test
+    void aStopWithoutTheCheckoutsHeadJustStops() throws Exception {
+        reportCheckout = false;
+        prompt("Add the feature file");
+        convention("evidence", "[\"true\"]");
         commit("feature.txt", "the feature\n");
         stop();
         runAll();
 
+        assertThat(session().status()).isEqualTo(Session.STOPPED);
+        JsonNode outcome = Json.mapper().readTree(runsOf(RunKind.VERIFY).getFirst().outcome().data());
+        assertThat(outcome.path("status").asText()).isEqualTo("unavailable");
+        assertThat(outcome.path("note").asText()).contains("plugin");
+    }
+
+    @Test
+    void remotePushOffClosesAsVerified() throws Exception {
+        prompt("Add the feature file");
+        convention("evidence", "[\"true\"]");
+        convention("remote-push", "false");
+        commit("feature.txt", "the feature\n");
+        String before = GITHUB.head(key, "main");
+        stop();
+        assertThat(runAll()).as("judge, verify").isEqualTo(2);
+
         assertThat(session().status()).isEqualTo(Session.CLOSED);
-        assertThat(repo.resolve("ran.marker")).as("the command ran somewhere else").doesNotExist();
+        assertThat(lastWork().result()).isEqualTo(SessionWork.VERIFIED);
+        assertThat(lastWork().note()).contains("remote-push is off");
+        assertThat(GITHUB.head(key, "main")).isEqualTo(before);
     }
 
     @Test
@@ -390,19 +519,52 @@ class SessionCloseIT {
     }
 
     @Test
-    void workOnTheBaseBranchIsOnlyPushed() throws Exception {
+    void workOnTheBaseBranchGoesThroughASideBranch() throws Exception {
         git(repo, "checkout", "-q", "main");
         branch = "main";
         prompt("Fix the readme");
         convention("evidence", "[\"test -f README.md\"]");
-        commit("README.md", "# demo, fixed\n");
+        commitOnly("README.md", "# demo, fixed\n");
         String head = git(repo, "rev-parse", "HEAD");
+        String stop = stop();
+        assertThat(runAll()).as("judge, verify").isEqualTo(2);
+
+        String side = com.ai.orange.run.SessionChecks.sideBranch(session().id());
+        Poll verdict = poll(stop);
+        assertThat(verdict.kind()).isEqualTo("continue");
+        assertThat(verdict.message()).contains("git push origin HEAD:" + side);
+
+        assertThat(judgement.acknowledge("claude-code", sessionId, stop)).isTrue();
+        git(repo, "push", "-q", "origin", "HEAD:refs/heads/" + side);
         stop();
         assertThat(runAll()).as("judge, verify, integrate: a readme fix needs no review").isEqualTo(3);
 
         assertThat(session().status()).isEqualTo(Session.CLOSED);
-        assertThat(git(origin, "rev-parse", "main")).isEqualTo(head);
+        assertThat(GITHUB.head(key, "main")).as("the base fast-forwarded to the side branch").isEqualTo(head);
+        assertThat(GITHUB.head(key, side)).as("and the side branch is gone").isNull();
         assertThat(git(repo, "rev-parse", "HEAD")).as("nothing moved under the user's tree").isEqualTo(head);
+    }
+
+    @Test
+    void aSideBranchPushedFurtherIsNotDeleted() throws Exception {
+        git(repo, "checkout", "-q", "main");
+        branch = "main";
+        prompt("Fix the readme");
+        convention("evidence", "[\"true\"]");
+        commitOnly("README.md", "# demo, fixed\n");
+        String head = git(repo, "rev-parse", "HEAD");
+        String side = com.ai.orange.run.SessionChecks.sideBranch(session().id());
+        git(repo, "push", "-q", "origin", "HEAD:refs/heads/" + side);
+        stop();
+        // More lands on the side branch after the stop.
+        commitOnly("later.txt", "later\n");
+        git(repo, "push", "-q", "origin", "HEAD:refs/heads/" + side);
+        String later = git(repo, "rev-parse", "HEAD");
+        runAll();
+
+        assertThat(session().status()).isEqualTo(Session.CLOSED);
+        assertThat(GITHUB.head(key, "main")).as("the head the session stopped at").isEqualTo(head);
+        assertThat(GITHUB.head(key, side)).as("work orange did not check is not deleted").isEqualTo(later);
     }
 
     @Test
@@ -412,7 +574,8 @@ class SessionCloseIT {
         pushFromElsewhere("other.txt", "someone else\n");
         prompt("Fix the readme");
         convention("evidence", "[\"true\"]");
-        commit("README.md", "# demo, fixed\n");
+        commitOnly("README.md", "# demo, fixed\n");
+        git(repo, "push", "-q", "origin", "HEAD:refs/heads/" + com.ai.orange.run.SessionChecks.sideBranch(session().id()));
         String stop = stop();
         runAll();
 
@@ -446,14 +609,18 @@ class SessionCloseIT {
         runAll();
 
         assertThat(session().status()).isEqualTo(Session.CLOSED);
-        String head = git(repo, "rev-parse", "HEAD");
-        assertThat(head).as("the session's branch was rebased").isNotEqualTo(before);
-        assertThat(repo.resolve("other.txt")).exists();
-        assertThat(git(origin, "rev-parse", "main")).isEqualTo(head);
+        String head = GITHUB.head(key, "main");
+        assertThat(head).as("the work was rebased onto the moved base").isNotEqualTo(before);
+        assertThat(git(origin, "show", head + ":feature.txt")).isEqualTo("the feature");
+        assertThat(git(origin, "show", head + ":other.txt")).isEqualTo("someone else");
+        assertThat(GITHUB.head(key, "feat")).as("orange does not rewrite the user's branch").isEqualTo(before);
+        assertThat(git(repo, "rev-parse", "HEAD")).as("nor the user's checkout").isEqualTo(before);
+        assertThat(repo.resolve("other.txt")).doesNotExist();
+        assertThat(lastWork().headSha()).isEqualTo(head);
         assertThat(runsOf(RunKind.VERIFY)).as("the commands ran again on the rebased head").hasSize(2);
         assertThat(runsOf(RunKind.DIFF_REVIEW)).as("the review of the same patch carried over").hasSize(1);
         assertThat(evidence.sessionHasPassingDiffReview(session().id(), head)).isTrue();
-        assertThat(git(repo, "log", "-1", "--format=%cn")).as("the user's commits stay the user's").isEqualTo("T");
+        assertThat(git(origin, "log", "-1", "--format=%an", head)).as("the user's commits stay the user's").isEqualTo("T");
     }
 
     @Test
@@ -543,8 +710,9 @@ class SessionCloseIT {
     }
 
     @Test
-    void aRepoThatWasNeverClonedStillHasABase() throws Exception {
-        // git init plus "remote add" leaves no origin/HEAD, and the reporter then knows no default branch.
+    void aRepoWhoseDefaultBranchWasNotReportedStillHasABase() throws Exception {
+        // A checkout made with git init and "remote add" has no origin/HEAD: the reporter knows no default
+        // branch, and GitHub's (the mirror's origin/HEAD) is the base.
         reportDefaultBranch = false;
         prompt("Add the feature file");
         convention("evidence", "[\"test -f feature.txt\"]");

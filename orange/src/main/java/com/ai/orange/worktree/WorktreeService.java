@@ -7,28 +7,30 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 /**
  * Manages per-task git worktrees on disk. One worktree per task UUID, rooted at
- * {@code orange.worktrees.root/<uuid>}, branched off
- * {@code orange.worktrees.base-branch} (default {@code main}).
+ * {@code orange.worktrees.root/<uuid>}, on a branch {@code orange/<uuid>} made from the task's
+ * base ({@link TaskBase}).
  *
- * <p>When the base repo has an {@code origin} remote, {@link #create} fetches
- * the base branch from origin first and branches from {@code origin/<baseBranch>}
- * — that way a worktree is never branched off a stale local ref. This is the
- * load-bearing invariant: local {@code main} can lag arbitrarily behind the
- * actual trunk on GitHub, and we don't want add/add conflicts from agents
- * recreating files that were merged in via PRs.
+ * <p>A task of a project's repo has that repo's mirror as its base repository and the project's
+ * base branch as its base (remote-first spec §7.1, {@link TaskBases}). A task of no repo has the
+ * legacy {@code orange.worktrees.base-repo} and {@code base-branch}.
  *
- * Agents run with the worktree as their working directory. Claude Code confines
- * its file-editing tools to that directory, but in process mode its Bash tool is
- * not confined (spec §16: process mode is for local development; container mode
- * is the isolation boundary). This service is just the file-system + git side.
+ * <p>When the base has an {@code origin}, {@link #create} fetches first and branches from
+ * {@code origin/<branch>}, so a worktree is never branched off a stale local ref.
+ *
+ * Agents run with the worktree as their working directory. Claude Code confines its file-editing
+ * tools to that directory, but in process mode its Bash tool is not confined (spec §16: process
+ * mode is for local development; container mode is the isolation boundary). This service is just
+ * the file-system + git side.
  */
 @Service
 public class WorktreeService {
@@ -37,9 +39,17 @@ public class WorktreeService {
     private static final Duration GIT_TIMEOUT = Git.QUICK;
 
     private final WorktreeProperties props;
+    private final TaskBases bases;
 
+    /** Every task on the legacy base repo. */
     public WorktreeService(WorktreeProperties props) {
+        this(props, TaskBases.NONE);
+    }
+
+    @Autowired
+    public WorktreeService(WorktreeProperties props, TaskBases bases) {
         this.props = props;
+        this.bases = bases;
     }
 
     @PostConstruct
@@ -50,26 +60,79 @@ public class WorktreeService {
     }
 
     /**
-     * Create a worktree for {@code taskId} at {@code root/<taskId>}, branched off
-     * the configured {@code orange.worktrees.base-branch} on a fresh branch
-     * named {@code orange/<taskId>}. If the base repo has an {@code origin}
-     * remote, fetches {@code baseBranch} from origin first and uses
-     * {@code origin/<baseBranch>} as the source ref. Refuses if the global
-     * worktree count is at the configured cap.
+     * The task's base: its repo's mirror and the project's base branch, or for a task of no repo
+     * the legacy base repo.
+     *
+     * @throws IllegalStateException when the task has no repo and no base repo is configured
+     */
+    public TaskBase base(UUID taskId) {
+        Optional<TaskBase> own;
+        try {
+            own = bases.of(taskId);
+        } catch (GitException | IllegalStateException e) {
+            throw new RepoUnavailableException("task " + taskId + ": its repo cannot be had: " + e.getMessage(), e);
+        }
+        return own.orElseGet(() -> legacyBase(taskId));
+    }
+
+    private TaskBase legacyBase(UUID taskId) {
+        if (props.baseRepo() == null || props.baseRepo().isBlank()) {
+            throw new RepoUnavailableException("task " + taskId + " belongs to no project's repo, and "
+                    + "orange.worktrees.base-repo is not configured", null);
+        }
+        String repo = requireBaseRepo();
+        String branch = props.baseBranch();
+        boolean origin;
+        try {
+            origin = hasOriginRemote(repo);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        Path dir = Path.of(repo).toAbsolutePath();
+        Remote remote = !origin ? null : new Remote() {
+            @Override
+            public void fetch() {
+                Git.run(dir, Git.SLOW, "fetch", "--quiet", "origin", branch);
+            }
+
+            @Override
+            public void push(Path in, String... refspecs) {
+                List<String> args = new java.util.ArrayList<>(List.of("push", "--quiet", "origin"));
+                args.addAll(List.of(refspecs));
+                Git.run(in, Git.SLOW, args.toArray(String[]::new));
+            }
+        };
+        return new TaskBase(dir, branch, remote);
+    }
+
+    /**
+     * Create a worktree for {@code taskId} at {@code root/<taskId>} on a fresh branch
+     * {@code orange/<taskId>} from the task's base, fetched first when it has an origin. Refuses if
+     * the global worktree count is at the configured cap.
      */
     public Path create(UUID taskId) throws IOException, InterruptedException {
-        String repo = requireBaseRepo();
-        String baseBranch = props.baseBranch();
+        TaskBase base = base(taskId);
         Path root = rootPath();
         requireCapacity(root, taskId);
         Path target = root.resolve(taskId.toString()).toAbsolutePath();
         if (Files.exists(target)) {
             throw new IllegalStateException("worktree already exists: " + target);
         }
-
-        String sourceRef = resolveSourceRef(repo, baseBranch);
+        try {
+            base.fetch();
+        } catch (GitException e) {
+            if (bases.of(taskId).isPresent()) throw new RepoUnavailableException("task " + taskId + ": " + e.getMessage(), e);
+            throw new IOException(e.getMessage(), e);
+        }
+        String sourceRef = base.ref();
         String branch = "orange/" + taskId;
-        runGit(repo, List.of("worktree", "add", "-b", branch, target.toString(), sourceRef));
+        try {
+            runGit(base.repo().toString(), List.of("worktree", "add", "-b", branch, target.toString(), sourceRef));
+        } catch (IOException e) {
+            // A repo's base branch that GitHub does not have is that repo's trouble.
+            if (bases.of(taskId).isPresent()) throw new RepoUnavailableException("task " + taskId + ": " + e.getMessage(), e);
+            throw e;
+        }
         log.info("created worktree taskId={} path={} sourceRef={} branch={}", taskId, target, sourceRef, branch);
         return target;
     }
@@ -88,7 +151,7 @@ public class WorktreeService {
             log.warn("{} is not a git worktree; recreating it", target);
             remove(taskId);
         }
-        String repo = requireBaseRepo();
+        String repo = base(taskId).repo().toString();
         String branch = "orange/" + taskId;
         if (runGitOrTimeoutOrMissing(repo, List.of("rev-parse", "--verify", "--quiet", "refs/heads/" + branch)) != 0) {
             return create(taskId);
@@ -109,26 +172,11 @@ public class WorktreeService {
     }
 
     /**
-     * If the base repo has an {@code origin} remote, fetch {@code baseBranch}
-     * from origin and use {@code origin/<baseBranch>} as the source ref.
-     * Otherwise fall back to the local branch — this is the test path, where
-     * the repo is initialised with no remote.
-     */
-    private String resolveSourceRef(String repo, String baseBranch) throws IOException {
-        if (!hasOriginRemote(repo)) {
-            return baseBranch;
-        }
-        runGit(repo, List.of("fetch", "--quiet", "origin", baseBranch));
-        return "origin/" + baseBranch;
-    }
-
-    /**
      * Returns true iff the base repo has an {@code origin} remote configured.
      * git distinguishes "no such remote" (exit 2) from other failures; only
      * the former is silently treated as "no remote". Any other non-zero exit
      * (e.g. corrupt config) bubbles up so we don't accidentally fall through
-     * to the stale-local-ref path the PR exists to prevent. Timeouts throw
-     * via {@link #runGitOrTimeoutOrMissing}.
+     * to the stale-local-ref path. Timeouts throw via {@link #runGitOrTimeoutOrMissing}.
      */
     private boolean hasOriginRemote(String repo) throws IOException {
         int exit = runGitOrTimeoutOrMissing(repo, List.of("remote", "get-url", "origin"));
@@ -150,7 +198,7 @@ public class WorktreeService {
      * slot against {@code orange.worktrees.max-count}.
      */
     public void remove(UUID taskId) throws IOException, InterruptedException {
-        String repo = requireBaseRepo();
+        String repo = base(taskId).repo().toString();
         Path target = rootPath().resolve(taskId.toString()).toAbsolutePath();
         if (Files.exists(target)) {
             try {
@@ -204,28 +252,9 @@ public class WorktreeService {
         return rootPath().resolve(taskId.toString()).toAbsolutePath();
     }
 
-    /**
-     * The ref task branches start from, are diffed against and are integrated onto:
-     * {@code origin/<base>} when the base repo has an {@code origin} remote, else the local
-     * {@code <base>} branch.
-     */
-    public String baseRef() {
-        return hasOrigin() ? "origin/" + props.baseBranch() : props.baseBranch();
-    }
-
-    public boolean hasOrigin() {
-        try {
-            return hasOriginRemote(requireBaseRepo());
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
-    }
-
-    /** Brings {@code origin/<base>} up to date; a no-op without an origin remote. */
-    public void fetchBase() {
-        if (hasOrigin()) {
-            Git.run(baseRepo(), Git.SLOW, "fetch", "--quiet", "origin", props.baseBranch());
-        }
+    /** Brings the task's base ref up to date; a no-op without an origin. */
+    public void fetchBase(UUID taskId) {
+        base(taskId).fetch();
     }
 
     /** Whether one more worktree fits under {@code orange.worktrees.max-count}. */
@@ -235,14 +264,6 @@ public class WorktreeService {
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
-    }
-
-    public Path baseRepo() {
-        return Path.of(requireBaseRepo()).toAbsolutePath();
-    }
-
-    public String baseBranch() {
-        return props.baseBranch();
     }
 
     /**

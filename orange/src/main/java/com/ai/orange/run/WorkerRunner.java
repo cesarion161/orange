@@ -29,6 +29,7 @@ import com.ai.orange.routing.RouteRequest;
 import com.ai.orange.routing.RoutingProperties;
 import com.ai.orange.routing.RoutingTable;
 import com.ai.orange.worktree.Git;
+import com.ai.orange.worktree.RepoUnavailableException;
 import com.ai.orange.worktree.WorktreeCapacityException;
 import jakarta.annotation.PreDestroy;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -170,6 +171,9 @@ public class WorkerRunner implements RunExecutor {
             } catch (WorktreeCapacityException e) {
                 log.info("run {}: {}; the task waits for a worktree slot", run.id(), e.getMessage());
                 return conclude(run, RunResult.failed(run.id(), "no_worktree_slot"), null);
+            } catch (RepoUnavailableException e) {
+                log.error("run {}: {}", run.id(), e.getMessage());
+                return conclude(run, RunResult.failed(run.id(), "repo_unavailable"), null);
             } catch (Exception e) {
                 if (e instanceof InterruptedException) Thread.currentThread().interrupt();
                 log.error("run {}: could not prepare the workspace: {}", run.id(), e.toString());

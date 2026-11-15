@@ -36,8 +36,8 @@ public class DispatchController {
             throw new IllegalArgumentException("exactly one of 'plan' or 'planId' is required");
         }
         DispatchResult result = hasPlan
-                ? dispatch.dispatch(req.plan(), req.architectureMd())
-                : dispatch.dispatchByPlanId(req.planId());
+                ? dispatch.dispatch(req.plan(), req.architectureMd(), req.project(), req.repo())
+                : dispatch.dispatchByPlanId(req.planId(), req.project(), req.repo());
         return ResponseEntity.status(201).body(DispatchResponse.of(result));
     }
 

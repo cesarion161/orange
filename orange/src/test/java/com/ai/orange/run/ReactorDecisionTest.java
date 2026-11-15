@@ -30,6 +30,8 @@ class ReactorDecisionTest {
         boolean verify;
         boolean reviewRequired;
         boolean review;
+        boolean evidenceMissing;
+        boolean integrationHeld;
 
         S(TaskStatus status) {
             this.status = status;
@@ -44,10 +46,12 @@ class ReactorDecisionTest {
         S verifyPassed() { verify = true; return this; }
         S reviewRequired() { reviewRequired = true; return this; }
         S reviewPassed() { review = true; return this; }
+        S evidenceMissing() { evidenceMissing = true; return this; }
+        S integrationHeld() { integrationHeld = true; return this; }
 
         Action decide() {
             return ReactorDecision.decide(new TaskSnapshot(status, failures, active, paused, workspace, head, last,
-                    verify, reviewRequired, review), NEEDS_HUMAN_AFTER);
+                    verify, reviewRequired, review, evidenceMissing, integrationHeld), NEEDS_HUMAN_AFTER);
         }
     }
 
@@ -245,5 +249,20 @@ class ReactorDecisionTest {
     @Test
     void needsHumanWaitsForAPerson() {
         assertThat(task(TaskStatus.NEEDS_HUMAN).decide()).isEqualTo(new Action.None());
+    }
+
+    @Test
+    void aProjectTaskWithoutEvidenceWaitsForIt() {
+        assertThat(task(TaskStatus.VERIFYING).head(HEAD).evidenceMissing().decide()).isEqualTo(new Action.WaitForEvidence());
+        // Without a head there is nothing to verify yet, evidence or not.
+        assertThat(task(TaskStatus.VERIFYING).evidenceMissing().decide()).isEqualTo(new Action.None());
+        // A verified task already has its evidence.
+        assertThat(task(TaskStatus.VERIFIED).head(HEAD).evidenceMissing().decide())
+                .isEqualTo(new Action.QueueIntegrate(HEAD));
+    }
+
+    @Test
+    void aVerifiedTaskWhoseProjectDoesNotPushStaysVerified() {
+        assertThat(task(TaskStatus.VERIFIED).head(HEAD).integrationHeld().decide()).isEqualTo(new Action.None());
     }
 }

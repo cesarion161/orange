@@ -19,11 +19,14 @@ public record TaskResponse(
         String prUrl,
         String headSha,
         OffsetDateTime createdAt,
-        OffsetDateTime updatedAt) {
+        OffsetDateTime updatedAt,
+        UUID projectId,
+        UUID repoId) {
 
     public static TaskResponse of(Task t) {
         return new TaskResponse(
                 t.id(), t.title(), t.description(), t.role(), t.status(), t.priority(), t.failures(),
-                t.repo(), t.branch(), t.prNumber(), t.prUrl(), t.headSha(), t.createdAt(), t.updatedAt());
+                t.repo(), t.branch(), t.prNumber(), t.prUrl(), t.headSha(), t.createdAt(), t.updatedAt(),
+                t.projectId(), t.repoId());
     }
 }

@@ -129,13 +129,13 @@ class WorktreeServiceIT {
     @Test
     void base_ref_is_the_local_branch_without_a_remote_and_origin_with_one() throws Exception {
         WorktreeService svc = service(20);
-        assertThat(svc.baseRef()).isEqualTo("main");
+        assertThat(svc.base(UUID.randomUUID()).ref()).isEqualTo("main");
 
         Path origin = tempDir.resolve("origin.git");
         run(tempDir, "git", "init", "-q", "--bare", "-b", "main", origin.toString());
         run(baseRepo, "git", "remote", "add", "origin", origin.toString());
         run(baseRepo, "git", "push", "-q", "origin", "main");
-        assertThat(svc.baseRef()).isEqualTo("origin/main");
+        assertThat(svc.base(UUID.randomUUID()).ref()).isEqualTo("origin/main");
     }
 
     @Test
@@ -152,7 +152,7 @@ class WorktreeServiceIT {
         run(other, "git", "push", "-q", "origin", "main");
         String pushed = capture(other, "git", "rev-parse", "HEAD").strip();
 
-        service(20).fetchBase();
+        service(20).fetchBase(UUID.randomUUID());
 
         assertThat(capture(baseRepo, "git", "rev-parse", "origin/main").strip()).isEqualTo(pushed);
     }
@@ -285,5 +285,33 @@ class WorktreeServiceIT {
         String out = new String(p.getInputStream().readAllBytes());
         p.waitFor();
         return out;
+    }
+
+    @Test
+    void aTaskOfARepoBranchesFromItsMirror() throws Exception {
+        com.ai.orange.repo.FakeGithub github = new com.ai.orange.repo.FakeGithub(tempDir.resolve("github"));
+        com.ai.orange.repo.RepoKey key = github.create("me/mirrored");
+        com.ai.orange.repo.Mirrors mirrors = new com.ai.orange.repo.Mirrors(
+                new com.ai.orange.repo.RepoProperties(tempDir.resolve("mirrors").toString(), github.url(), ""));
+        UUID inRepo = UUID.randomUUID();
+        TaskBases bases = id -> id.equals(inRepo)
+                ? java.util.Optional.of(new TaskBase(mirrors.ensure(key), "main", mirrors.remote(key)))
+                : java.util.Optional.empty();
+        WorktreeService svc = new WorktreeService(new WorktreeProperties(worktreesRoot.toString(), baseRepo.toString(),
+                "main", 5), bases);
+        Files.createDirectories(worktreesRoot);
+        // A commit on GitHub after the mirror was made: making the worktree fetches first.
+        String latest = github.commit(key, "main", "later.txt", "later\n");
+
+        Path wt = svc.ensure(inRepo);
+
+        assertThat(Git.head(wt)).isEqualTo(latest);
+        assertThat(svc.base(inRepo).ref()).isEqualTo("origin/main");
+        assertThat(Path.of(Git.run(wt, Git.QUICK, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()))
+                .isEqualTo(mirrors.path(key).toRealPath());
+        // A task without a repo still has the legacy base repo.
+        assertThat(svc.base(UUID.randomUUID()).repo()).isEqualTo(baseRepo.toAbsolutePath());
+        svc.remove(inRepo);
+        assertThat(wt).doesNotExist();
     }
 }

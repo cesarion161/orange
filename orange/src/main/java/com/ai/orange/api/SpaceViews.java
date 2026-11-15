@@ -4,6 +4,7 @@ import com.ai.orange.attention.AttentionItem;
 import com.ai.orange.brief.Brief;
 import com.ai.orange.project.Project;
 import com.ai.orange.project.ProjectRepo;
+import com.ai.orange.repo.Repo;
 import com.ai.orange.project.SpaceItem;
 import com.ai.orange.session.Session;
 import java.util.LinkedHashMap;
@@ -34,6 +35,13 @@ public final class SpaceViews {
         m.put("node", r.nodeId());
         m.put("repo_root", r.repoRoot());
         m.put("remote_url", r.remoteUrl());
+        m.put("default_branch", r.defaultBranch());
+        return m;
+    }
+
+    public static Map<String, Object> of(Repo r) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("key", r.key().toString());
         m.put("default_branch", r.defaultBranch());
         return m;
     }

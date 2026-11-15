@@ -29,6 +29,8 @@ public class TaskRepository {
                 .set(TASKS.ROLE, def.role())
                 .set(TASKS.PRIORITY, def.priorityOrDefault())
                 .set(TASKS.METADATA, def.metadataOrEmpty())
+                .set(TASKS.PROJECT_ID, def.placement().projectId())
+                .set(TASKS.REPO_ID, def.placement().repoId())
                 // status defaults to 'pending' from the schema
                 .returning()
                 .fetchOne();
@@ -216,6 +218,8 @@ public class TaskRepository {
                 r.getHeadSha(),
                 r.getMetadata(),
                 r.getCreatedAt(),
-                r.getUpdatedAt());
+                r.getUpdatedAt(),
+                r.getProjectId(),
+                r.getRepoId());
     }
 }

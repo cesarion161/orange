@@ -92,12 +92,23 @@ public class ProjectRepository {
                 .returning().fetchOne());
     }
 
+    /** Records that a checkout is one of a GitHub repo. */
+    public void linkRepo(UUID checkoutId, UUID repoId) {
+        dsl.update(PROJECT_REPOS).set(PROJECT_REPOS.REPO_ID, repoId).where(PROJECT_REPOS.ID.eq(checkoutId)).execute();
+    }
+
+    /** The checkouts of a GitHub repo, on every node. */
+    public List<ProjectRepo> checkoutsOf(UUID repoId) {
+        return dsl.selectFrom(PROJECT_REPOS).where(PROJECT_REPOS.REPO_ID.eq(repoId)).fetch()
+                .map(ProjectRepository::toDomain);
+    }
+
     static Project toDomain(ProjectsRecord r) {
         return new Project(r.getId(), r.getName(), r.getStatus(), r.getSummary(), r.getCreatedAt());
     }
 
     static ProjectRepo toDomain(ProjectReposRecord r) {
         return new ProjectRepo(r.getId(), r.getProjectId(), r.getNodeId(), r.getRepoRoot(), r.getRemoteUrl(),
-                r.getDefaultBranch());
+                r.getDefaultBranch(), r.getRepoId());
     }
 }

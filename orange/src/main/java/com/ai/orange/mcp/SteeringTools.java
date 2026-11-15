@@ -10,6 +10,7 @@ import com.ai.orange.json.Json;
 import com.ai.orange.project.Conventions;
 import com.ai.orange.project.Project;
 import com.ai.orange.project.ProjectRepository;
+import com.ai.orange.repo.RepoKey;
 import com.ai.orange.project.ProjectService;
 import com.ai.orange.project.SpaceItem;
 import com.ai.orange.project.SpaceService;
@@ -82,11 +83,12 @@ public class SteeringTools {
                         this::project),
                 spec("orange_project_update", "Create a project (give only name) or change one: rename it, set its "
                         + "status (active, paused, archived; archived mutes its sessions), set its summary, or attach "
-                        + "a repo by the absolute path of its main checkout (the repo and its sessions move to it).",
+                        + "a repo: its GitHub owner/name (orange works on it and keeps a mirror of it), or the absolute "
+                        + "path of a checkout (the repo and its sessions move to it).",
                         "{\"type\":\"object\",\"properties\":{" + PROJECT_ARG + ","
                                 + "\"name\":{\"type\":\"string\"},\"status\":{\"type\":\"string\",\"enum\":[\"active\",\"paused\",\"archived\"]},"
                                 + "\"summary\":{\"type\":\"string\"},"
-                                + "\"add_repo\":{\"type\":\"string\",\"description\":\"Absolute path of the repo's main checkout.\"},"
+                                + "\"add_repo\":{\"type\":\"string\",\"description\":\"GitHub owner/name, or the absolute path of the repo's main checkout.\"},"
                                 + "\"node\":{\"type\":\"string\",\"description\":\"The machine the repo is on; default local.\"}}}",
                         this::projectUpdate),
                 spec("orange_add", "Add a goal, milestone, decision, note or question to a project's space. "
@@ -146,6 +148,7 @@ public class SteeringTools {
     private CallToolResult project(CallToolRequest req) {
         Project p = projectOf(req);
         Map<String, Object> out = SpaceViews.of(p);
+        out.put("github_repos", projectService.githubRepos(p.id()).stream().map(SpaceViews::of).toList());
         out.put("repos", projects.repos(p.id()).stream().map(SpaceViews::of).toList());
         Map<String, List<Map<String, Object>>> byKind = new LinkedHashMap<>();
         List<Map<String, Object>> proposals = new ArrayList<>();
@@ -173,8 +176,12 @@ public class SteeringTools {
                     arg(req, "summary") instanceof String s ? s : null);
         }
         String repo = string(req, "add_repo");
-        if (!repo.isEmpty()) projectService.addRepo(p.id(), string(req, "node"), repo);
+        if (!repo.isEmpty()) {
+            if (repo.startsWith("/")) projectService.addRepo(p.id(), string(req, "node"), repo);
+            else projectService.addGithubRepo(p.id(), RepoKey.of(repo));
+        }
         Map<String, Object> out = SpaceViews.of(p);
+        out.put("github_repos", projectService.githubRepos(p.id()).stream().map(SpaceViews::of).toList());
         out.put("repos", projects.repos(p.id()).stream().map(SpaceViews::of).toList());
         return ok(out);
     }

@@ -37,11 +37,13 @@ public class RunPreparer {
     private final WorktreeService worktrees;
     private final JudgePrompt judgePrompt;
     private final SessionRepository sessions;
+    private final SessionChecks sessionChecks;
     private final HarnessProperties harness;
 
     public RunPreparer(TaskRepository tasks, RunRepository runs, RunEventRepository runEvents,
                        WorktreeService worktrees, @Lazy JudgePrompt judgePrompt, SessionRepository sessions,
-                       HarnessProperties harness) {
+                       HarnessProperties harness, @Lazy SessionChecks sessionChecks) {
+        this.sessionChecks = sessionChecks;
         this.sessions = sessions;
         this.harness = harness;
         this.judgePrompt = judgePrompt;
@@ -64,7 +66,7 @@ public class RunPreparer {
         Task task = task(run);
         Path cwd = worktrees.ensure(task.id());
         JsonNode meta = json(task.metadata());
-        return prepared(run, task, meta, cwd, codingPrompt(task, meta, run, worktrees.baseRef()));
+        return prepared(run, task, meta, cwd, codingPrompt(task, meta, run, worktrees.base(task.id()).ref()));
     }
 
     /**
@@ -78,7 +80,7 @@ public class RunPreparer {
         String head = EvidenceRunner.inputHead(run);
         if (head.isBlank()) head = task.headSha();
         if (head == null || head.isBlank()) throw new IllegalStateException("task " + task.id() + " has no head to review");
-        String baseRef = worktrees.baseRef();
+        String baseRef = worktrees.base(task.id()).ref();
         String range = baseRef + "..." + head;
         String stat = Git.run(cwd, Git.QUICK, "diff", "--stat", range);
         Git.Output diff = Git.runCapped(cwd, Git.QUICK, MAX_REVIEW_PROMPT + 1, "diff", range);
@@ -88,8 +90,8 @@ public class RunPreparer {
 
     /**
      * The review of a session's work. Like the judge it runs in an empty directory of its own with
-     * no file tools: the diff is text a session wrote, and starting Claude Code inside the user's
-     * checkout would load that repo's settings and hooks.
+     * no file tools: the diff is text a session wrote, and starting Claude Code inside a checkout of
+     * it would load that repo's settings and hooks. The diff comes from the repo's mirror.
      */
     private PreparedRun prepareSessionReview(Run run) throws Exception {
         Session s = sessions.findById(run.attendedSessionId())
@@ -97,11 +99,10 @@ public class RunPreparer {
         JsonNode in = json(run.input());
         String head = in.path("head_sha").asText("");
         String base = in.path("base_sha").asText("");
-        String where = s.worktree() != null ? s.worktree() : s.repoRoot();
-        if (head.isBlank() || base.isBlank() || where == null) {
+        Path repo = sessionChecks.mirrorOf(s).orElse(null);
+        if (head.isBlank() || base.isBlank() || repo == null) {
             throw new IllegalStateException("session " + s.id() + " has no diff to review");
         }
-        Path repo = Path.of(where);
         String stat = Git.run(repo, Git.QUICK, "diff", "--stat", base, head);
         Git.Output diff = Git.runCapped(repo, Git.QUICK, MAX_REVIEW_PROMPT + 1, "diff", base, head);
         String intent = s.intent() == null ? "(the session stated no intent)" : s.intent().strip();

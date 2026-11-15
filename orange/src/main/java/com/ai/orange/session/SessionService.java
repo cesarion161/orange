@@ -32,6 +32,9 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class SessionService {
 
+    /** How many uncommitted paths of a stop orange keeps (the reporter sends at most 50). */
+    static final int MAX_DIRTY_FILES = 50;
+
     private static final Logger log = LoggerFactory.getLogger(SessionService.class);
 
     /** Excerpts kept on the session row; the reporter cuts its own, this is the coordinator's bound. */
@@ -137,7 +140,10 @@ public class SessionService {
                 NeutralEvent.SESSION_ENDED.equals(e.type()) ? e.payloadText("reason") : s.closedReason(),
                 s.createdAt(),
                 // The stop a verdict may be delivered to; anything else the session does ends that stop.
-                NeutralEvent.STOPPED.equals(e.type()) ? e.eventId() : d.status() == null ? s.stopEventId() : null);
+                NeutralEvent.STOPPED.equals(e.type()) ? e.eventId() : d.status() == null ? s.stopEventId() : null,
+                // What the stop says of the checkout; a stop that says nothing leaves nothing stale behind.
+                NeutralEvent.STOPPED.equals(e.type()) ? e.payloadText("head_sha") : s.headSha(),
+                NeutralEvent.STOPPED.equals(e.type()) ? reportedFiles(e) : s.dirtyFiles());
         sessions.save(next);
         sessions.addEvent(s.id(), e.type(), JSONB.valueOf(e.payload().toString()), e.at());
 
@@ -306,5 +312,16 @@ public class SessionService {
         if (s == null) return null;
         String one = s.strip();
         return one.length() <= max ? one : "…" + one.substring(one.length() - max + 1);
+    }
+
+    /** A stop's {@code dirty_files}: its uncommitted and untracked paths, null when it does not say. */
+    private static java.util.List<String> reportedFiles(NeutralEvent e) {
+        com.fasterxml.jackson.databind.JsonNode files = e.payload().path("dirty_files");
+        if (!files.isArray()) return null;
+        java.util.List<String> out = new java.util.ArrayList<>();
+        files.forEach(f -> {
+            if (f.isTextual() && !f.asText().isBlank()) out.add(cut(f.asText(), 500));
+        });
+        return java.util.List.copyOf(out.subList(0, Math.min(out.size(), MAX_DIRTY_FILES)));
     }
 }

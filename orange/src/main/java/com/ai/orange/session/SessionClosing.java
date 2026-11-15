@@ -3,6 +3,7 @@ package com.ai.orange.session;
 import com.ai.orange.attention.AttentionItem;
 import com.ai.orange.attention.AttentionRepository;
 import com.ai.orange.attention.AttentionService;
+import com.ai.orange.evidence.EvidenceAsk;
 import com.ai.orange.evidence.EvidenceRepository;
 import com.ai.orange.json.Json;
 import com.ai.orange.project.Project;
@@ -18,6 +19,7 @@ import com.ai.orange.run.RunKind;
 import com.ai.orange.run.RunOutcome;
 import com.ai.orange.run.RunRepository;
 import com.ai.orange.run.RunResult;
+import com.ai.orange.run.SessionChecks;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.MissingNode;
@@ -25,6 +27,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.nio.file.Path;
 import java.time.OffsetDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.Optional;
 import java.util.stream.Collectors;
 import org.jooq.JSONB;
 import org.slf4j.Logger;
@@ -60,7 +63,9 @@ public class SessionClosing {
     static final int GAP_TAIL = 1_500;
 
     public static final String SESSION_INTEGRATION = "session_integration";
-    public static final String EVIDENCE_MISSING = "evidence_missing";
+    public static final String EVIDENCE_MISSING = EvidenceAsk.EVIDENCE_MISSING;
+    /** A session in a repo that is not on GitHub: orange cannot close its work (remote-first spec §7.1). */
+    public static final String REPO_NOT_ON_GITHUB = "repo_not_on_github";
 
     private final SessionRepository sessions;
     private final SessionService sessionService;
@@ -73,11 +78,16 @@ public class SessionClosing {
     private final AttentionService attention;
     private final AttentionRepository attentionItems;
     private final RiskPaths riskPaths;
+    private final EvidenceAsk evidenceAsk;
+    private final SessionChecks sessionChecks;
 
     public SessionClosing(SessionRepository sessions, SessionService sessionService, VerdictRepository verdicts,
                           RunRepository runs, EvidenceRepository evidence, SessionWorkRepository work,
                           WorkConventions conventions, SpaceService space, AttentionService attention,
-                          AttentionRepository attentionItems, RiskPaths riskPaths) {
+                          AttentionRepository attentionItems, RiskPaths riskPaths, EvidenceAsk evidenceAsk,
+                          SessionChecks sessionChecks) {
+        this.sessionChecks = sessionChecks;
+        this.evidenceAsk = evidenceAsk;
         this.sessions = sessions;
         this.sessionService = sessionService;
         this.verdicts = verdicts;
@@ -167,6 +177,10 @@ public class SessionClosing {
                 askForEvidence(s, check);
                 letStop(s, run, stop, "the project has no evidence commands");
             }
+            case RunOutcome.SessionCheck.NO_REMOTE -> {
+                sayNotOnGithub(s);
+                letStop(s, run, stop, check.note());
+            }
             default -> letStop(s, run, stop, check.note());
         }
     }
@@ -208,6 +222,10 @@ public class SessionClosing {
             needsUser(s, stop, "is verified and waits for you to integrate it", why);
             return;
         }
+        if (!conventions.remotePush(s.projectId(), s.id())) {
+            close(s, run, in, SessionWork.VERIFIED, "Verified; remote-push is off, so orange left the work on its branch.");
+            return;
+        }
         if (!in.hasNonNull("base_branch")) {
             String why = "orange does not know which branch this repo integrates onto. Set the project's "
                     + "base-branch convention.";
@@ -239,12 +257,6 @@ public class SessionClosing {
             case "integrated" -> {
                 StringBuilder note = new StringBuilder("Verified and integrated onto ").append(base);
                 note.append(Boolean.TRUE.equals(outcome.pushed()) ? "; pushed to origin." : "; nothing was pushed.");
-                if ("dirty".equals(outcome.localBase())) {
-                    note.append(" Your checkout of ").append(base)
-                            .append(" has uncommitted changes, so orange left it where it was.");
-                } else if ("skipped".equals(outcome.localBase())) {
-                    note.append(" The local ").append(base).append(" branch was not moved.");
-                }
                 close(s, run, in, SessionWork.INTEGRATED, note.toString());
             }
             case "rebased" -> {
@@ -259,7 +271,9 @@ public class SessionClosing {
                             "The base kept moving: the work was rebased and checked " + MAX_ROUNDS + " times.");
                     letStop(s, run, stop, "verification did not settle");
                 } else {
-                    queue(s, RunKind.VERIFY, "verify", Json.mapper().createObjectNode().put("stop_event_id", stop));
+                    // The rebased commit is orange's own and only in the mirror: that is what is checked next.
+                    queue(s, RunKind.VERIFY, "verify", Json.mapper().createObjectNode().put("stop_event_id", stop)
+                            .put("head_sha", outcome.headSha()).put("rebased", true));
                 }
             }
             case "conflict" -> sendBack(s, run, stop, "orange checked this work and it passes, but rebasing `" + branch
@@ -281,9 +295,25 @@ public class SessionClosing {
     private boolean reviewRequired(Session s, RunOutcome.SessionCheck check) {
         ReviewPolicy.Mode mode = conventions.review(s.projectId(), s.id());
         if (mode != ReviewPolicy.Mode.RISKY) return ReviewPolicy.required(mode, false, false);
-        String where = s.worktree() != null ? s.worktree() : s.repoRoot();
-        boolean risky = where == null || riskPaths.touches(Path.of(where), check.baseSha(), check.headSha());
+        Optional<Path> mirror = sessionChecks.mirrorOf(s);
+        boolean risky = mirror.isEmpty() || riskPaths.touches(mirror.get(), check.baseSha(), check.headSha());
         return ReviewPolicy.required(mode, false, risky);
+    }
+
+    static String notOnGithubKey(Session s) {
+        return "checkout:" + s.nodeId() + ":" + s.repoRoot() + ":not_on_github";
+    }
+
+    /** Said once per checkout: orange closes work from GitHub, and this repo is not there. */
+    private void sayNotOnGithub(Session s) {
+        if (s.repoRoot() == null || attentionItems.findByKey(notOnGithubKey(s)).isPresent()) return;
+        Project project = sessionService.projectOf(s);
+        attention.raise(REPO_NOT_ON_GITHUB, notOnGithubKey(s), AttentionItem.NORMAL, s.projectId(), s.id(),
+                (project == null ? s.repoRoot() : project.name()) + " is not on GitHub",
+                "orange closes a session's work from GitHub: it fetches what the session pushed, checks it and merges "
+                        + "it there. " + s.repoRoot() + " has no GitHub remote, so its sessions just stop when they "
+                        + "finish, and orange can do no task work in it. Push it to a GitHub repo (and set it as the "
+                        + "checkout's origin) to have its work verified and integrated.");
     }
 
     private void sendBack(Session s, Run run, String stop, String message) {
@@ -323,32 +353,8 @@ public class SessionClosing {
                 s.projectId(), s.id(), SessionService.label(s, project) + " " + what, body.toString());
     }
 
-    /**
-     * A project without evidence commands cannot have its work verified. orange says so once per
-     * project, and proposes what the repo suggests; the proposal is the user's to accept, because
-     * these commands run on their machine (spec decision 13).
-     */
     private void askForEvidence(Session s, RunOutcome.SessionCheck check) {
-        Project project = sessionService.projectOf(s);
-        if (project == null) return;
-        // Said once per project, proposal included: a user who dropped it does not get it again.
-        if (attentionItems.findByKey("project:" + project.id() + ":" + EVIDENCE_MISSING).isPresent()) return;
-        StringBuilder body = new StringBuilder("orange cannot tell when work in ").append(project.name())
-                .append(" is done: the project has no evidence commands, so a finished session just stops.\n");
-        if (check.detected().isEmpty()) {
-            body.append("Set them with orange_set: key \"evidence\", value a list of commands such as "
-                    + "[\"./gradlew test\"].");
-        } else {
-            ArrayNode value = Json.mapper().createArrayNode();
-            check.detected().forEach(value::add);
-            SpaceItem proposal = space.proposeConvention(project.id(), WorkConventions.EVIDENCE, value);
-            body.append("From the repo, orange would run: ").append(String.join(", ", check.detected()))
-                    .append(".\nAccept that with orange_accept ").append(proposal.id())
-                    .append(", or set your own with orange_set (key \"evidence\").");
-        }
-        body.append("\nIf this project needs no checks, set its \"done\" convention to [\"committed\"] or [].");
-        attention.raise(EVIDENCE_MISSING, "project:" + project.id() + ":" + EVIDENCE_MISSING, AttentionItem.NORMAL,
-                project.id(), null, project.name() + " has no evidence commands", body.toString());
+        evidenceAsk.ask(sessionService.projectOf(s), check.detected());
     }
 
     // ─────────────────────────── helpers ───────────────────────────
@@ -367,7 +373,9 @@ public class SessionClosing {
     static String gapsMessage(RunOutcome.SessionCheck check) {
         StringBuilder b = new StringBuilder("orange checked this work and it is not done yet.\n");
         for (EvidenceGap g : check.gaps()) {
-            if (g.exitCode() == null) {
+            if (g.exitCode() == null && SessionChecks.PUSH_COMMAND.equals(g.command())) {
+                b.append('\n').append(g.outputTail().strip()).append('\n');
+            } else if (g.exitCode() == null) {
                 b.append("\nThere are uncommitted or untracked files:\n```\n").append(g.outputTail().strip())
                         .append("\n```\nCommit what belongs to the work, and remove or ignore the rest.\n");
             } else {
