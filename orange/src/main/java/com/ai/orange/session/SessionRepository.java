@@ -72,6 +72,8 @@ public class SessionRepository {
                 .set(SESSIONS.LAST_USER_PROMPT_AT, s.lastUserPromptAt())
                 .set(SESSIONS.CLOSED_REASON, s.closedReason())
                 .set(SESSIONS.STOP_EVENT_ID, s.stopEventId())
+                .set(SESSIONS.HEAD_SHA, s.headSha())
+                .set(SESSIONS.DIRTY_FILES, dirtyJson(s.dirtyFiles()))
                 .where(SESSIONS.ID.eq(s.id()))
                 .execute();
     }
@@ -137,6 +139,25 @@ public class SessionRepository {
         return new Session(r.getId(), r.getProjectId(), r.getHarness(), r.getExternalId(), r.getNodeId(), r.getCwd(),
                 r.getRepoRoot(), r.getBranch(), r.getWorktree(), r.getIntent(), r.getStatus(), r.getWaitingReason(),
                 r.getWaitingSince(), r.getLastMessage(), r.getAutoContinues(), r.getLastEventAt(),
-                r.getLastUserPromptAt(), r.getClosedReason(), r.getCreatedAt(), r.getStopEventId());
+                r.getLastUserPromptAt(), r.getClosedReason(), r.getCreatedAt(), r.getStopEventId(), r.getHeadSha(),
+                dirtyFiles(r.getDirtyFiles()));
+    }
+
+    private static JSONB dirtyJson(java.util.List<String> files) {
+        if (files == null) return null;
+        com.fasterxml.jackson.databind.node.ArrayNode array = com.ai.orange.json.Json.mapper().createArrayNode();
+        files.forEach(array::add);
+        return JSONB.valueOf(array.toString());
+    }
+
+    private static java.util.List<String> dirtyFiles(JSONB json) {
+        if (json == null) return null;
+        try {
+            java.util.List<String> files = new java.util.ArrayList<>();
+            com.ai.orange.json.Json.mapper().readTree(json.data()).forEach(n -> files.add(n.asText()));
+            return java.util.List.copyOf(files);
+        } catch (Exception e) {
+            return null;
+        }
     }
 }

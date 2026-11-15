@@ -17,8 +17,10 @@ import java.util.Set;
  *
  * The reporter resolves git itself: {@code repo_root} is the main checkout (through the common
  * git dir), {@code worktree} the checkout the session is in. Payload by type: {@code user_prompt}
- * has {@code prompt}; {@code stopped} has {@code last_message}, {@code transcript_path} and
- * {@code stop_hook_active}; {@code waiting} has {@code reason} ({@code permission}, {@code input}
+ * has {@code prompt}; {@code stopped} has {@code last_message}, {@code transcript_path},
+ * {@code stop_hook_active}, and what the checkout is at the stop: {@code head_sha} and
+ * {@code dirty_files} (its {@code git status --porcelain} lines, at most 50; absent when git could
+ * not be read); {@code waiting} has {@code reason} ({@code permission}, {@code input}
  * or {@code idle}) and {@code message}; {@code session_started} has {@code source};
  * {@code session_ended} has {@code reason}.
  */

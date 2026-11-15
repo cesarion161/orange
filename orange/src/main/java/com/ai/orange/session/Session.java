@@ -1,14 +1,19 @@
 package com.ai.orange.session;
 
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.UUID;
 
-/** One of the user's interactive sessions in some harness, as orange sees it through its reporter. */
+/**
+ * One of the user's interactive sessions in some harness, as orange sees it through its reporter.
+ * {@code headSha} and {@code dirtyFiles} are what its last stop said of its checkout (null: not
+ * said); orange closes its work from GitHub with them and never reads the checkout itself.
+ */
 public record Session(UUID id, UUID projectId, String harness, String externalId, String nodeId, String cwd,
                       String repoRoot, String branch, String worktree, String intent, String status,
                       String waitingReason, OffsetDateTime waitingSince, String lastMessage, int autoContinues,
                       OffsetDateTime lastEventAt, OffsetDateTime lastUserPromptAt, String closedReason,
-                      OffsetDateTime createdAt, String stopEventId) {
+                      OffsetDateTime createdAt, String stopEventId, String headSha, List<String> dirtyFiles) {
 
     /** orange is deciding what happens at this stop; the stop hook is waiting for the verdict. */
     public static final String JUDGING = "judging";
@@ -35,18 +40,19 @@ public record Session(UUID id, UUID projectId, String harness, String externalId
     public Session waiting(String newStatus, String reason, OffsetDateTime since) {
         return new Session(id, projectId, harness, externalId, nodeId, cwd, repoRoot, branch, worktree, intent,
                 newStatus, reason, since, lastMessage, autoContinues, lastEventAt, lastUserPromptAt, closedReason,
-                createdAt, stopEventId);
+                createdAt, stopEventId, headSha, dirtyFiles);
     }
 
     /** This session with its work closed: not waiting for anyone, and why it closed. */
     public Session closed(String reason) {
         return new Session(id, projectId, harness, externalId, nodeId, cwd, repoRoot, branch, worktree, intent,
-                CLOSED, null, null, lastMessage, 0, lastEventAt, lastUserPromptAt, reason, createdAt, stopEventId);
+                CLOSED, null, null, lastMessage, 0, lastEventAt, lastUserPromptAt, reason, createdAt, stopEventId,
+                headSha, dirtyFiles);
     }
 
     public Session withAutoContinues(int n) {
         return new Session(id, projectId, harness, externalId, nodeId, cwd, repoRoot, branch, worktree, intent,
                 status, waitingReason, waitingSince, lastMessage, n, lastEventAt, lastUserPromptAt, closedReason,
-                createdAt, stopEventId);
+                createdAt, stopEventId, headSha, dirtyFiles);
     }
 }

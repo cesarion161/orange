@@ -34,6 +34,9 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 
 MAX_PROMPT = 4000
 MAX_MESSAGE = 8000
+# At a stop: at most this many uncommitted paths, and this long for git to say them.
+MAX_DIRTY = 50
+STOP_GIT_TIMEOUT = 5
 
 # Notification types that mean "the session cannot go on without the user".
 WAITING = {
@@ -58,12 +61,35 @@ def marker(session_id):
 
 
 def git(cwd, *args):
+    out = git_raw(cwd, *args)
+    text = out.strip() if out is not None else ""
+    return text or None
+
+
+def git_raw(cwd, *args, timeout=1):
+    """git's stdout as it is (an empty string is an answer), or None when git failed."""
     try:
-        out = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, timeout=1)
+        out = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return None
-    text = out.stdout.strip()
-    return text if out.returncode == 0 and text else None
+    return out.stdout if out.returncode == 0 else None
+
+
+def stop_facts(cwd):
+    """What orange needs to close the work from GitHub: the head, and what is not committed.
+
+    orange never reads the checkout itself (remote-first spec §7.4). A fact git cannot give is left out.
+    """
+    if not cwd or not os.path.isdir(cwd):
+        return {}
+    facts = {}
+    head = git(cwd, "rev-parse", "HEAD")
+    if head:
+        facts["head_sha"] = head
+    status = git_raw(cwd, "status", "--porcelain", timeout=STOP_GIT_TIMEOUT)
+    if status is not None:
+        facts["dirty_files"] = [line for line in status.splitlines() if line.strip()][:MAX_DIRTY]
+    return facts
 
 
 def without_credentials(url):
@@ -169,6 +195,8 @@ def main():
     }
     if with_git:
         event.update(git_facts(cwd))
+    if event_type == "stopped":
+        event["payload"].update(stop_facts(cwd))
 
     url = os.environ.get("ORANGE_URL", "http://localhost:8080").rstrip("/") + "/sessions/events"
     headers = {"Content-Type": "application/json"}

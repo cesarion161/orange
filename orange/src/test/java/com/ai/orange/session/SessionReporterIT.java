@@ -201,6 +201,35 @@ class SessionReporterIT {
     }
 
     @Test
+    void aStopCarriesTheHeadAndTheUncommittedFiles() throws Exception {
+        hook("user-prompt-submit");
+        hook("stop-finished");
+        String head = Git.head(repo);
+        assertThat(session().headSha()).isEqualTo(head);
+        assertThat(session().dirtyFiles()).as("a clean checkout says so").isEmpty();
+
+        Files.writeString(repo.resolve("new.txt"), "x\n");
+        hook("user-prompt-submit");
+        assertThat(session().headSha()).as("other events keep what the last stop said").isEqualTo(head);
+        hook("stop-finished");
+        assertThat(session().dirtyFiles()).containsExactly("?? new.txt");
+    }
+
+    @Test
+    void aStopWithoutTheFactsForgetsTheOldOnes() throws Exception {
+        hook("user-prompt-submit");
+        hook("stop-finished");
+        assertThat(session().headSha()).isNotNull();
+
+        // A stop from an older reporter, or one that could not read git: nothing stale is kept.
+        sessionService.apply(com.ai.orange.session.NeutralEvent.parse(com.ai.orange.json.Json.mapper().readTree(
+                "{\"event_id\":\"" + UUID.randomUUID() + "\",\"harness\":\"claude-code\",\"session_id\":\""
+                        + sessionId + "\",\"type\":\"stopped\",\"node\":\"test-node\",\"payload\":{}}")));
+        assertThat(session().headSha()).isNull();
+        assertThat(session().dirtyFiles()).isNull();
+    }
+
+    @Test
     void aFinishedSessionIsFiledOnceAfterItSatIdle() throws Exception {
         hook("user-prompt-submit");
         hook("stop-finished");

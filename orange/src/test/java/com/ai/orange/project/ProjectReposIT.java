@@ -75,7 +75,7 @@ class ProjectReposIT {
         Project p1 = projects.resolve("n", root, "https://github.com/me/" + name + ".git", null);
         Session s = sessions.insert("claude-code", "repos-" + unique(), "n");
         sessions.save(new Session(s.id(), p1.id(), s.harness(), s.externalId(), "n", root, root, "main", root, null,
-                s.status(), null, null, null, 0, s.lastEventAt(), null, null, s.createdAt(), null));
+                s.status(), null, null, null, 0, s.lastEventAt(), null, null, s.createdAt(), null, null, null));
         Project p2 = projects.create("target-" + unique(), null);
 
         Repo repo = projects.addGithubRepo(p2.id(), RepoKey.of("me/" + name));
