@@ -1,5 +1,6 @@
 package com.ai.orange.run;
 
+import com.ai.orange.harness.HarnessProperties;
 import com.ai.orange.harness.claude.ClaudeCodeCommand;
 import com.ai.orange.json.Json;
 import com.ai.orange.project.WorkConventions;
@@ -29,9 +30,13 @@ import org.springframework.stereotype.Component;
 
 /**
  * Executes {@code integrate} runs in merge mode (project-space spec §8), for a task's branch or
- * for the branch of one of the user's sessions: rebase the verified
- * branch onto the base; if that changed the head, send it back for re-verification; otherwise
- * fast-forward the base (push it when there is a remote) and move the local base branch along.
+ * for the work of one of the user's sessions: rebase the verified branch onto the base (a branch
+ * that already has the base keeps its SHAs: fast-forward first, remote-first builder's call 9); if
+ * that changed the head, send it back for re-verification; otherwise fast-forward the base (push it
+ * when there is a remote) and, for a task of the legacy base repo, move the local base branch along.
+ *
+ * <p>A session's work is integrated from GitHub (remote-first spec §7.4): in a scratch worktree of
+ * the repo's mirror at the verified head, never in the session's checkout.
  * The {@code integrate} slot is 1, so integrations never race each other; a push rejected
  * because the base moved anyway just asks for another attempt.
  */
@@ -50,17 +55,19 @@ public class Integrator implements RunExecutor {
     private final WorkConventions conventions;
     private final EventRepository inbox;
     private final TaskRepository tasks;
+    private final HarnessProperties harness;
 
     public Integrator(RunRepository runs, WorktreeService worktrees, IntegrationProperties props,
                       RunsProperties runsProps, RunLifecycle lifecycle) {
-        this(runs, worktrees, props, runsProps, lifecycle, null, null, null, null, null);
+        this(runs, worktrees, props, runsProps, lifecycle, null, null, null, null, null, null);
     }
 
     @Autowired
     public Integrator(RunRepository runs, WorktreeService worktrees, IntegrationProperties props,
                       RunsProperties runsProps, RunLifecycle lifecycle, SessionRepository sessions,
                       SessionChecks sessionChecks, WorkConventions conventions, EventRepository inbox,
-                      TaskRepository tasks) {
+                      TaskRepository tasks, HarnessProperties harness) {
+        this.harness = harness;
         this.tasks = tasks;
         this.inbox = inbox;
         this.sessions = sessions;
@@ -122,7 +129,7 @@ public class Integrator implements RunExecutor {
      * @param asBot      rebase as orange's bot (task branches) or as whoever the checkout's git config says
      */
     private record Target(Path wt, Path repo, String baseBranch, Remote remote, boolean push, boolean onBase,
-                          boolean asBot) {
+                          boolean asBot, UUID sessionId) {
         String ref() {
             return push ? "origin/" + baseBranch : baseBranch;
         }
@@ -134,6 +141,17 @@ public class Integrator implements RunExecutor {
         void fetch() {
             if (remote != null) remote.fetch();
         }
+
+        /** A session's scratch worktree goes when the run ends; a task's worktree stays. */
+        void cleanUp() {
+            if (sessionId == null) return;
+            try {
+                Git.exitCode(repo, Git.QUICK, "worktree", "remove", "--force", wt.toString());
+                Git.exitCode(repo, Git.QUICK, "worktree", "prune");
+            } catch (RuntimeException e) {
+                log.warn("could not remove the scratch worktree {}: {}", wt, e.getMessage());
+            }
+        }
     }
 
     private Target target(Run run) throws Exception {
@@ -143,7 +161,7 @@ public class Integrator implements RunExecutor {
             boolean push = base.hasOrigin() && props.remotePush()
                     && (project == null || conventions == null || conventions.remotePush(project, null));
             return new Target(worktrees.ensure(run.taskId()), base.repo(), base.branch(), base.remote(), push, false,
-                    true);
+                    true, null);
         }
         Session s = sessions.findById(run.attendedSessionId())
                 .orElseThrow(() -> new IllegalStateException("session " + run.attendedSessionId() + " does not exist"));
@@ -151,24 +169,18 @@ public class Integrator implements RunExecutor {
         if (located.place() == null) throw new IllegalStateException(located.problem());
         SessionChecks.Place p = located.place();
         if (p.baseBranch() == null) {
-            throw new IllegalStateException("no base branch is known for " + p.dir()
+            throw new IllegalStateException("no base branch is known for " + p.key()
                     + "; set the project's base-branch convention");
         }
-        Remote remote = !p.hasOrigin() ? null : new Remote() {
-            @Override
-            public void fetch() {
-                Git.run(p.dir(), Git.SLOW, "fetch", "--quiet", "origin", p.baseBranch());
-            }
-
-            @Override
-            public void push(Path dir, String... refspecs) {
-                List<String> args = new java.util.ArrayList<>(List.of("push", "--quiet", "origin"));
-                args.addAll(List.of(refspecs));
-                Git.run(dir, Git.SLOW, args.toArray(String[]::new));
-            }
-        };
-        return new Target(p.dir(), p.dir(), p.baseBranch(), remote,
-                p.hasOrigin() && conventions.remotePush(s.projectId(), s.id()), p.branch().equals(p.baseBranch()), false);
+        if (!conventions.remotePush(s.projectId(), s.id())) {
+            throw new IllegalStateException("remote-push is off for this project, so a session's work has nowhere to go");
+        }
+        // The verified head is in the mirror under the session's check ref; orange integrates it there.
+        Path scratch = harness.runRoot().resolve(run.id().toString()).resolve("integrate").toAbsolutePath();
+        java.nio.file.Files.createDirectories(scratch.getParent());
+        Git.run(p.mirror(), Git.SLOW, "worktree", "add", "--detach", "--quiet", scratch.toString(),
+                SessionChecks.checkRef(s.id()));
+        return new Target(scratch, p.mirror(), p.baseBranch(), p.remote(), true, p.onBase(), true, s.id());
     }
 
     /** Whether the work this run integrates has ended or moved on, so the run must not land it. */
@@ -195,17 +207,20 @@ public class Integrator implements RunExecutor {
             throw new IllegalStateException("integrate run " + run.id() + " has no task or session, or no head_sha");
         }
         Target t = target(run);
+        try {
+            return integrate(run, t, head, deadline);
+        } finally {
+            t.cleanUp();
+        }
+    }
+
+    private RunOutcome.Integration integrate(Run run, Target t, String head, long deadline) throws Exception {
         Path wt = t.wt();
         t.fetch();
         renew(run, deadline);
 
         if (!Git.head(wt).equals(head)) return RunOutcome.Integration.of("stale");
         if (t.onBase()) return integrateOnBase(run, t, head);
-        // A session's checkout is the user's: tracked changes made since the check mean it has moved on.
-        if (run.attendedSessionId() != null
-                && !Git.run(wt, Git.QUICK, "status", "--porcelain", "--untracked-files=no").isBlank()) {
-            return RunOutcome.Integration.of("stale");
-        }
 
         // The fetch took time: a session the user has spoken to since must not be rebased under them.
         if (ended(run)) throw new TaskEnded();
@@ -228,6 +243,8 @@ public class Integrator implements RunExecutor {
         }
         String rebased = Git.head(wt);
         if (!rebased.equals(head)) {
+            // orange's own commit, in the mirror only: the next check of the session reads it from here.
+            if (t.sessionId() != null) Git.run(t.repo(), Git.QUICK, "update-ref", SessionChecks.checkRef(t.sessionId()), rebased);
             return new RunOutcome.Integration("rebased", rebased, null, null, List.of(), null);
         }
         renew(run, deadline);
@@ -243,7 +260,9 @@ public class Integrator implements RunExecutor {
                 if (rejectedAsNonFastForward(e)) return RunOutcome.Integration.of("base_moved");
                 throw e;
             }
-            // The push integrated the work; bringing the local checkout along is best effort.
+            // The push integrated the work. A mirror has no local base to bring along.
+            if (t.sessionId() != null) return new RunOutcome.Integration("integrated", head, true, null, List.of(), null);
+            // Bringing the legacy base repo's checkout along is best effort.
             String local;
             try {
                 t.fetch();
@@ -270,12 +289,12 @@ public class Integrator implements RunExecutor {
     }
 
     /**
-     * A session that worked on the base branch itself (spec decision 11): orange never moves refs
-     * under the user's working tree, so integrating is only the push. When origin has commits the
-     * session lacks, that is for the session to sort out ({@code behind}).
+     * A session that worked on the base branch itself pushed its work to a side branch (remote-first
+     * builder's call 11): the base is fast-forwarded to it and pushed, and the side branch deleted.
+     * When the base has commits the session lacks, that is for the session to sort out
+     * ({@code behind}): the user's own base must stay a fast-forward of GitHub's.
      */
     private RunOutcome.Integration integrateOnBase(Run run, Target t, String head) {
-        if (!t.push()) return new RunOutcome.Integration("integrated", head, false, "updated", List.of(), null);
         if (SessionChecks.refExists(t.wt(), "refs/remotes/origin/" + t.baseBranch())
                 && Git.exitCode(t.wt(), Git.QUICK, "merge-base", "--is-ancestor", "origin/" + t.baseBranch(), head) != 0) {
             return RunOutcome.Integration.of("behind");
@@ -287,7 +306,14 @@ public class Integrator implements RunExecutor {
             if (rejectedAsNonFastForward(e)) return RunOutcome.Integration.of("behind");
             throw e;
         }
-        return new RunOutcome.Integration("integrated", head, true, "updated", List.of(), null);
+        String side = SessionChecks.sideBranch(t.sessionId());
+        try {
+            t.remote().push(t.wt(), ":refs/heads/" + side);
+        } catch (GitException e) {
+            log.warn("integrate run {}: {} is integrated, but its side branch {} could not be deleted: {}", run.id(),
+                    head, side, e.getMessage());
+        }
+        return new RunOutcome.Integration("integrated", head, true, null, List.of(), null);
     }
 
     /**

@@ -105,6 +105,23 @@ public class RunWorkspaces {
     }
 
     /**
+     * {@code <runDir>/workspace}: a checkout of {@code ref} of {@code repo} (a session's head in the
+     * mirror) that shares nothing with it: no remote, no hardlinks, no alternates, the one ref's
+     * history only. Made by orange's git before any container has seen the directory; after that
+     * only {@link #discard} touches it.
+     *
+     * @throws GitException when the ref cannot be fetched
+     */
+    public Path cloneRef(Path repo, String ref, Path runDir) throws IOException {
+        Path workspace = runDir.toAbsolutePath().resolve(WORKSPACE);
+        Files.createDirectories(workspace);
+        Git.run(workspace, Git.QUICK, "init", "--quiet");
+        Git.run(workspace, Git.SLOW, "fetch", "--quiet", "--no-tags", repo.toString(), "+" + ref + ":refs/heads/work");
+        Git.run(workspace, Git.SLOW, "checkout", "--quiet", "work");
+        return workspace;
+    }
+
+    /**
      * Brings what the run committed into the task's worktree: the branch becomes what the run's
      * {@code HEAD} is, as in process mode, where an agent may amend. The run's container has
      * exited. Never throws.

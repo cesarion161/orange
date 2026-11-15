@@ -271,12 +271,13 @@ class JudgeIT {
         // "Finished" is a claim orange checks (SessionCloseIT); the hook goes on waiting meanwhile.
         assertThat(session().status()).isEqualTo(Session.VERIFYING);
         assertThat(poll(stop).state()).isEqualTo(Poll.State.PENDING);
-        // This session's checkout does not exist, so there is nothing to check: it stops as finished.
+        // This session's repo is not on GitHub, so there is nothing to check: it stops as finished, and
+        // orange says once why it cannot close work there (remote-first spec §7.1).
         executors.forKind(RunKind.VERIFY).orElseThrow()
                 .execute(runs.claimNext(RunKind.VERIFY, runProps.workerId(), runProps.leaseTtl()).orElseThrow());
         assertThat(session().status()).isEqualTo(Session.STOPPED);
         assertThat(session().waitingReason()).isEqualTo(Session.WAIT_FINISHED);
-        assertThat(questions()).isEmpty();
+        assertThat(questions()).extracting(AttentionItem::kind).containsExactly(SessionClosing.REPO_NOT_ON_GITHUB);
         assertThat(poll(stop).kind()).isEqualTo("verify");
 
         // Another session (the fake picks its scenario from the first marker in the prompt, and the

@@ -82,7 +82,7 @@ public final class FakeGithub {
         return Git.run(bare, Git.QUICK, "rev-parse", "refs/heads/" + branch).strip();
     }
 
-    static void delete(Path p) {
+    public static void delete(Path p) {
         if (!Files.exists(p)) return;
         try (var walk = Files.walk(p)) {
             walk.sorted((a, b) -> b.compareTo(a)).forEach(f -> f.toFile().delete());

@@ -181,12 +181,15 @@ public class EvidenceRunner implements RunExecutor {
         }
     }
 
-    /** A session's work is checked where it is, at whatever its head is now (see {@link SessionChecks}). */
+    /** A session's work is checked from GitHub, at the head its stop reported (see {@link SessionChecks}). */
     private RunResult verifySession(Run run) {
         if (sessionChecks == null) throw new IllegalStateException("this runner does not check sessions");
         long deadline = System.nanoTime() + runsProps.timeout(RunKind.VERIFY).toNanos();
-        RunOutcome.SessionCheck outcome = sessionChecks.check(run, (dir, command, budget) -> {
-            CommandResult r = runCommand(run, dir, command, budget, null);
+        boolean contained = containers != null && containers.enabled();
+        // The commands run the session's code: in container mode each gets a container of its own.
+        RunOutcome.SessionCheck outcome = sessionChecks.check(run, (dir, n, command, budget) -> {
+            CommandResult r = runCommand(run, dir, command, budget,
+                    contained ? DockerCommand.runName(run.id()) + "-c" + n : null);
             return new SessionChecks.Commands.Result(r.exitCode(), r.outputTail());
         }, deadline);
         runs.recordOutcome(run.id(), outcome.toJsonb());
