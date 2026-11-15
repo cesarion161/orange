@@ -200,6 +200,15 @@ class SteeringMcpIT {
     }
 
     @Test
+    void attachingAGithubRepoByOwnerAndNameListsIt() throws Exception {
+        call("orange_project_update", args().put("name", name));
+        JsonNode updated = call("orange_project_update", args().put("project", name).put("add_repo", "Me/" + name));
+        assertThat(updated.path("github_repos")).hasSize(1);
+        assertThat(updated.path("github_repos").get(0).path("key").asText()).isEqualTo("me/" + name.toLowerCase());
+        assertThat(call("orange_project", args().put("project", name)).path("github_repos")).hasSize(1);
+    }
+
+    @Test
     void renamingAProposedProjectToActiveAnswersItsQuestion() throws Exception {
         Session s = stoppedSessionIn("/tmp/" + name + "-x");
         call("orange_project_update", args().put("project", s.projectId().toString()).put("name", name)
