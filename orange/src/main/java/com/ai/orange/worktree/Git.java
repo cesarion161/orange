@@ -17,13 +17,14 @@ import java.util.concurrent.TimeUnit;
 /**
  * The one place orange runs git: in a directory, with a timeout, capturing stdout and stderr
  * separately, with no repository hooks. git inherits the coordinator's environment minus orange's
- * own secrets, so pushes use the host's git credentials.
+ * own secrets. Commands that talk to a GitHub repo orange mirrors authenticate with a {@link GitAuth};
+ * the others use the host's git credentials.
  */
 public final class Git {
 
     /** orange's own credentials, kept out of every git process. */
     static final Set<String> ORANGE_SECRETS = Set.of("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY",
-            "ANTHROPIC_AUTH_TOKEN", "LITELLM_MASTER_KEY", "GITHUB_WEBHOOK_SECRET", "ORANGE_GITHUB_TOKEN");
+            "ANTHROPIC_AUTH_TOKEN", "LITELLM_MASTER_KEY", "GITHUB_WEBHOOK_SECRET", "ORANGE_GITHUB_TOKEN", "ORANGE_GITHUB_TOKENS");
 
     /** For quick local commands (status, rev-parse, update-ref). */
     public static final Duration QUICK = Duration.ofSeconds(60);
@@ -34,21 +35,31 @@ public final class Git {
 
     /** Runs git and returns its stdout. Throws {@link GitException} on a non-zero exit or a timeout. */
     public static String run(Path dir, Duration timeout, String... args) {
-        Result r = exec(dir, timeout, Integer.MAX_VALUE, args);
+        return run(dir, timeout, GitAuth.NONE, args);
+    }
+
+    /** Like {@link #run(Path, Duration, String...)}, authenticating to remotes as {@code auth} says. */
+    public static String run(Path dir, Duration timeout, GitAuth auth, String... args) {
+        Result r = exec(dir, timeout, Integer.MAX_VALUE, auth, args);
         if (r.exitCode != 0) throw new GitException(List.of(args), r.exitCode, join(r.stdout, r.stderr));
         return r.stdout;
     }
 
     /** Like {@link #run}, but keeps at most {@code maxChars} of stdout (the rest is read and dropped). */
     public static Output runCapped(Path dir, Duration timeout, int maxChars, String... args) {
-        Result r = exec(dir, timeout, maxChars, args);
+        Result r = exec(dir, timeout, maxChars, GitAuth.NONE, args);
         if (r.exitCode != 0) throw new GitException(List.of(args), r.exitCode, join(r.stdout, r.stderr));
         return new Output(r.stdout, r.truncated);
     }
 
     /** Runs git and returns its exit code. Only a timeout throws. */
     public static int exitCode(Path dir, Duration timeout, String... args) {
-        Result r = exec(dir, timeout, Integer.MAX_VALUE, args);
+        return exitCode(dir, timeout, GitAuth.NONE, args);
+    }
+
+    /** Like {@link #exitCode(Path, Duration, String...)}, authenticating to remotes as {@code auth} says. */
+    public static int exitCode(Path dir, Duration timeout, GitAuth auth, String... args) {
+        Result r = exec(dir, timeout, Integer.MAX_VALUE, auth, args);
         if (r.exitCode == -1) throw new GitException(List.of(args), -1, join(r.stdout, r.stderr));
         return r.exitCode;
     }
@@ -83,13 +94,14 @@ public final class Git {
 
     private record Result(int exitCode, String stdout, String stderr, boolean truncated) {}
 
-    private static Result exec(Path dir, Duration timeout, int maxChars, String... args) {
-        List<String> cmd = new ArrayList<>(args.length + 3);
+    private static Result exec(Path dir, Duration timeout, int maxChars, GitAuth auth, String... args) {
+        List<String> cmd = new ArrayList<>(args.length + 3 + auth.configArgs().size());
         cmd.add("git");
         // No repository hooks: a relative core.hooksPath resolves inside a task's worktree, which an
         // agent writes, and orange's rebases, pushes and checkouts must not run agent-written code.
         cmd.add("-c");
         cmd.add("core.hooksPath=/dev/null");
+        cmd.addAll(auth.configArgs());
         cmd.addAll(List.of(args));
         Process p;
         try {
@@ -98,6 +110,8 @@ public final class Git {
             Map<String, String> scrubbed = environment(env);
             env.clear();
             env.putAll(scrubbed);
+            // After the scrub: a token for this one command, which only the credential helper reads.
+            env.putAll(auth.env());
             p = pb.start();
         } catch (IOException e) {
             throw new UncheckedIOException("could not start git in " + dir, e);
