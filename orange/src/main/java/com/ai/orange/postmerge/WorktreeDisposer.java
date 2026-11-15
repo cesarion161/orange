@@ -68,7 +68,8 @@ public class WorktreeDisposer {
                 stampRemoved(t);
                 events.append(t.id(), "orchestrator", "worktree_disposed",
                         asJsonb(Map.of("status", t.status().dbValue())));
-            } catch (IOException | InterruptedException e) {
+            } catch (IOException | InterruptedException | RuntimeException e) {
+                // One task's trouble (its repo cannot be had) must not hold up the candidates behind it.
                 if (e instanceof InterruptedException) Thread.currentThread().interrupt();
                 log.warn("dispose worktree for task {} failed: {}", t.id(), e.getMessage());
                 // Leave metadata flag unset so the next sweep retries.

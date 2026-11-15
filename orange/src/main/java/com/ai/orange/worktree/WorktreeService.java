@@ -7,6 +7,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Stream;
 import org.slf4j.Logger;
@@ -65,10 +66,20 @@ public class WorktreeService {
      * @throws IllegalStateException when the task has no repo and no base repo is configured
      */
     public TaskBase base(UUID taskId) {
-        return bases.of(taskId).orElseGet(this::legacyBase);
+        Optional<TaskBase> own;
+        try {
+            own = bases.of(taskId);
+        } catch (GitException | IllegalStateException e) {
+            throw new RepoUnavailableException("task " + taskId + ": its repo cannot be had: " + e.getMessage(), e);
+        }
+        return own.orElseGet(() -> legacyBase(taskId));
     }
 
-    private TaskBase legacyBase() {
+    private TaskBase legacyBase(UUID taskId) {
+        if (props.baseRepo() == null || props.baseRepo().isBlank()) {
+            throw new RepoUnavailableException("task " + taskId + " belongs to no project's repo, and "
+                    + "orange.worktrees.base-repo is not configured", null);
+        }
         String repo = requireBaseRepo();
         String branch = props.baseBranch();
         boolean origin;
@@ -110,11 +121,18 @@ public class WorktreeService {
         try {
             base.fetch();
         } catch (GitException e) {
+            if (bases.of(taskId).isPresent()) throw new RepoUnavailableException("task " + taskId + ": " + e.getMessage(), e);
             throw new IOException(e.getMessage(), e);
         }
         String sourceRef = base.ref();
         String branch = "orange/" + taskId;
-        runGit(base.repo().toString(), List.of("worktree", "add", "-b", branch, target.toString(), sourceRef));
+        try {
+            runGit(base.repo().toString(), List.of("worktree", "add", "-b", branch, target.toString(), sourceRef));
+        } catch (IOException e) {
+            // A repo's base branch that GitHub does not have is that repo's trouble.
+            if (bases.of(taskId).isPresent()) throw new RepoUnavailableException("task " + taskId + ": " + e.getMessage(), e);
+            throw e;
+        }
         log.info("created worktree taskId={} path={} sourceRef={} branch={}", taskId, target, sourceRef, branch);
         return target;
     }

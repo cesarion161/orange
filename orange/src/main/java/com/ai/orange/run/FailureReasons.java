@@ -19,7 +19,10 @@ import java.util.Set;
  *       taken. Not counted, no pause.</li>
  *   <li><b>Model</b>: everything else ({@code timeout}, {@code budget}, {@code error_result},
  *       {@code no_result}, {@code exit_<n>}, {@code no_outcome}, {@code reported_failed},
- *       {@code no_commits}). Each adds one to the task's {@code failures}.</li>
+ *       {@code no_commits}), and the task's own setup: {@code repo_unavailable} (its repo's mirror
+ *       or base branch cannot be had) and {@code bad_convention} (its project's evidence convention
+ *       is broken). Each adds one to the task's {@code failures}: one project's trouble sends that
+ *       project's task to a person and never pauses the others.</li>
  * </ul>
  */
 public final class FailureReasons {

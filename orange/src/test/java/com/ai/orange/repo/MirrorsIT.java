@@ -100,6 +100,11 @@ class MirrorsIT {
 
         assertThat(rev(mirror, "origin/main")).isEqualTo(github.head(key, "main"));
         assertThat(mirror.resolve("stray")).doesNotExist();
+        // What was there is moved aside, never deleted: it may hold task branches.
+        try (Stream<Path> siblings = Files.list(mirror.getParent())) {
+            assertThat(siblings.filter(f -> f.getFileName().toString().startsWith("broken.git.broken-")).toList())
+                    .singleElement().satisfies(aside -> assertThat(aside.resolve("stray")).hasContent("left by a crash"));
+        }
     }
 
     @Test

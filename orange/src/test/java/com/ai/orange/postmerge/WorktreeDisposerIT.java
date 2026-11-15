@@ -44,6 +44,7 @@ class WorktreeDisposerIT {
 
     @Autowired WorktreeDisposer disposer;
     @Autowired WorktreeService worktrees;
+    @Autowired com.ai.orange.project.ProjectService projects;
     @Autowired TaskRepository tasks;
     @Autowired TaskService taskService;
     @Autowired DSLContext dsl;
@@ -79,6 +80,9 @@ class WorktreeDisposerIT {
     static void wire(DynamicPropertyRegistry r) {
         r.add("orange.worktrees.base-repo", () -> baseRepo.toString());
         r.add("orange.worktrees.root", () -> worktreesRoot.toString());
+        // No network: "GitHub" is an empty directory, so a repo's mirror cannot be cloned.
+        r.add("orange.repos.github-url", () -> worktreesRoot.getParent().resolve("github").toUri().toString());
+        r.add("orange.repos.root", () -> worktreesRoot.getParent().resolve("mirrors").toString());
         // Long initial delay so the @Scheduled run doesn't race the test.
         r.add("orange.worktrees.disposer-initial-delay", () -> "1h");
         r.add("orange.worktrees.disposer-delay", () -> "1h");
@@ -127,5 +131,27 @@ class WorktreeDisposerIT {
         // Stay in READY — disposer must not touch it.
         disposer.sweep();
         assertThat(Files.exists(wt)).isTrue();
+    }
+
+    @Test
+    void a_task_whose_worktree_cannot_be_removed_does_not_hold_up_the_others() throws Exception {
+        // A task of a repo whose mirror is gone and cannot be cloned again: removing its worktree throws.
+        com.ai.orange.project.Project p = projects.create("dispose-" + java.util.UUID.randomUUID(), null);
+        com.ai.orange.repo.Repo repo = projects.addGithubRepo(p.id(),
+                com.ai.orange.repo.RepoKey.of("me/gone-" + java.util.UUID.randomUUID().toString().substring(0, 8)));
+        Task stuck = taskService.createGraph(List.of(new TaskDef("s", "S", null, "implementer", null, null,
+                new com.ai.orange.project.TaskPlacement(p.id(), repo.id()))), List.of()).get(0);
+        Files.createDirectories(worktrees.resolve(stuck.id()).resolve("leftover"));
+        tasks.transitionStatus(stuck.id(), TaskStatus.READY, TaskStatus.CANCELLED);
+
+        Task fine = taskService.createGraph(List.of(new TaskDef("f", "F", null, "implementer", null, null)), List.of())
+                .get(0);
+        Path wt = worktrees.create(fine.id());
+        tasks.transitionStatus(fine.id(), TaskStatus.READY, TaskStatus.CANCELLED);
+
+        disposer.sweep();
+
+        assertThat(Files.exists(wt)).as("the next candidate is still disposed").isFalse();
+        assertThat(tasks.findById(stuck.id()).orElseThrow().metadata().data()).doesNotContain("worktree_removed_at");
     }
 }

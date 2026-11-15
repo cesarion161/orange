@@ -45,10 +45,13 @@ public final class ReactorDecision {
      * @param reviewRequired     {@link ReviewPolicy} asks for a diff review of {@code headSha}
      * @param reviewPassed       {@code headSha} has a passing diff review
      * @param evidenceMissing    the task's project asks for evidence and has no evidence commands in force
+     * @param integrationHeld    the task is of a repo whose project does not push ({@code remote-push} off):
+     *                           a mirror has no other base to integrate onto, so the work stays verified
      */
     public record TaskSnapshot(TaskStatus status, int failures, boolean hasActiveRun, boolean paused,
                                boolean workspaceAvailable, String headSha, LastRun lastRun, boolean verifyPassed,
-                               boolean reviewRequired, boolean reviewPassed, boolean evidenceMissing) {}
+                               boolean reviewRequired, boolean reviewPassed, boolean evidenceMissing,
+                               boolean integrationHeld) {}
 
     public sealed interface Action {
         /** @param feedback a JSON array of {@code {source, summary, detail}}, or null */
@@ -97,6 +100,7 @@ public final class ReactorDecision {
             }
             case VERIFIED -> {
                 if (worktreeMoved(last)) yield new Action.NeedsHuman("worktree_moved");
+                if (s.integrationHeld()) yield new Action.None();
                 yield s.headSha() == null || s.headSha().isBlank() ? new Action.None()
                         : new Action.QueueIntegrate(s.headSha());
             }

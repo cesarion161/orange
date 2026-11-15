@@ -14,6 +14,8 @@ import com.ai.orange.repo.FakeGithub;
 import com.ai.orange.repo.Mirrors;
 import com.ai.orange.repo.Repo;
 import com.ai.orange.repo.RepoKey;
+import com.ai.orange.run.RunKind;
+import com.ai.orange.run.RunRepository;
 import com.ai.orange.run.RunTestSupport;
 import com.ai.orange.run.SchedulerPause;
 import com.ai.orange.task.Task;
@@ -66,6 +68,7 @@ class MultiRepoE2EIT {
     @Autowired Mirrors mirrors;
     @Autowired AttentionRepository attention;
     @Autowired SchedulerPause pause;
+    @Autowired RunRepository runs;
 
     @AfterEach
     void resume() {
@@ -138,5 +141,45 @@ class MultiRepoE2EIT {
 
         RunLoopE2EIT.await("the task is integrated once evidence is in force", () -> fresh(t).status() == TaskStatus.INTEGRATED);
         assertThat(GITHUB.head(gamma.repo().key(), "main")).isEqualTo(fresh(t).headSha());
+    }
+
+    @Test
+    void aRepoTaskOfAProjectThatDoesNotPushStaysVerified() throws Exception {
+        Placed delta = project("delta", true);
+        space.setConvention(delta.project().id(), null, "remote-push", Json.mapper().readTree("false"),
+                SpaceService.Author.USER);
+        String before = GITHUB.head(delta.repo().key(), "main");
+        Task t = task(delta, "Delta work");
+
+        RunLoopE2EIT.await("the task is verified", () -> fresh(t).status() == TaskStatus.VERIFIED);
+        Thread.sleep(2_500); // a couple of sweeps: nothing integrates it, nothing fails it
+        assertThat(fresh(t).status()).isEqualTo(TaskStatus.VERIFIED);
+        assertThat(runs.findByTask(t.id())).noneMatch(r -> r.kind() == RunKind.INTEGRATE);
+        assertThat(GITHUB.head(delta.repo().key(), "main")).isEqualTo(before);
+    }
+
+    @Test
+    void aRepoGithubDoesNotHaveFailsItsTaskWithoutPausingOrange() throws Exception {
+        Project p = projects.create("ghost-" + UUID.randomUUID().toString().substring(0, 8), null);
+        // Attached, but never created on GitHub: its mirror cannot be cloned.
+        Repo repo = projects.addGithubRepo(p.id(), RepoKey.of("me/ghost-" + UUID.randomUUID().toString().substring(0, 8)));
+        Task t = task(new Placed(p, repo), "Ghost work");
+
+        RunLoopE2EIT.await("the task goes to a person", () -> fresh(t).status() == TaskStatus.NEEDS_HUMAN);
+        assertThat(pause.current()).as("one repo's trouble does not stop the others").isEmpty();
+        assertThat(runs.findByTask(t.id())).allSatisfy(r -> assertThat(r.error()).isEqualTo("repo_unavailable"));
+    }
+
+    @Test
+    void aBrokenEvidenceConventionFailsItsTaskWithoutPausingOrange() throws Exception {
+        Placed eps = project("epsilon", false);
+        space.setConvention(eps.project().id(), null, "evidence", Json.mapper().readTree("{\"not\": \"a list\"}"),
+                SpaceService.Author.USER);
+        Task t = task(eps, "Epsilon work");
+
+        RunLoopE2EIT.await("the task goes to a person", () -> fresh(t).status() == TaskStatus.NEEDS_HUMAN);
+        assertThat(pause.current()).isEmpty();
+        assertThat(runs.findByTask(t.id())).filteredOn(r -> r.kind() == RunKind.VERIFY)
+                .isNotEmpty().allSatisfy(r -> assertThat(r.error()).isEqualTo("bad_convention"));
     }
 }

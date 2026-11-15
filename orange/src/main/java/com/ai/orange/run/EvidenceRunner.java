@@ -4,6 +4,7 @@ import com.ai.orange.evidence.EvidenceProperties;
 import com.ai.orange.evidence.EvidenceRepository;
 import com.ai.orange.evidence.TaskEvidence;
 import com.ai.orange.task.TaskRepository;
+import com.ai.orange.worktree.RepoUnavailableException;
 import com.ai.orange.harness.HarnessProperties;
 import com.ai.orange.harness.claude.ClaudeCodeCommand;
 import com.ai.orange.harness.container.ContainerRuntime;
@@ -175,6 +176,13 @@ public class EvidenceRunner implements RunExecutor {
                     + "(orange/worker/build.sh) and the Docker daemon running?", run.id(), e.getMessage(),
                     containers.settings().image());
             return lifecycle.finish(run, RunResult.failed(run.id(), "container_unavailable"));
+        } catch (RepoUnavailableException e) {
+            log.error("verify run {}: {}", run.id(), e.getMessage());
+            return lifecycle.finish(run, RunResult.failed(run.id(), "repo_unavailable"));
+        } catch (BadConvention e) {
+            // The project's own setting: its task fails and says why, orange goes on with the others.
+            log.error("verify run {}: the project's evidence convention is broken: {}", run.id(), e.getMessage());
+            return lifecycle.finish(run, RunResult.failed(run.id(), "bad_convention"));
         } catch (RuntimeException e) {
             log.error("verify run {} failed: {}", run.id(), e.toString());
             return lifecycle.finish(run, RunResult.failed(run.id(), "workspace_failed"));
@@ -219,7 +227,12 @@ public class EvidenceRunner implements RunExecutor {
         }
 
         long deadline = System.nanoTime() + runsProps.timeout(RunKind.VERIFY).toNanos();
-        List<EvidenceProperties.Command> commands = taskCommands.apply(run.taskId());
+        List<EvidenceProperties.Command> commands;
+        try {
+            commands = taskCommands.apply(run.taskId());
+        } catch (IllegalArgumentException e) {
+            throw new BadConvention(e.getMessage());
+        }
         boolean contained = containers != null && containers.enabled();
         boolean ownClone = contained && !commands.isEmpty();
         Path runDir = harnessProps.runRoot().resolve(run.id().toString()).toAbsolutePath();
@@ -470,6 +483,13 @@ public class EvidenceRunner implements RunExecutor {
             int room = Math.max(0, max - suffix.length());
             if (body.length() > room) body = body.substring(body.length() - room);
             return body + suffix;
+        }
+    }
+
+    /** A project's {@code evidence} convention that is not a list of commands. */
+    private static final class BadConvention extends RuntimeException {
+        BadConvention(String message) {
+            super(message, null, false, false);
         }
     }
 }

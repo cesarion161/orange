@@ -112,7 +112,12 @@ public class Mirrors {
         Path tmp = mirror.resolveSibling(mirror.getFileName() + ".tmp-" + UUID.randomUUID());
         try {
             Files.createDirectories(mirror.getParent());
-            deleteRecursively(mirror);
+            if (Files.exists(mirror)) {
+                // Never deleted: it may hold task branches and session refs. Moved aside for a person to look at.
+                Path aside = mirror.resolveSibling(mirror.getFileName() + ".broken-" + System.currentTimeMillis());
+                Files.move(mirror, aside, StandardCopyOption.ATOMIC_MOVE);
+                log.error("{} is not a bare git repository; moved it to {} and cloning {} again", mirror, aside, key);
+            }
             Git.run(mirror.getParent(), Git.QUICK, "init", "--quiet", "--bare", tmp.toString());
             Git.run(tmp, Git.QUICK, "remote", "add", "origin", key.cloneUrl(props.githubUrl()));
             Git.run(tmp, Git.SLOW, auth(key), "fetch", "--quiet", "--prune", "origin");
@@ -140,6 +145,8 @@ public class Mirrors {
                     && Git.run(dir.getParent(), Git.QUICK, "--git-dir=" + dir, "rev-parse", "--is-bare-repository")
                             .strip().equals("true");
         } catch (GitException e) {
+            // A git that hangs says nothing about the directory: never take that for "not a mirror".
+            if (e.timedOut()) throw e;
             return false;
         }
     }

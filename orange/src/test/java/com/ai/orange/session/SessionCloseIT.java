@@ -546,6 +546,28 @@ class SessionCloseIT {
     }
 
     @Test
+    void aSideBranchPushedFurtherIsNotDeleted() throws Exception {
+        git(repo, "checkout", "-q", "main");
+        branch = "main";
+        prompt("Fix the readme");
+        convention("evidence", "[\"true\"]");
+        commitOnly("README.md", "# demo, fixed\n");
+        String head = git(repo, "rev-parse", "HEAD");
+        String side = com.ai.orange.run.SessionChecks.sideBranch(session().id());
+        git(repo, "push", "-q", "origin", "HEAD:refs/heads/" + side);
+        stop();
+        // More lands on the side branch after the stop.
+        commitOnly("later.txt", "later\n");
+        git(repo, "push", "-q", "origin", "HEAD:refs/heads/" + side);
+        String later = git(repo, "rev-parse", "HEAD");
+        runAll();
+
+        assertThat(session().status()).isEqualTo(Session.CLOSED);
+        assertThat(GITHUB.head(key, "main")).as("the head the session stopped at").isEqualTo(head);
+        assertThat(GITHUB.head(key, side)).as("work orange did not check is not deleted").isEqualTo(later);
+    }
+
+    @Test
     void aSessionBehindOriginOnTheBaseBranchIsToldToCatchUp() throws Exception {
         git(repo, "checkout", "-q", "main");
         branch = "main";

@@ -31,6 +31,7 @@ class ReactorDecisionTest {
         boolean reviewRequired;
         boolean review;
         boolean evidenceMissing;
+        boolean integrationHeld;
 
         S(TaskStatus status) {
             this.status = status;
@@ -46,10 +47,11 @@ class ReactorDecisionTest {
         S reviewRequired() { reviewRequired = true; return this; }
         S reviewPassed() { review = true; return this; }
         S evidenceMissing() { evidenceMissing = true; return this; }
+        S integrationHeld() { integrationHeld = true; return this; }
 
         Action decide() {
             return ReactorDecision.decide(new TaskSnapshot(status, failures, active, paused, workspace, head, last,
-                    verify, reviewRequired, review, evidenceMissing), NEEDS_HUMAN_AFTER);
+                    verify, reviewRequired, review, evidenceMissing, integrationHeld), NEEDS_HUMAN_AFTER);
         }
     }
 
@@ -257,5 +259,10 @@ class ReactorDecisionTest {
         // A verified task already has its evidence.
         assertThat(task(TaskStatus.VERIFIED).head(HEAD).evidenceMissing().decide())
                 .isEqualTo(new Action.QueueIntegrate(HEAD));
+    }
+
+    @Test
+    void aVerifiedTaskWhoseProjectDoesNotPushStaysVerified() {
+        assertThat(task(TaskStatus.VERIFIED).head(HEAD).integrationHeld().decide()).isEqualTo(new Action.None());
     }
 }

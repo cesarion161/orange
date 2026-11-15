@@ -57,13 +57,16 @@ public class TaskReactor {
     private final TaskEvidence taskEvidence;
     private final EvidenceAsk evidenceAsk;
     private final ProjectRepository projects;
+    private final IntegrationProperties integration;
     private final TransactionTemplate tx;
 
     public TaskReactor(TaskRepository tasks, RunRepository runs, EvidenceRepository evidence,
                        TaskEventRepository taskEvents, SchedulerPause pause, WorktreeService worktrees,
                        RoutingProperties routing, WorkConventions conventions, RiskPaths riskPaths,
                        RunsProperties props, TaskEvidence taskEvidence, EvidenceAsk evidenceAsk,
-                       ProjectRepository projects, PlatformTransactionManager txManager) {
+                       ProjectRepository projects, IntegrationProperties integration,
+                       PlatformTransactionManager txManager) {
+        this.integration = integration;
         this.taskEvidence = taskEvidence;
         this.evidenceAsk = evidenceAsk;
         this.projects = projects;
@@ -140,7 +143,9 @@ public class TaskReactor {
                 && reviewRequired(t, head);
         boolean evidenceMissing = t.status() == TaskStatus.VERIFYING && !verifyPassed && taskEvidence.missing(t);
         return new TaskSnapshot(t.status(), t.failures(), active, paused, workspace, head, last, verifyPassed,
-                reviewRequired, reviewPassed, evidenceMissing);
+                reviewRequired, reviewPassed, evidenceMissing,
+                t.status() == TaskStatus.VERIFIED && t.repoId() != null
+                        && !(integration.remotePush() && conventions.remotePush(t.projectId(), null)));
     }
 
     /**

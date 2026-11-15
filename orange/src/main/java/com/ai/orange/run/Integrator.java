@@ -308,7 +308,8 @@ public class Integrator implements RunExecutor {
         }
         String side = SessionChecks.sideBranch(t.sessionId());
         try {
-            t.remote().push(t.wt(), ":refs/heads/" + side);
+            // Only if it is still what orange checked: later work on it is the user's, and stays.
+            t.remote().push(t.wt(), "--force-with-lease=refs/heads/" + side + ":" + head, ":refs/heads/" + side);
         } catch (GitException e) {
             log.warn("integrate run {}: {} is integrated, but its side branch {} could not be deleted: {}", run.id(),
                     head, side, e.getMessage());
