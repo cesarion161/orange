@@ -1,5 +1,8 @@
 package com.ai.orange.planner;
 
+import com.ai.orange.project.ProjectService;
+import com.ai.orange.project.TaskPlacement;
+
 import com.ai.orange.json.Json;
 import com.ai.orange.task.DagValidator;
 import com.ai.orange.task.EdgeKey;
@@ -28,7 +31,10 @@ public class PlanGraphService {
     private final TaskService taskService;
     private final DagValidator dagValidator;
 
-    public PlanGraphService(TaskService taskService, DagValidator dagValidator) {
+    private final ProjectService projects;
+
+    public PlanGraphService(TaskService taskService, DagValidator dagValidator, ProjectService projects) {
+        this.projects = projects;
         this.taskService = taskService;
         this.dagValidator = dagValidator;
     }
@@ -62,27 +68,43 @@ public class PlanGraphService {
      * Root tasks are flipped to {@code ready}. Returns the created tasks.
      */
     public List<Task> ingest(PlanJson plan) {
+        return ingest(plan, null, null);
+    }
+
+    /**
+     * Like {@link #ingest(PlanJson)}, in {@code project} (and {@code repo}) when given, else in the
+     * plan's own project and repo. A task may name another repo of the same project.
+     *
+     * @throws IllegalArgumentException when the project or a repo cannot be placed; nothing is inserted
+     */
+    public List<Task> ingest(PlanJson plan, String project, String repo) {
         if (plan == null || plan.tasks() == null || plan.tasks().isEmpty()) {
             throw new IllegalArgumentException("plan has no tasks");
         }
-        return taskService.createGraph(toDefs(plan.tasks()), toEdges(plan.edges()));
+        boolean named = project != null && !project.isBlank();
+        String projectRef = named ? project : plan.project();
+        String repoRef = named ? repo : plan.repo();
+        TaskPlacement placement = projects.placeTask(projectRef, repoRef);
+        List<TaskDef> defs = new ArrayList<>(plan.tasks().size());
+        for (PlanJson.PlanTask t : plan.tasks()) {
+            TaskPlacement own = t.repo() == null || t.repo().isBlank() ? placement : projects.placeTask(projectRef, t.repo());
+            defs.add(toDef(t, own));
+        }
+        return taskService.createGraph(defs, toEdges(plan.edges()));
     }
 
     // ─────────────────────────── helpers ────────────────────────────────
 
-    /** Converts each plan task into a {@link TaskDef}, with its metadata. */
-    private static List<TaskDef> toDefs(List<PlanJson.PlanTask> tasks) {
-        List<TaskDef> defs = new ArrayList<>(tasks.size());
-        for (PlanJson.PlanTask t : tasks) {
-            defs.add(new TaskDef(
-                    t.key(),
-                    t.title(),
-                    t.description(),
-                    t.role(), // TaskDef normalises it to implementer or chore
-                    t.priority(),
-                    metadata(t)));
-        }
-        return defs;
+    /** A plan task as a {@link TaskDef}, with its metadata and where it is done. */
+    private static TaskDef toDef(PlanJson.PlanTask t, TaskPlacement placement) {
+        return new TaskDef(
+                t.key(),
+                t.title(),
+                t.description(),
+                t.role(), // TaskDef normalises it to implementer or chore
+                t.priority(),
+                metadata(t),
+                placement);
     }
 
     private static List<EdgeKey> toEdges(List<PlanJson.PlanEdge> raw) {

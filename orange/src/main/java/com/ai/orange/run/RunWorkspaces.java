@@ -6,6 +6,7 @@ import com.ai.orange.harness.container.ContainerUnavailableException;
 import com.ai.orange.harness.container.DockerCommand;
 import com.ai.orange.worktree.Git;
 import com.ai.orange.worktree.GitException;
+import com.ai.orange.worktree.TaskBase;
 import com.ai.orange.worktree.WorktreeService;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -88,7 +89,8 @@ public class RunWorkspaces {
      * @throws GitException when the branch or the base ref cannot be cloned
      */
     public Path cloneOf(UUID taskId, Path runDir) throws IOException {
-        Path base = worktrees.baseRepo();
+        TaskBase taskBase = worktrees.base(taskId);
+        Path base = taskBase.repo();
         Path workspace = runDir.toAbsolutePath().resolve(WORKSPACE);
         Files.createDirectories(workspace.getParent());
         // --no-local: git's own transport sends what the branch reaches, and nothing else.
@@ -96,8 +98,8 @@ public class RunWorkspaces {
                 "--branch", "orange/" + taskId, base.toString(), workspace.toString());
         Git.run(workspace, Git.QUICK, "remote", "remove", "origin");
         // The base under the name the coding prompt uses: a fix run after a conflict rebases onto it.
-        String ref = worktrees.hasOrigin() ? "refs/remotes/origin/" + worktrees.baseBranch()
-                : "refs/heads/" + worktrees.baseBranch();
+        String ref = taskBase.hasOrigin() ? "refs/remotes/origin/" + taskBase.branch()
+                : "refs/heads/" + taskBase.branch();
         Git.run(workspace, Git.SLOW, "fetch", "--quiet", "--no-tags", base.toString(), "+" + ref + ":" + ref);
         return workspace;
     }

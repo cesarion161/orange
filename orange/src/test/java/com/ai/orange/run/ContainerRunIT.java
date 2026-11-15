@@ -462,7 +462,7 @@ class ContainerRunIT {
         assertThat(git(clone, "for-each-ref", "--format=%(refname)").lines())
                 .containsExactlyInAnyOrder("refs/heads/main", "refs/heads/orange/" + task.id());
         // The base under the name the prompt uses, so a fix run can rebase onto it.
-        assertThat(git(clone, "rev-parse", worktrees.baseRef())).isEqualTo(git(BASE_REPO, "rev-parse", "main"));
+        assertThat(git(clone, "rev-parse", worktrees.base(task.id()).ref())).isEqualTo(git(BASE_REPO, "rev-parse", "main"));
         // No way back into orange's repository: no remote, no borrowed objects, no other task's work.
         assertThat(git(clone, "remote")).isEmpty();
         assertThat(clone.resolve(".git/objects/info/alternates")).doesNotExist();

@@ -10,7 +10,12 @@ import com.ai.orange.session.SessionEventHandler;
 import com.ai.orange.session.SessionRepository;
 import com.ai.orange.worktree.Git;
 import com.ai.orange.worktree.GitException;
+import com.ai.orange.task.Task;
+import com.ai.orange.task.TaskRepository;
+import com.ai.orange.worktree.Remote;
+import com.ai.orange.worktree.TaskBase;
 import com.ai.orange.worktree.WorktreeService;
+import java.util.UUID;
 import java.math.BigDecimal;
 import java.nio.file.Path;
 import java.util.EnumSet;
@@ -44,16 +49,19 @@ public class Integrator implements RunExecutor {
     private final SessionChecks sessionChecks;
     private final WorkConventions conventions;
     private final EventRepository inbox;
+    private final TaskRepository tasks;
 
     public Integrator(RunRepository runs, WorktreeService worktrees, IntegrationProperties props,
                       RunsProperties runsProps, RunLifecycle lifecycle) {
-        this(runs, worktrees, props, runsProps, lifecycle, null, null, null, null);
+        this(runs, worktrees, props, runsProps, lifecycle, null, null, null, null, null);
     }
 
     @Autowired
     public Integrator(RunRepository runs, WorktreeService worktrees, IntegrationProperties props,
                       RunsProperties runsProps, RunLifecycle lifecycle, SessionRepository sessions,
-                      SessionChecks sessionChecks, WorkConventions conventions, EventRepository inbox) {
+                      SessionChecks sessionChecks, WorkConventions conventions, EventRepository inbox,
+                      TaskRepository tasks) {
+        this.tasks = tasks;
         this.inbox = inbox;
         this.sessions = sessions;
         this.sessionChecks = sessionChecks;
@@ -108,26 +116,34 @@ public class Integrator implements RunExecutor {
      *
      * @param wt         the checkout holding the verified branch
      * @param repo       any checkout of the same repository; the base branch is looked up from here
+     * @param remote     the base's origin; null when there is none
      * @param push       whether the base is pushed to origin (and so integrated onto {@code origin/<base>})
      * @param onBase     the work was done on the base branch itself (a session in the main checkout)
      * @param asBot      rebase as orange's bot (task branches) or as whoever the checkout's git config says
      */
-    private record Target(Path wt, Path repo, String baseBranch, boolean hasOrigin, boolean push, boolean onBase,
+    private record Target(Path wt, Path repo, String baseBranch, Remote remote, boolean push, boolean onBase,
                           boolean asBot) {
         String ref() {
             return push ? "origin/" + baseBranch : baseBranch;
         }
 
+        boolean hasOrigin() {
+            return remote != null;
+        }
+
         void fetch() {
-            if (hasOrigin) Git.run(repo, Git.SLOW, "fetch", "--quiet", "origin", baseBranch);
+            if (remote != null) remote.fetch();
         }
     }
 
     private Target target(Run run) throws Exception {
         if (run.taskId() != null) {
-            boolean origin = worktrees.hasOrigin();
-            return new Target(worktrees.ensure(run.taskId()), worktrees.baseRepo(), worktrees.baseBranch(), origin,
-                    origin && props.remotePush(), false, true);
+            TaskBase base = worktrees.base(run.taskId());
+            UUID project = tasks == null ? null : tasks.findById(run.taskId()).map(Task::projectId).orElse(null);
+            boolean push = base.hasOrigin() && props.remotePush()
+                    && (project == null || conventions == null || conventions.remotePush(project, null));
+            return new Target(worktrees.ensure(run.taskId()), base.repo(), base.branch(), base.remote(), push, false,
+                    true);
         }
         Session s = sessions.findById(run.attendedSessionId())
                 .orElseThrow(() -> new IllegalStateException("session " + run.attendedSessionId() + " does not exist"));
@@ -138,7 +154,20 @@ public class Integrator implements RunExecutor {
             throw new IllegalStateException("no base branch is known for " + p.dir()
                     + "; set the project's base-branch convention");
         }
-        return new Target(p.dir(), p.dir(), p.baseBranch(), p.hasOrigin(),
+        Remote remote = !p.hasOrigin() ? null : new Remote() {
+            @Override
+            public void fetch() {
+                Git.run(p.dir(), Git.SLOW, "fetch", "--quiet", "origin", p.baseBranch());
+            }
+
+            @Override
+            public void push(Path dir, String... refspecs) {
+                List<String> args = new java.util.ArrayList<>(List.of("push", "--quiet", "origin"));
+                args.addAll(List.of(refspecs));
+                Git.run(dir, Git.SLOW, args.toArray(String[]::new));
+            }
+        };
+        return new Target(p.dir(), p.dir(), p.baseBranch(), remote,
                 p.hasOrigin() && conventions.remotePush(s.projectId(), s.id()), p.branch().equals(p.baseBranch()), false);
     }
 
@@ -209,7 +238,7 @@ public class Integrator implements RunExecutor {
         if (t.push()) {
             try {
                 // The verified commit by name, never whatever HEAD has become since.
-                Git.run(wt, Git.SLOW, "push", "--quiet", "origin", head + ":refs/heads/" + t.baseBranch());
+                t.remote().push(wt, head + ":refs/heads/" + t.baseBranch());
             } catch (GitException e) {
                 if (rejectedAsNonFastForward(e)) return RunOutcome.Integration.of("base_moved");
                 throw e;
@@ -253,7 +282,7 @@ public class Integrator implements RunExecutor {
         }
         if (ended(run)) throw new TaskEnded();
         try {
-            Git.run(t.wt(), Git.SLOW, "push", "--quiet", "origin", head + ":refs/heads/" + t.baseBranch());
+            t.remote().push(t.wt(), head + ":refs/heads/" + t.baseBranch());
         } catch (GitException e) {
             if (rejectedAsNonFastForward(e)) return RunOutcome.Integration.of("behind");
             throw e;

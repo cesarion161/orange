@@ -3,6 +3,7 @@ package com.ai.orange.session;
 import com.ai.orange.attention.AttentionItem;
 import com.ai.orange.attention.AttentionRepository;
 import com.ai.orange.attention.AttentionService;
+import com.ai.orange.evidence.EvidenceAsk;
 import com.ai.orange.evidence.EvidenceRepository;
 import com.ai.orange.json.Json;
 import com.ai.orange.project.Project;
@@ -60,7 +61,7 @@ public class SessionClosing {
     static final int GAP_TAIL = 1_500;
 
     public static final String SESSION_INTEGRATION = "session_integration";
-    public static final String EVIDENCE_MISSING = "evidence_missing";
+    public static final String EVIDENCE_MISSING = EvidenceAsk.EVIDENCE_MISSING;
 
     private final SessionRepository sessions;
     private final SessionService sessionService;
@@ -73,11 +74,13 @@ public class SessionClosing {
     private final AttentionService attention;
     private final AttentionRepository attentionItems;
     private final RiskPaths riskPaths;
+    private final EvidenceAsk evidenceAsk;
 
     public SessionClosing(SessionRepository sessions, SessionService sessionService, VerdictRepository verdicts,
                           RunRepository runs, EvidenceRepository evidence, SessionWorkRepository work,
                           WorkConventions conventions, SpaceService space, AttentionService attention,
-                          AttentionRepository attentionItems, RiskPaths riskPaths) {
+                          AttentionRepository attentionItems, RiskPaths riskPaths, EvidenceAsk evidenceAsk) {
+        this.evidenceAsk = evidenceAsk;
         this.sessions = sessions;
         this.sessionService = sessionService;
         this.verdicts = verdicts;
@@ -323,32 +326,8 @@ public class SessionClosing {
                 s.projectId(), s.id(), SessionService.label(s, project) + " " + what, body.toString());
     }
 
-    /**
-     * A project without evidence commands cannot have its work verified. orange says so once per
-     * project, and proposes what the repo suggests; the proposal is the user's to accept, because
-     * these commands run on their machine (spec decision 13).
-     */
     private void askForEvidence(Session s, RunOutcome.SessionCheck check) {
-        Project project = sessionService.projectOf(s);
-        if (project == null) return;
-        // Said once per project, proposal included: a user who dropped it does not get it again.
-        if (attentionItems.findByKey("project:" + project.id() + ":" + EVIDENCE_MISSING).isPresent()) return;
-        StringBuilder body = new StringBuilder("orange cannot tell when work in ").append(project.name())
-                .append(" is done: the project has no evidence commands, so a finished session just stops.\n");
-        if (check.detected().isEmpty()) {
-            body.append("Set them with orange_set: key \"evidence\", value a list of commands such as "
-                    + "[\"./gradlew test\"].");
-        } else {
-            ArrayNode value = Json.mapper().createArrayNode();
-            check.detected().forEach(value::add);
-            SpaceItem proposal = space.proposeConvention(project.id(), WorkConventions.EVIDENCE, value);
-            body.append("From the repo, orange would run: ").append(String.join(", ", check.detected()))
-                    .append(".\nAccept that with orange_accept ").append(proposal.id())
-                    .append(", or set your own with orange_set (key \"evidence\").");
-        }
-        body.append("\nIf this project needs no checks, set its \"done\" convention to [\"committed\"] or [].");
-        attention.raise(EVIDENCE_MISSING, "project:" + project.id() + ":" + EVIDENCE_MISSING, AttentionItem.NORMAL,
-                project.id(), null, project.name() + " has no evidence commands", body.toString());
+        evidenceAsk.ask(sessionService.projectOf(s), check.detected());
     }
 
     // ─────────────────────────── helpers ───────────────────────────

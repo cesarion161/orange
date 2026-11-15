@@ -1,5 +1,7 @@
 package com.ai.orange.api;
 
+import com.ai.orange.project.ProjectService;
+
 import com.ai.orange.evidence.EvidenceRepository;
 import com.ai.orange.run.RunRepository;
 import com.ai.orange.run.TaskCancellation;
@@ -33,13 +35,16 @@ public class TaskController {
     private final TaskCancellation cancellation;
     private final RunRepository runs;
     private final EvidenceRepository evidence;
+    private final ProjectService projects;
 
     public TaskController(TaskService service,
                           TaskRepository taskRepo,
                           TaskEventRepository eventRepo,
                           TaskCancellation cancellation,
                           RunRepository runs,
-                          EvidenceRepository evidence) {
+                          EvidenceRepository evidence,
+                          ProjectService projects) {
+        this.projects = projects;
         this.service = service;
         this.taskRepo = taskRepo;
         this.eventRepo = eventRepo;
@@ -72,7 +77,8 @@ public class TaskController {
                 req.description(),
                 req.role(), // TaskDef normalises it to implementer or chore
                 req.priority(),
-                null);
+                null,
+                projects.placeTask(req.project(), req.repo()));
         List<Task> created = service.createGraph(List.of(def), List.of());
         Task t = created.get(0);
         return ResponseEntity.status(201).body(TaskResponse.of(t));
@@ -162,5 +168,12 @@ public class TaskController {
             return ResponseEntity.status(409).body(TaskResponse.of(before));
         }
         return ResponseEntity.ok(TaskResponse.of(service.findById(id).orElseThrow()));
+    }
+
+    /** A project or repo that cannot be placed → 422, with the reason. */
+    @org.springframework.web.bind.annotation.ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<java.util.Map<String, Object>> handleInvalid(IllegalArgumentException e) {
+        return ResponseEntity.status(422).body(java.util.Map.of("ok", false, "status", "invalid", "reason",
+                String.valueOf(e.getMessage())));
     }
 }

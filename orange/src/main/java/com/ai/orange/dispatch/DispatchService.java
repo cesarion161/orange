@@ -45,10 +45,15 @@ public class DispatchService {
      * best-effort audit, so a write failure doesn't undo the dispatch.
      */
     public DispatchResult dispatch(PlanJson plan, String architectureMd) {
+        return dispatch(plan, architectureMd, null, null);
+    }
+
+    /** Like {@link #dispatch(PlanJson, String)}, in {@code project} (and {@code repo}) when given. */
+    public DispatchResult dispatch(PlanJson plan, String architectureMd, String project, String repo) {
         if (plan == null) throw new IllegalArgumentException("plan required");
 
         UUID planId = UUID.randomUUID();
-        List<Task> created = planGraph.ingest(plan);
+        List<Task> created = planGraph.ingest(plan, project, repo);
         persistArtifacts(planId, plan, architectureMd);
         log.info("dispatched inline plan {}: {} tasks created", planId, created.size());
         return new DispatchResult(planId, "success", created);
@@ -76,6 +81,11 @@ public class DispatchService {
      * @throws PlanNotFoundException if no {@code plan.json} exists for that id.
      */
     public DispatchResult dispatchByPlanId(UUID planId) {
+        return dispatchByPlanId(planId, null, null);
+    }
+
+    /** Like {@link #dispatchByPlanId(UUID)}, in {@code project} (and {@code repo}) when given. */
+    public DispatchResult dispatchByPlanId(UUID planId, String project, String repo) {
         if (planId == null) throw new IllegalArgumentException("planId required");
 
         Path planPath = Path.of(plannerProps.outputRoot()).toAbsolutePath()
@@ -91,7 +101,7 @@ public class DispatchService {
             throw new IllegalArgumentException("saved plan.json for " + planId + " is unparseable: " + e.getMessage());
         }
 
-        List<Task> created = planGraph.ingest(plan);
+        List<Task> created = planGraph.ingest(plan, project, repo);
         log.info("dispatched saved plan {}: {} tasks created", planId, created.size());
         return new DispatchResult(planId, "success", created);
     }

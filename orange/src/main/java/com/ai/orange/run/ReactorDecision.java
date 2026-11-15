@@ -44,10 +44,11 @@ public final class ReactorDecision {
      * @param verifyPassed       a verify run of {@code headSha} succeeded with every check passing
      * @param reviewRequired     {@link ReviewPolicy} asks for a diff review of {@code headSha}
      * @param reviewPassed       {@code headSha} has a passing diff review
+     * @param evidenceMissing    the task's project asks for evidence and has no evidence commands in force
      */
     public record TaskSnapshot(TaskStatus status, int failures, boolean hasActiveRun, boolean paused,
                                boolean workspaceAvailable, String headSha, LastRun lastRun, boolean verifyPassed,
-                               boolean reviewRequired, boolean reviewPassed) {}
+                               boolean reviewRequired, boolean reviewPassed, boolean evidenceMissing) {}
 
     public sealed interface Action {
         /** @param feedback a JSON array of {@code {source, summary, detail}}, or null */
@@ -64,6 +65,12 @@ public final class ReactorDecision {
         record MarkVerified() implements Action {}
 
         record NeedsHuman(String reason) implements Action {}
+
+        /**
+         * Nothing can verify the task until the user puts evidence commands in force: ask for them
+         * and wait (remote-first spec §7.1). The next sweep queues the verify once they are there.
+         */
+        record WaitForEvidence() implements Action {}
 
         record None() implements Action {}
     }
@@ -82,7 +89,9 @@ public final class ReactorDecision {
             case VERIFYING -> {
                 if (worktreeMoved(last)) yield new Action.NeedsHuman("worktree_moved");
                 if (s.headSha() == null || s.headSha().isBlank()) yield new Action.None();
-                if (!s.verifyPassed()) yield new Action.QueueVerify(s.headSha());
+                if (!s.verifyPassed()) {
+                    yield s.evidenceMissing() ? new Action.WaitForEvidence() : new Action.QueueVerify(s.headSha());
+                }
                 if (s.reviewRequired() && !s.reviewPassed()) yield new Action.QueueDiffReview(s.headSha());
                 yield new Action.MarkVerified();
             }

@@ -10,10 +10,13 @@ import java.util.UUID;
  * controller enforces the xor and maps a violation to 422.
  *
  * <p>{@code architectureMd} (inline plans only) is persisted alongside the plan
- * for auditability.
+ * for auditability. {@code project} (id or name) and {@code repo} ({@code owner/name}) say where
+ * the tasks are done, over what the plan itself says; a project with one repo needs no repo.
  */
 public record DispatchRequest(
         PlanJson plan,
         UUID planId,
-        String architectureMd) {
+        String architectureMd,
+        String project,
+        String repo) {
 }

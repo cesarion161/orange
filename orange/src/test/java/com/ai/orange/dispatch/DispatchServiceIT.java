@@ -9,6 +9,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.ai.orange.TestcontainersConfiguration;
 import com.ai.orange.json.Json;
 import com.ai.orange.planner.PlanJson;
+import com.ai.orange.project.Project;
+import com.ai.orange.project.ProjectService;
+import com.ai.orange.repo.Repo;
+import com.ai.orange.repo.RepoKey;
 import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskRepository;
 import com.ai.orange.task.TaskStatus;
@@ -39,6 +43,7 @@ class DispatchServiceIT {
     static Path plannerOutputRoot;
 
     @Autowired DispatchService dispatch;
+    @Autowired ProjectService projects;
     @Autowired TaskRepository taskRepo;
     @Autowired DSLContext dsl;
 
@@ -113,6 +118,31 @@ class DispatchServiceIT {
         assertThat(flagged.has("overrides")).isFalse();
         Task plain = taskRepo.findById(byTitle.get("Plain change").id()).orElseThrow();
         assertThat(plain.metadata() == null || !plain.metadata().data().contains("risk")).isTrue();
+    }
+
+    @Test
+    void a_plan_for_a_project_places_its_tasks() {
+        Project p = projects.create("dispatch-" + UUID.randomUUID(), null);
+        Repo repo = projects.addGithubRepo(p.id(), RepoKey.of("me/dispatch-" + UUID.randomUUID().toString().substring(0, 8)));
+        PlanJson plan = new PlanJson(List.of(new PlanJson.PlanTask("a", "In the repo", null, "dev", 100, null)), List.of());
+
+        Task t = dispatch.dispatch(plan, null, p.name(), null).createdTasks().getFirst();
+
+        Task stored = taskRepo.findById(t.id()).orElseThrow();
+        assertThat(stored.projectId()).isEqualTo(p.id());
+        assertThat(stored.repoId()).isEqualTo(repo.id());
+        // The plan may name the project itself.
+        PlanJson named = new PlanJson(List.of(new PlanJson.PlanTask("b", "Named", null, "dev", 100, null)), List.of(),
+                p.id().toString(), repo.key().toString());
+        assertThat(dispatch.dispatch(named, null).createdTasks().getFirst().repoId()).isEqualTo(repo.id());
+    }
+
+    @Test
+    void a_task_repo_without_a_project_is_refused() {
+        PlanJson plan = new PlanJson(List.of(new PlanJson.PlanTask("a", "Somewhere", null, "dev", 100, null, null, null,
+                "me/x")), List.of());
+        assertThatThrownBy(() -> dispatch.dispatch(plan, null)).isInstanceOf(IllegalArgumentException.class);
+        assertThat(dsl.fetchCount(TASKS)).isZero();
     }
 
     @Test

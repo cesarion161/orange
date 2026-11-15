@@ -150,7 +150,8 @@ public class TaskService {
                 src.description(),
                 src.role(),
                 src.priority(),
-                asJsonb(meta));
+                asJsonb(meta),
+                new com.ai.orange.project.TaskPlacement(src.projectId(), src.repoId()));
         Task created = createGraph(List.of(def), List.of()).get(0);
         events.append(created.id(), actor == null ? "system" : actor, "task_replayed",
                 asJsonb(Map.of("source_task_id", sourceTaskId.toString())));

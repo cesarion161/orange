@@ -58,10 +58,6 @@ public class WorktreeDisposer {
     @Scheduled(fixedDelayString = "${orange.worktrees.disposer-delay:5m}",
                initialDelayString = "${orange.worktrees.disposer-initial-delay:1m}")
     public void sweep() {
-        if (worktreeProps.baseRepo() == null || worktreeProps.baseRepo().isBlank()) {
-            // No baseRepo means worktrees are never created → nothing to dispose.
-            return;
-        }
         List<Task> candidates = tasks.findTerminalWithLiveWorktree();
         if (candidates.isEmpty()) return;
 

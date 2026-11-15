@@ -64,7 +64,7 @@ public class RunPreparer {
         Task task = task(run);
         Path cwd = worktrees.ensure(task.id());
         JsonNode meta = json(task.metadata());
-        return prepared(run, task, meta, cwd, codingPrompt(task, meta, run, worktrees.baseRef()));
+        return prepared(run, task, meta, cwd, codingPrompt(task, meta, run, worktrees.base(task.id()).ref()));
     }
 
     /**
@@ -78,7 +78,7 @@ public class RunPreparer {
         String head = EvidenceRunner.inputHead(run);
         if (head.isBlank()) head = task.headSha();
         if (head == null || head.isBlank()) throw new IllegalStateException("task " + task.id() + " has no head to review");
-        String baseRef = worktrees.baseRef();
+        String baseRef = worktrees.base(task.id()).ref();
         String range = baseRef + "..." + head;
         String stat = Git.run(cwd, Git.QUICK, "diff", "--stat", range);
         Git.Output diff = Git.runCapped(cwd, Git.QUICK, MAX_REVIEW_PROMPT + 1, "diff", range);
