@@ -4,6 +4,8 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.regex.Pattern;
 
 /**
  * Wire format the planner agent writes to {@code plan.json}, matching the
@@ -50,6 +52,43 @@ public record PlanJson(List<PlanTask> tasks, List<PlanEdge> edges, String projec
      */
     public PlanJson(List<PlanTask> tasks, List<PlanEdge> edges) {
         this(tasks, edges, null, null);
+    }
+
+    /** At most this many proposed commands, each at most {@link #MAX_COMMAND} characters. */
+    public static final int MAX_COMMANDS = 5;
+    public static final int MAX_COMMAND = 300;
+    private static final Pattern LINE_BREAK = Pattern.compile("[\\n\\r\\u000B\\u000C\\u0085\\u2028\\u2029]");
+    private static final Pattern CONTROL = Pattern.compile("\\p{Cc}");
+    /** Format characters: bidi marks and overrides, zero-width ones; what reads one way and runs another. */
+    private static final Pattern INVISIBLE = Pattern.compile("\\p{Cf}");
+
+    /**
+     * Why orange refuses the planner's proposed commands, as a whole: one of them has a line break, a
+     * control or an invisible (format) character, or is longer than {@link #MAX_COMMAND} characters, or
+     * there are more than {@link #MAX_COMMANDS}. The user approves what the approval item shows, so a
+     * command must read the way it runs. Empty when orange takes them. The words never quote a command.
+     */
+    public static Optional<String> evidenceRefusal(List<String> commands) {
+        if (commands == null || commands.isEmpty()) return Optional.empty();
+        if (commands.size() > MAX_COMMANDS) {
+            return Optional.of(commands.size() + " commands, more than " + MAX_COMMANDS);
+        }
+        for (int i = 0; i < commands.size(); i++) {
+            String c = commands.get(i);
+            String which = "command " + (i + 1);
+            if (LINE_BREAK.matcher(c).find()) return Optional.of(which + " has a line break");
+            if (CONTROL.matcher(c).find()) return Optional.of(which + " has a control character");
+            if (INVISIBLE.matcher(c).find()) return Optional.of(which + " has an invisible (format) character");
+            if (c.length() > MAX_COMMAND) {
+                return Optional.of(which + " is longer than " + MAX_COMMAND + " characters");
+            }
+        }
+        return Optional.empty();
+    }
+
+    /** This plan, proposing no evidence. */
+    public PlanJson withoutEvidence() {
+        return new PlanJson(tasks, edges, project, repo, askFirst, reason, milestone, List.of());
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

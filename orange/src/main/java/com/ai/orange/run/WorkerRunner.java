@@ -69,8 +69,8 @@ import org.springframework.stereotype.Service;
  * <p>In container mode ({@code orange.runner.isolation=container}) a task's runs start in a
  * container: a coding run on a clone of the task's branch under the run's directory, whose commits
  * come home as a bundle ({@link RunWorkspaces}); a review on the task's worktree, mounted
- * read-only. Runs without a task (the planner, the brief, a session's judge and review) stay on
- * the host.
+ * read-only; a planner on its directory, which holds a clone of the repo and where it writes its plan.
+ * The other runs without a task (the brief, a session's judge and review) stay on the host.
  */
 @Service
 public class WorkerRunner implements RunExecutor {
@@ -180,7 +180,7 @@ public class WorkerRunner implements RunExecutor {
                 return conclude(run, RunResult.failed(run.id(), "workspace_failed"), null);
             }
             try {
-                return run(run, prep, props.timeout(run.kind()));
+                return run(run, prep, props.timeout(run.kind()), Set.of());
             } finally {
                 try {
                     prep.cleanup().run();
@@ -207,11 +207,20 @@ public class WorkerRunner implements RunExecutor {
      *              tells a later look which runs were already started ({@code slot})
      */
     public RunResult runDirect(RunKind kind, String role, Path cwd, String prompt, Duration timeout, JSONB input) {
+        return runDirect(kind, role, cwd, prompt, timeout, input, Set.of());
+    }
+
+    /**
+     * As {@link #runDirect(RunKind, String, Path, String, Duration, JSONB)}, without {@code notOnHost}
+     * when the run executes on the host (process mode, or a kind that is never contained).
+     */
+    public RunResult runDirect(RunKind kind, String role, Path cwd, String prompt, Duration timeout, JSONB input,
+                               Set<String> notOnHost) {
         Run run = runs.insertRunning(kind, role, null, props.workerId(), props.leaseTtl(), input);
         inFlight.add(run.id());
         try {
             if (stopping) return conclude(run, RunResult.failed(run.id(), "coordinator_restart"), null);
-            return run(run, new PreparedRun(cwd, prompt, role, null, false, 0, null), timeout);
+            return run(run, new PreparedRun(cwd, prompt, role, null, false, 0, null), timeout, notOnHost);
         } finally {
             inFlight.remove(run.id());
         }
@@ -265,7 +274,7 @@ public class WorkerRunner implements RunExecutor {
 
     // ─────────────────────────── one run ───────────────────────────
 
-    private RunResult run(Run run, PreparedRun prep, Duration timeout) {
+    private RunResult run(Run run, PreparedRun prep, Duration timeout, Set<String> notOnHost) {
         RouteDecision route;
         String systemPrompt;
         try {
@@ -276,11 +285,12 @@ public class WorkerRunner implements RunExecutor {
             log.error("run {}: cannot route or prompt role {}: {}", run.id(), prep.role(), e.getMessage());
             return conclude(run, RunResult.failed(run.id(), "start_failed"), null);
         }
-        // Only a task's runs execute what a task's agent wrote; everything else stays on the host.
-        boolean contained = containers.enabled() && run.taskId() != null;
+        // A task's runs execute what a task's agent wrote, and a planner reads it (a clone of the repo):
+        // they run in containers. Everything else stays on the host.
+        boolean contained = containers.enabled() && (run.taskId() != null || run.kind() == RunKind.PLAN);
         boolean ownClone = contained && CODING.contains(run.kind());
         ToolPolicy policy = ToolPolicy.forRun(run.kind(), run.attendedSessionId() != null);
-        if (contained) policy = policy.inContainer();
+        policy = contained ? policy.inContainer() : policy.without(notOnHost);
         String alias = route.auth() == AuthMode.GATEWAY ? "run-" + run.id() : null;
         String mcpToken = policy.mcp() ? RunTokens.newToken() : null;
         Path runDir = harnessProps.runRoot().resolve(run.id().toString());
@@ -321,7 +331,8 @@ public class WorkerRunner implements RunExecutor {
             }
             secrets.register(run.id(), secretsOf(credentials, mcpToken));
 
-            Path cwd = prep.cwd();
+            // A container holds its working directory at the same path, which has to be absolute.
+            Path cwd = contained ? prep.cwd().toAbsolutePath().normalize() : prep.cwd();
             String startSha = null;
             if (ownClone) {
                 // The task's worktree stays orange's own: the agent gets a clone, and its commits come back as a bundle.
@@ -344,7 +355,8 @@ public class WorkerRunner implements RunExecutor {
                     return conclude(run, RunResult.failed(run.id(), "start_failed"), null);
                 }
             }
-            Sandbox sandbox = contained ? new Sandbox(!ownClone,
+            // Read-only for a review; a coding run's clone and a planner's directory (it writes plan.json there) are writable.
+            Sandbox sandbox = contained ? new Sandbox(!ownClone && run.kind() != RunKind.PLAN,
                     DockerCommand.labels(run.id(), run.kind().dbValue(), props.workerId())) : null;
             RunSpec spec = new RunSpec(run.id(), prep.prompt(), systemPrompt, route.model(), routingProps.smallModel(),
                     route.effort(), cwd, policy.tools(), policy.allowedTools(), List.of(),

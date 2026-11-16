@@ -147,4 +147,17 @@ class PlannerServiceIT {
         assertThat(result.plan()).isNull();
         assertThat(dsl.selectFrom(RUNS).where(RUNS.KIND.eq("plan")).fetchSingle().getError()).isEqualTo("error_result");
     }
+
+    @Test
+    void aPlanWithoutTheRepositoryKeepsWebFetchAndOneWithItDoesNot() throws Exception {
+        PlannerService.PlanResult bare = service.plan("Plan from the request alone [[fake:plan]]");
+        Path withRepo = plannerOutputRoot.resolve(java.util.UUID.randomUUID().toString());
+        Files.createDirectories(withRepo.resolve("repo"));
+        PlannerService.PlanResult read = service.plan(withRepo, "Plan from the repo [[fake:plan]]");
+
+        assertThat(Files.readString(runRoot.resolve(bare.runId().toString()).resolve("claude-config")
+                .resolve("fake-args.json"))).contains("\"WebFetch\"");
+        assertThat(Files.readString(runRoot.resolve(read.runId().toString()).resolve("claude-config")
+                .resolve("fake-args.json"))).doesNotContain("WebFetch");
+    }
 }

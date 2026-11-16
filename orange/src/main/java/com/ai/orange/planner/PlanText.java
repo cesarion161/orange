@@ -19,6 +19,14 @@ public final class PlanText {
      *                        put the proposed ones in force
      */
     public static String body(String request, String reason, PlanJson plan, boolean evidenceInForce) {
+        return body(request, reason, plan, evidenceInForce, null);
+    }
+
+    /**
+     * @param refused why orange refused the planner's proposed commands ({@link PlanJson#evidenceRefusal});
+     *                null when it took them or there were none
+     */
+    public static String body(String request, String reason, PlanJson plan, boolean evidenceInForce, String refused) {
         StringBuilder b = new StringBuilder();
         b.append("Request: ").append(line(request)).append('\n');
         if (reason != null && !reason.isBlank()) b.append("Why orange asks: ").append(line(reason)).append('\n');
@@ -43,10 +51,28 @@ public final class PlanText {
             b.append('\n').append(evidenceInForce
                     ? "Evidence the planner proposes (the project's own stays in force):\n"
                     : "Evidence the planner proposes; approving puts it in force:\n");
-            plan.evidence().forEach(c -> b.append("- ").append(line(c)).append('\n'));
+            plan.evidence().forEach(c -> b.append("- ").append(code(c)).append('\n'));
+        }
+        if (refused != null && !refused.isBlank()) {
+            b.append('\n').append("orange refused the planner's proposed commands: ").append(line(refused))
+                    .append(". Approving puts none in force.\n");
         }
         b.append("\nAnswer approve, drop, or what to change.");
         return b.toString();
+    }
+
+    /** {@code s} as inline code: in backticks, more of them than it holds in a row. */
+    static String code(String s) {
+        String c = line(s);
+        int longest = 0;
+        int run = 0;
+        for (char ch : c.toCharArray()) {
+            run = ch == '`' ? run + 1 : 0;
+            longest = Math.max(longest, run);
+        }
+        String fence = "`".repeat(longest + 1);
+        String pad = longest > 0 ? " " : "";
+        return fence + pad + c + pad + fence;
     }
 
     private static String line(String s) {

@@ -48,4 +48,20 @@ class PlanTextTest {
 
         assertThat(body).contains("- a: Do it").doesNotContain("→").doesNotContain("evidence");
     }
+
+    @Test
+    void eachCommandIsOnItsOwnLineInBackticks() {
+        String body = PlanText.body("Build", "no tests in force yet", plan(List.of("npm test", "echo `date`")), false);
+
+        assertThat(body).contains("- `npm test`\n").contains("- `` echo `date` ``\n");
+    }
+
+    @Test
+    void refusedCommandsAreSaidWhy() {
+        String body = PlanText.body("Build", "no tests in force yet", plan(List.of()), false,
+                "a command has a line break");
+
+        assertThat(body).contains("orange refused the planner's proposed commands: a command has a line break");
+        assertThat(body).doesNotContain("approving puts");
+    }
 }

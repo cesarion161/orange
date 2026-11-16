@@ -10,7 +10,9 @@ import jakarta.annotation.PostConstruct;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Set;
 import java.util.UUID;
+import org.jooq.JSONB;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -27,7 +29,9 @@ import org.springframework.stereotype.Service;
  * a plan can be reviewed, saved, or re-imported before anyone runs it.
  *
  * <p>The planner is an ordinary agent run of kind {@code plan} with no task; its
- * role prompt ({@code roles/planner.md}) pins the artifact contract.
+ * role prompt ({@code roles/planner.md}) pins the artifact contract. In container mode it runs in a
+ * container that holds its directory (writable: it writes the plan there); on the host, a planner
+ * whose directory holds the repository gets no {@code WebFetch}.
  */
 @Service
 public class PlannerService {
@@ -75,8 +79,11 @@ public class PlannerService {
         UUID planId = idOf(outputDir);
         Files.createDirectories(outputDir);
 
+        // A planner that reads the repository (agent-written text) gets no WebFetch on the host: nothing it
+        // reads there could send what the host holds anywhere. In a container it keeps it (only its mounts are there).
+        Set<String> notOnHost = Files.isDirectory(outputDir.resolve("repo")) ? Set.of("WebFetch") : Set.of();
         RunResult run = runner.runDirect(RunKind.PLAN, "planner", outputDir, prompt,
-                runsProps.timeout(RunKind.PLAN));
+                runsProps.timeout(RunKind.PLAN), JSONB.valueOf("{}"), notOnHost);
         UUID runId = run.runId();
 
         if (!run.succeeded()) {

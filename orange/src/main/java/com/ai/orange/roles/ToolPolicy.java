@@ -73,6 +73,13 @@ public record ToolPolicy(List<String> tools, List<String> allowedTools, String p
         return tools.contains("Bash") ? new ToolPolicy(tools, allowedTools, "bypassPermissions", mcp, projectSettings) : this;
     }
 
+    /** This policy without {@code dropped}, neither as a tool nor as one allowed without a prompt. */
+    public ToolPolicy without(java.util.Collection<String> dropped) {
+        if (dropped.isEmpty()) return this;
+        return new ToolPolicy(tools.stream().filter(t -> !dropped.contains(t)).toList(),
+                allowedTools.stream().filter(t -> !dropped.contains(t)).toList(), permissionMode, mcp, projectSettings);
+    }
+
     private static List<String> plus(List<String> base, String... extra) {
         List<String> all = new ArrayList<>(base);
         all.addAll(List.of(extra));

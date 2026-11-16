@@ -83,6 +83,7 @@ class ContainerRunIT {
     static final Path RUN_ROOT = RunTestSupport.tempDir("container-run-it-");
     static final Path BASE_REPO = RunTestSupport.baseRepo();
     static final Path WORKTREES = RunTestSupport.tempDir("container-run-it-wt-");
+    static final Path PLANS = RunTestSupport.tempDir("container-run-it-plans-");
     /** A file of the host, in a directory no run is given. */
     static final Path CANARY = canary();
     static final String EVIDENCE_COMMAND = "test -f hello.txt && test ! -e " + CANARY + " && touch built.marker";
@@ -91,6 +92,7 @@ class ContainerRunIT {
     static void props(DynamicPropertyRegistry r) {
         RunTestSupport.register(r, RUN_ROOT, BASE_REPO, WORKTREES);
         ContainerTestSupport.register(r);
+        r.add("orange.planner.output-root", PLANS::toString);
         // Every test's task keeps its worktree, and there are more tests here than the default cap of 20.
         r.add("orange.worktrees.max-count", () -> "60");
         // Long enough for the fake to start in its container and commit before the kill.
@@ -128,6 +130,7 @@ class ContainerRunIT {
     @Autowired WorkerMcpConfigWriter mcpConfigs;
     @Autowired RunSecrets secrets;
     @Autowired @Qualifier("springSecurityFilterChain") Filter securityChain;
+    @Autowired com.ai.orange.planner.PlannerService planner;
 
     @BeforeEach
     void unpause() {
@@ -136,6 +139,26 @@ class ContainerRunIT {
 
     RunResult implement(Task task) {
         return runner.execute(start(runs, props, task.id(), RunKind.IMPLEMENT, task.role(), "{}"));
+    }
+
+    @Test
+    void aPlanRunsInAContainerOnItsDirectoryAndItsPlanComesBack() throws Exception {
+        Path dir = PLANS.resolve(UUID.randomUUID().toString());
+        Files.createDirectories(dir.resolve("repo"));
+        Files.writeString(dir.resolve("repo").resolve("README.md"), "the project\n");
+
+        com.ai.orange.planner.PlannerService.PlanResult plan = planner.plan(dir, "Build it. [[fake:plan]]");
+
+        assertThat(plan.status()).isEqualTo("success");
+        assertThat(plan.plan().tasks()).hasSize(3);
+        assertThat(dir.resolve("plan.json")).exists();
+        String config = RUN_ROOT.resolve(plan.runId().toString()).resolve("claude-config").toString();
+        assertThat(Files.readString(Path.of(config, "fake-env.json"))).contains("\"HOME\":\"/home/agent\"");
+        assertThat(Files.readString(Path.of(config, "fake-probe.txt"))).contains("repo=visible");
+        // Inside the container only its mounts exist: it keeps its tools, and asks for no Bash.
+        assertThat(Files.readString(Path.of(config, "fake-args.json"))).contains("\"WebFetch\"")
+                .contains("\"--permission-mode\",\"acceptEdits\"");
+        assertThat(containersOf(plan.runId())).isEmpty();
     }
 
     @Test

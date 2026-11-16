@@ -18,6 +18,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -144,14 +146,15 @@ public class PlanService implements AttentionResolver {
             Plan plan = plans.findById(planId).orElse(null);
             if (plan == null || !Plan.PLANNING.equals(plan.status())) return;
             PlannerService.PlanResult result;
+            Path dir = Path.of(props.outputRoot()).toAbsolutePath().normalize().resolve(planId.toString());
             try {
-                Path dir = Path.of(props.outputRoot()).toAbsolutePath().resolve(planId.toString());
                 Files.createDirectories(dir);
                 List<Repo> repos = projects.githubRepos(plan.projectId());
                 String base = repos.isEmpty() ? null : baseBranch(plan.projectId(), repos.getFirst());
                 boolean cloned = !repos.isEmpty() && cloneRepo(planId, repos.getFirst(), base, dir.resolve("repo"));
-                String prompt = PlannerPrompt.build(plan.request(), plan.note(), facts(plan.projectId(), repos, base,
-                        cloned));
+                Revision revision = revision(plan);
+                String prompt = PlannerPrompt.build(plan.request(), revision.notes(), revision.previous(),
+                        facts(plan.projectId(), repos, base, cloned));
                 result = planner.plan(dir, prompt);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -161,6 +164,9 @@ public class PlanService implements AttentionResolver {
                 log.error("plan {}: could not plan: {}", planId, e.toString());
                 fail(planId, "could not plan: " + oneLine(e.getMessage()), null);
                 return;
+            } finally {
+                // The clone was only for the planner to read; plan.json and architecture.md stay.
+                deleteQuietly(dir.resolve("repo"));
             }
             if (!"success".equals(result.status())) {
                 fail(planId, result.status(), result.runId());
@@ -186,6 +192,12 @@ public class PlanService implements AttentionResolver {
         if (plan == null || !Plan.PLANNING.equals(plan.status())) return;
         Project project = projects.find(plan.projectId().toString()).orElseThrow();
         PlanJson pj = result.plan();
+        // Commands that could read one way and run another are not shown to the user to approve.
+        String refused = PlanJson.evidenceRefusal(pj.evidence()).orElse(null);
+        if (refused != null) {
+            log.warn("plan {}: refused the planner's proposed evidence commands: {}", planId, refused);
+            pj = pj.withoutEvidence();
+        }
         JSONB json = json(pj);
         String architecture = architecture(result.architectureMd());
         UUID milestone = plan.milestoneId() != null ? plan.milestoneId()
@@ -196,7 +208,7 @@ public class PlanService implements AttentionResolver {
         PlanApproval.Decision decision = PlanApproval.decide(convention, evidenceInForce, pj, props.askAboveTasks());
         if (!decision.ask()) {
             plans.finishPlanning(planId, Plan.PLANNING, false, null, json, architecture, null, result.runId(), milestone);
-            int n = graph.ingest(pj, plan.projectId().toString(), pj.repo(), planId, milestone).size();
+            int n = graph.ingest(pj, plan.projectId().toString(), repoOf(plan.projectId(), pj), planId, milestone).size();
             plans.move(planId, Plan.PLANNING, Plan.DISPATCHED);
             log.info("plan {} for {}: dispatched {} tasks", planId, project.name(), n);
             return;
@@ -206,7 +218,7 @@ public class PlanService implements AttentionResolver {
         AttentionItem item = attention.raise(AttentionItem.PLAN_APPROVAL, APPROVAL_KEY + planId, AttentionItem.URGENT,
                 plan.projectId(), null, null,
                 title("Approve the plan for " + project.name() + "? " + decision.reason()),
-                PlanText.body(plan.request(), decision.reason(), pj, evidenceInForce), "approve");
+                PlanText.body(plan.request(), decision.reason(), pj, evidenceInForce, refused), "approve");
         plans.setAttention(planId, item.id());
         log.info("plan {} for {}: asks first ({})", planId, project.name(), decision.reason());
     }
@@ -251,7 +263,8 @@ public class PlanService implements AttentionResolver {
             space.setConvention(plan.projectId(), null, WorkConventions.EVIDENCE,
                     Json.mapper().valueToTree(pj.evidence()), SpaceService.Author.USER);
         }
-        int n = graph.ingest(pj, plan.projectId().toString(), pj.repo(), plan.id(), plan.milestoneId()).size();
+        int n = graph.ingest(pj, plan.projectId().toString(), repoOf(plan.projectId(), pj), plan.id(),
+                plan.milestoneId()).size();
         plans.move(plan.id(), Plan.ASKING, Plan.DISPATCHED);
         log.info("plan {}: approved, dispatched {} tasks", plan.id(), n);
     }
@@ -262,6 +275,40 @@ public class PlanService implements AttentionResolver {
         Plan next = plans.insert(plan.projectId(), plan.request(), note, plan.id(), plan.milestoneId());
         log.info("plan {}: revised by the user as plan {}", plan.id(), next.id());
         afterCommit(() -> spawn(next.id()));
+    }
+
+    /**
+     * The repo a plan's tasks go to unless a task names another: the plan's own {@code repo}, else the
+     * repo that was cloned for the planner (the project's first GitHub repo).
+     */
+    private String repoOf(UUID projectId, PlanJson pj) {
+        if (pj.repo() != null && !pj.repo().isBlank()) return pj.repo();
+        List<Repo> repos = projects.githubRepos(projectId);
+        return repos.isEmpty() ? null : repos.getFirst().key().toString();
+    }
+
+    /** What a revision tells the planner: every note along its chain, oldest first, and the plan it revises. */
+    private record Revision(List<String> notes, PlanJson previous) {}
+
+    private Revision revision(Plan plan) {
+        List<String> notes = new ArrayList<>();
+        PlanJson previous = null;
+        Set<UUID> seen = new HashSet<>();
+        Plan at = plan;
+        while (at != null && seen.add(at.id())) {
+            if (at.note() != null && !at.note().isBlank()) notes.add(at.note());
+            if (at.revisesId() == null) break;
+            Plan before = plans.findById(at.revisesId()).orElse(null);
+            if (previous == null && before != null && before.plan() != null) {
+                try {
+                    previous = parse(before.plan());
+                } catch (IllegalStateException unreadable) {
+                    // the revision is planned without it
+                }
+            }
+            at = before;
+        }
+        return new Revision(notes.reversed(), previous);
     }
 
     /** At start: a plan left {@code planning} by a previous instance will never finish; it fails and says so. */
@@ -336,7 +383,8 @@ public class PlanService implements AttentionResolver {
             Git.run(into, Git.QUICK, "init", "--quiet");
             // Into FETCH_HEAD: the new repository's unborn HEAD may already name the base branch.
             Git.run(into, Git.SLOW, "fetch", "--quiet", "--no-tags", mirror.toString(), "refs/remotes/origin/" + base);
-            Git.run(into, Git.SLOW, "checkout", "--quiet", "-B", base, "FETCH_HEAD");
+            // Links the repository holds become plain files: none points the planner out of repo/.
+            Git.run(into, Git.SLOW, "-c", "core.symlinks=false", "checkout", "--quiet", "-B", base, "FETCH_HEAD");
             return true;
         } catch (IOException | RuntimeException e) {
             log.warn("plan {}: planning without the repository; it could not be cloned: {}", planId, e.getMessage());
@@ -377,7 +425,8 @@ public class PlanService implements AttentionResolver {
         String review = conventions.resolve(WorkConventions.REVIEW, projectId, null).map(JsonNode::asText).orElse(null);
         return new PlannerPrompt.Facts(name, repos.stream().map(r -> r.key().toString()).toList(), base,
                 texts(active, SpaceItem.GOAL), milestones, texts(active, SpaceItem.DECISION),
-                texts(active, SpaceItem.NOTE), evidence, review, cloned);
+                texts(active, SpaceItem.NOTE), evidence, review, cloned,
+                repos.isEmpty() ? null : repos.getFirst().key().toString());
     }
 
     /**
