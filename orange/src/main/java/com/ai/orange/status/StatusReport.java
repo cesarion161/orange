@@ -21,9 +21,11 @@ import java.util.Map;
  * @param runningRuns     runs running now, of every kind
  * @param unplaced        unfinished tasks of no project (the legacy base repo), stuck first, at most
  *                        {@link StatusService#MAX_TASKS}
+ * @param unplacedByState all of them counted by status, before the lines are cut
  */
 public record StatusReport(String at, Pause pause, List<ProjectStatus> projects, int openAttention,
-                           int urgentAttention, int runningRuns, List<TaskLine> unplaced) {
+                           int urgentAttention, int runningRuns, List<TaskLine> unplaced,
+                           Map<String, Integer> unplacedByState) {
 
     private static final ObjectMapper SNAKE = Json.mapper().copy()
             .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
@@ -31,6 +33,20 @@ public record StatusReport(String at, Pause pause, List<ProjectStatus> projects,
     public StatusReport {
         projects = projects == null ? List.of() : List.copyOf(projects);
         unplaced = unplaced == null ? List.of() : List.copyOf(unplaced);
+        unplacedByState = unplacedByState == null ? Map.of()
+                : Collections.unmodifiableMap(new LinkedHashMap<>(unplacedByState));
+    }
+
+    /** A report whose tasks of no project are all in {@code unplaced}: counted from its lines. */
+    public StatusReport(String at, Pause pause, List<ProjectStatus> projects, int openAttention, int urgentAttention,
+                        int runningRuns, List<TaskLine> unplaced) {
+        this(at, pause, projects, openAttention, urgentAttention, runningRuns, unplaced, countLines(unplaced));
+    }
+
+    private static Map<String, Integer> countLines(List<TaskLine> lines) {
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        if (lines != null) lines.forEach(t -> counts.merge(t.status(), 1, Integer::sum));
+        return counts;
     }
 
     /** @param until null: until someone resumes */

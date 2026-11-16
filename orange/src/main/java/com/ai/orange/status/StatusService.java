@@ -75,6 +75,7 @@ public class StatusService {
                            OffsetDateTime createdAt) {}
 
     /** The status now, days counted in the user's zone ({@code orange.notify.zone}). */
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public StatusReport report() {
         return report(ZonedDateTime.now(notify.zoneId()));
     }
@@ -161,7 +162,7 @@ public class StatusService {
                 .thenComparing(ProjectStatus::name, String.CASE_INSENSITIVE_ORDER));
 
         return new StatusReport(at.toString(), paused, projects, open[0], urgent[0], runningRuns,
-                lines(unplaced, t -> Optional.empty()));
+                lines(unplaced, t -> Optional.empty()), counts(unplaced));
     }
 
     /** What wants the user first, then what is in flight, then the quiet ones. */

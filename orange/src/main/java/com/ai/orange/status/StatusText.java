@@ -36,7 +36,7 @@ public final class StatusText {
         if (r.pause() != null) head.add(pauseLine(r));
         List<String> body = new ArrayList<>();
         for (ProjectStatus p : r.projects()) body.add(cut(p.name(), NAME) + ": " + projectWords(p));
-        if (!r.unplaced().isEmpty()) body.add("no project: " + unplacedWords(r.unplaced()));
+        if (!r.unplacedByState().isEmpty()) body.add("no project: " + unplacedWords(r.unplacedByState()));
         if (r.projects().isEmpty()) {
             body.addFirst("No active project yet: say \"start a project <name> on <owner/name>\".");
         }
@@ -126,9 +126,9 @@ public final class StatusText {
         return parts.isEmpty() ? "nothing in flight" : String.join(", ", parts);
     }
 
-    private static String unplacedWords(List<TaskLine> tasks) {
-        long stuck = tasks.stream().filter(t -> "needs_human".equals(t.status())).count();
-        long other = tasks.size() - stuck;
+    private static String unplacedWords(Map<String, Integer> byState) {
+        int stuck = n(byState, "needs_human");
+        int other = byState.values().stream().mapToInt(Integer::intValue).sum() - stuck;
         List<String> parts = new ArrayList<>();
         if (other > 0) parts.add(other + " in flight");
         if (stuck > 0) parts.add(stuck + " stuck");

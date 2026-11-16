@@ -71,6 +71,37 @@ class StatusServiceIT {
         return report.projects().stream().filter(s -> s.id().equals(p.id().toString())).findFirst().orElseThrow();
     }
 
+    static int total(java.util.Map<String, Integer> counts) {
+        return counts.values().stream().mapToInt(Integer::intValue).sum();
+    }
+
+    @Test
+    void tasksOfNoProjectAreCountedBeforeTheLinesAreCut() {
+        StatusReport before = status.report();
+        List<UUID> made = new java.util.ArrayList<>();
+        for (int i = 0; i < StatusService.MAX_TASKS + 2; i++) made.add(task(null, "Unplaced " + i, null, "running").id());
+
+        StatusReport after = status.report();
+        // The other tests read the tasks of no project too: these end here.
+        dsl.update(TASKS).set(TASKS.STATUS, "cancelled").where(TASKS.ID.in(made)).execute();
+
+        assertThat(after.unplaced()).hasSizeLessThanOrEqualTo(StatusService.MAX_TASKS);
+        assertThat(total(after.unplacedByState()) - total(before.unplacedByState()))
+                .isEqualTo(StatusService.MAX_TASKS + 2);
+        int inFlight = total(after.unplacedByState()) - after.unplacedByState().getOrDefault("needs_human", 0);
+        assertThat(StatusText.startContext(after)).contains("no project: " + inFlight + " in flight");
+    }
+
+    @Test
+    void theReportReadsInOneRepeatableReadTransaction() throws Exception {
+        // report() is what callers call: it must carry the transaction itself, not through a self-call.
+        org.springframework.transaction.annotation.Transactional tx = StatusService.class.getMethod("report")
+                .getAnnotation(org.springframework.transaction.annotation.Transactional.class);
+        assertThat(tx).isNotNull();
+        assertThat(tx.readOnly()).isTrue();
+        assertThat(tx.isolation()).isEqualTo(org.springframework.transaction.annotation.Isolation.REPEATABLE_READ);
+    }
+
     @Test
     void groupsTasksPlansAndMilestonesByProject() {
         Project a = project();

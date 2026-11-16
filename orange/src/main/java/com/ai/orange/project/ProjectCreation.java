@@ -57,7 +57,8 @@ public class ProjectCreation {
      * @param createRepo create the repo on GitHub first (private, with a first commit)
      * @param evidence   the evidence convention to put in force (a list of commands); null for none
      * @throws IllegalArgumentException saying what to correct; nothing is recorded then (a repo GitHub
-     *                                  already created stays)
+     *                                  already created stays, and the message says to retry without
+     *                                  {@code create})
      */
     public Project create(String name, String summary, String repoRef, boolean createRepo, JsonNode evidence) {
         if (name == null || name.isBlank()) throw new IllegalArgumentException("a project needs a name");
@@ -88,20 +89,28 @@ public class ProjectCreation {
                     throw new IllegalArgumentException("could not create " + key + " on GitHub: " + e.getMessage());
                 }
             }
-            clone(key, createRepo ? CLONE_ATTEMPTS : 1);
         }
-
-        RepoKey repo = key;
-        Project created = tx.execute(s -> {
-            Project p = projects.create(projectName, summary);
-            if (repo != null) projects.addGithubRepo(p.id(), repo);
-            if (evidence != null && !evidence.isNull()) {
-                space.setConvention(p.id(), null, "evidence", evidence, SpaceService.Author.USER);
-            }
-            return p;
-        });
-        log.info("project {} created{}", projectName, repo == null ? "" : " on " + repo);
-        return created;
+        boolean created = createRepo && key != null;
+        try {
+            if (key != null) clone(key, created ? CLONE_ATTEMPTS : 1);
+            RepoKey repo = key;
+            Project project = tx.execute(s -> {
+                Project p = projects.create(projectName, summary);
+                if (repo != null) projects.addGithubRepo(p.id(), repo);
+                if (evidence != null && !evidence.isNull()) {
+                    space.setConvention(p.id(), null, "evidence", evidence, SpaceService.Author.USER);
+                }
+                return p;
+            });
+            log.info("project {} created{}", projectName, repo == null ? "" : " on " + repo);
+            return project;
+        } catch (RuntimeException e) {
+            if (!created) throw e;
+            // The repo is on GitHub now; asking again with create would try to make it a second time.
+            String why = e instanceof IllegalArgumentException ? e.getMessage() : "orange could not record the project";
+            throw new IllegalArgumentException(why + ". " + key + " now exists on GitHub: retry without create, "
+                    + "with repo " + key + ".");
+        }
     }
 
     private RepoKey key(String projectName, String ref, boolean createRepo) {

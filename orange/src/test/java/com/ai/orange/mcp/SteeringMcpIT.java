@@ -93,7 +93,8 @@ class SteeringMcpIT {
                 answer = "{\"login\":\"me\"}";
             } else if (ex.getRequestURI().getPath().equals("/user/repos")) {
                 String repo = Json.mapper().readTree(body).path("name").asText();
-                GITHUB.create("me/" + repo);
+                // A "ghost" repo is created on GitHub's word only: orange cannot clone it afterwards.
+                if (!repo.contains("ghost")) GITHUB.create("me/" + repo);
                 status = 201;
                 answer = "{\"full_name\":\"me/" + repo + "\"}";
             }
@@ -537,6 +538,17 @@ class SteeringMcpIT {
         assertThat(GITHUB.head(key, "main")).as("GitHub has the repo with its first commit").isNotNull();
         assertThat(Files.isDirectory(mirrors.path(key))).isTrue();
         assertThat(projects.find(name).orElseThrow().status()).isEqualTo(Project.ACTIVE);
+    }
+
+    @Test
+    void aCreatedRepoThatCannotBeClonedSaysItExistsNow() throws Exception {
+        String why = refused("orange_project_create", args().put("name", name).put("repo", name + "-ghost")
+                .put("create", true));
+
+        assertThat(why).contains("me/" + name.toLowerCase() + "-ghost").contains("now exists on GitHub")
+                .contains("without create");
+        assertThat(why).doesNotContain(TOKEN);
+        assertThat(projects.find(name)).isEmpty();
     }
 
     @Test
