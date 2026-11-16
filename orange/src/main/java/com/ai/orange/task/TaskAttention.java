@@ -10,8 +10,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -63,15 +63,18 @@ public class TaskAttention implements AttentionResolver {
      * the task is already stuck, and the inbox is how the user learns it.
      *
      * <p>First the task's branch is pushed to GitHub ({@link StuckBranches#push}), so the item can name
-     * it; a push that fails only leaves the branch out.
+     * it (and says that CI may run there); a push that fails only leaves the branch out, and one held
+     * back on purpose (a review found gaps) says why.
      *
      * @param why the run's question, or why orange gave up, in words for the user
      */
     public void stuck(Task task, String why, long eventId) {
         try {
-            Optional<String> branch = branches.push(task);
+            StuckBranches.Pushed branch = branches.push(task);
             String title = clip(task.title() + " needs you", MAX_TITLE);
-            attention.raise(AttentionItem.TASK_NEEDS_HUMAN, KEY + task.id() + ":" + eventId, AttentionItem.URGENT,
+            // An event that could not be recorded (-1) has no id to dedupe on: a later stuck item must not be swallowed.
+            String moment = eventId < 0 ? "unrecorded-" + UUID.randomUUID() : Long.toString(eventId);
+            attention.raise(AttentionItem.TASK_NEEDS_HUMAN, KEY + task.id() + ":" + moment, AttentionItem.URGENT,
                     task.projectId(), null, task.id(), title, body(task, why, eventId, branch), null);
         } catch (RuntimeException e) {
             log.warn("task {} needs a person, but its attention item could not be filed: {}", task.id(), e.toString());
@@ -92,7 +95,7 @@ public class TaskAttention implements AttentionResolver {
         }
     }
 
-    private String body(Task task, String why, long eventId, Optional<String> branch) {
+    private String body(Task task, String why, long eventId, StuckBranches.Pushed branch) {
         StringBuilder b = new StringBuilder();
         String project = task.projectId() == null ? "no project"
                 : projects.findById(task.projectId()).map(Project::name).orElse("no project");
@@ -106,7 +109,12 @@ public class TaskAttention implements AttentionResolver {
             b.append("Recent:\n");
             for (TaskEvent e : recent.reversed()) b.append("- ").append(eventLine(e)).append('\n');
         }
-        branch.ifPresent(name -> b.append("Branch: ").append(name).append(" on GitHub, to look at the work so far\n"));
+        if (branch.branch() != null) {
+            b.append("Branch: ").append(branch.branch()).append(" on GitHub, to look at the work so far\n");
+            b.append("CI on the repo may run on that branch.\n");
+        } else if (branch.withheld() != null) {
+            b.append("Branch: not pushed to GitHub: ").append(branch.withheld()).append('\n');
+        }
         b.append("Answer with what the task should do and orange reopens it with your answer as its note; "
                 + "resolve it blank to leave the task waiting.");
         return b.toString();

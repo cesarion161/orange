@@ -10,6 +10,7 @@ import com.ai.orange.TestcontainersConfiguration;
 import com.ai.orange.attention.AttentionItem;
 import com.ai.orange.attention.AttentionRepository;
 import com.ai.orange.attention.AttentionService;
+import com.ai.orange.evidence.EvidenceRepository;
 import com.ai.orange.json.Json;
 import com.ai.orange.project.Project;
 import com.ai.orange.project.ProjectService;
@@ -74,6 +75,7 @@ class StuckBranchesIT {
     @Autowired AttentionService attention;
     @Autowired AttentionRepository items;
     @Autowired SchedulerPause pause;
+    @Autowired EvidenceRepository evidence;
 
     @AfterEach
     void resume() {
@@ -93,6 +95,11 @@ class StuckBranchesIT {
 
     /** A running task of the project whose worktree has one commit; its next run asks a person. */
     Task stuckTask(Placed placed) throws Exception {
+        return block(runningTask(placed));
+    }
+
+    /** A running task of the project whose worktree has one commit. */
+    Task runningTask(Placed placed) throws Exception {
         Task t = taskService.createGraph(List.of(new TaskDef("t-" + UUID.randomUUID(), "Pick a database",
                 "[[fake:blocked]]", "implementer", null, null,
                 new TaskPlacement(placed.project().id(), placed.repo().id()))), List.of()).get(0);
@@ -101,10 +108,31 @@ class StuckBranchesIT {
         Files.writeString(wt.resolve("schema.sql"), "-- which database?\n");
         git(wt, "add", "-A");
         git(wt, "-c", "user.email=t@e", "-c", "user.name=T", "commit", "-q", "-m", "a first schema");
+        return t;
+    }
+
+    /** Its next run asks a person: the task is stuck. */
+    Task block(Task t) {
         RunResult r = runner.execute(start(runs, props, t.id(), RunKind.IMPLEMENT, "implementer", "{}"));
         assertThat(r.status()).isEqualTo(RunStatus.SUCCEEDED);
         assertThat(tasks.findById(t.id()).orElseThrow().status()).isEqualTo(TaskStatus.NEEDS_HUMAN);
         return tasks.findById(t.id()).orElseThrow();
+    }
+
+    /** The user answers the task's open item, and the reopened task runs again with a new commit (amended: not a fast-forward). */
+    Task answerAndRunAgain(Task t, String commitMessage) throws Exception {
+        attention.resolve(openItemOf(t).id(), "Postgres.", "user");
+        tasks.transitionStatus(t.id(), TaskStatus.READY, TaskStatus.RUNNING);
+        Path wt = worktrees.resolve(t.id());
+        Files.writeString(wt.resolve("schema.sql"), "-- postgres\n");
+        git(wt, "add", "-A");
+        git(wt, "-c", "user.email=t@e", "-c", "user.name=T", "commit", "-q", "--amend", "-m", commitMessage);
+        return t;
+    }
+
+    AttentionItem openItemOf(Task t) {
+        return items.find(null, 200).stream().filter(i -> t.id().equals(i.taskId()))
+                .filter(i -> !AttentionItem.RESOLVED.equals(i.status())).findFirst().orElseThrow();
     }
 
     static String branch(Task t) {
@@ -124,7 +152,57 @@ class StuckBranchesIT {
         assertThat(GITHUB.head(placed.repo().key(), branch(t))).isEqualTo(head);
         assertThat(branch(t)).hasSize("orange/task/".length() + 8).endsWith(t.id().toString().substring(28));
         assertThat(taskEventTypes(taskEvents, t.id())).contains("branch_pushed");
-        assertThat(itemOf(t).body()).contains(branch(t));
+        assertThat(itemOf(t).body()).contains(branch(t)).contains("CI on the repo may run on that branch");
+    }
+
+    @Test
+    void aReviewRejectedTaskIsNotPushed() throws Exception {
+        Placed placed = project();
+        Task t = runningTask(placed);
+        String head = git(worktrees.resolve(t.id()), "rev-parse", "HEAD");
+        // A reviewer found gaps in this code: it must not reach GitHub, where CI could run it.
+        evidence.record(t.id(), null, head, "diff_review", null, null, "gaps: it drops the table", false);
+
+        block(t);
+
+        assertThat(GITHUB.head(placed.repo().key(), branch(t))).isNull();
+        assertThat(taskEventTypes(taskEvents, t.id())).doesNotContain("branch_pushed");
+        assertThat(itemOf(t).body()).doesNotContain(branch(t))
+                .contains("not pushed to GitHub").contains("review found gaps");
+    }
+
+    @Test
+    void aRestuckTaskPushesItsNewHeadOverItsOwnBranch() throws Exception {
+        Placed placed = project();
+        Task t = stuckTask(placed);
+        String first = GITHUB.head(placed.repo().key(), branch(t));
+
+        block(answerAndRunAgain(t, "a schema for postgres"));
+
+        String second = git(worktrees.resolve(t.id()), "rev-parse", "HEAD");
+        assertThat(second).isNotEqualTo(first);
+        assertThat(GITHUB.head(placed.repo().key(), branch(t))).isEqualTo(second);
+        assertThat(openItemOf(t).body()).contains(branch(t));
+    }
+
+    @Test
+    void aUsersCommitOnTheBranchSurvivesARestuckAndTheDelete() throws Exception {
+        Placed placed = project();
+        Task t = stuckTask(placed);
+        // The user looked at the branch and pushed a commit of their own onto it.
+        String mine = GITHUB.commit(placed.repo().key(), branch(t), "mine.txt", "the user's work\n");
+
+        block(answerAndRunAgain(t, "a schema for postgres"));
+
+        assertThat(GITHUB.head(placed.repo().key(), branch(t))).as("a restuck push leaves the user's commit")
+                .isEqualTo(mine);
+        long pushes = taskEvents.findLatestByTask(t.id(), 100).stream().filter(e -> "branch_pushed".equals(e.eventType())).count();
+        assertThat(pushes).isEqualTo(1);
+
+        cancellation.cancel(t.id());
+
+        assertThat(GITHUB.head(placed.repo().key(), branch(t))).as("nor does the delete remove it").isEqualTo(mine);
+        assertThat(taskEventTypes(taskEvents, t.id())).doesNotContain("branch_deleted");
     }
 
     @Test

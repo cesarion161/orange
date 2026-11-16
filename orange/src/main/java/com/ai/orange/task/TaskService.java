@@ -146,7 +146,8 @@ public class TaskService {
     }
 
     /**
-     * Copy an existing task as a fresh ready task. Same title/description/role;
+     * Copy an existing task as a fresh ready task. Same title/description/role, project, repo, plan
+     * and milestone; the original's open attention items are resolved ({@code replayed});
      * metadata gets a {@code replayed_from} pointer back to the
      * original so the agent can see the lineage and the operator can audit it.
      * No dependencies are copied — replay is a clean re-attempt, not a graph
@@ -167,10 +168,14 @@ public class TaskService {
                 src.role(),
                 src.priority(),
                 asJsonb(meta),
-                new com.ai.orange.project.TaskPlacement(src.projectId(), src.repoId()));
+                new com.ai.orange.project.TaskPlacement(src.projectId(), src.repoId()),
+                src.planId(),
+                src.milestoneId());
         Task created = createGraph(List.of(def), List.of()).get(0);
         events.append(created.id(), actor == null ? "system" : actor, "task_replayed",
                 asJsonb(Map.of("source_task_id", sourceTaskId.toString())));
+        // The copy is the re-attempt: what the original asked of the user is answered by it.
+        attention.resolveForTask(sourceTaskId, actor == null ? "system" : actor, "replayed");
         return created;
     }
 

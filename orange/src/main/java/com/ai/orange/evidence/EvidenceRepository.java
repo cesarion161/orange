@@ -82,6 +82,16 @@ public class EvidenceRepository {
                 .and(EVIDENCE.PASSED.isTrue()));
     }
 
+    /** Whether the task's most recent diff review, of any head, found gaps. */
+    public boolean lastDiffReviewFoundGaps(UUID taskId) {
+        Boolean passed = dsl.select(EVIDENCE.PASSED).from(EVIDENCE)
+                .where(EVIDENCE.TASK_ID.eq(taskId).and(EVIDENCE.KIND.eq(DIFF_REVIEW)))
+                .orderBy(EVIDENCE.CREATED_AT.desc(), EVIDENCE.ID.desc())
+                .limit(1)
+                .fetchOne(EVIDENCE.PASSED);
+        return Boolean.FALSE.equals(passed);
+    }
+
     /** All evidence of a task, newest first. */
     public List<Evidence> findByTask(UUID taskId) {
         return dsl.selectFrom(EVIDENCE)

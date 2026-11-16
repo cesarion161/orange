@@ -8,6 +8,13 @@ import com.ai.orange.TestcontainersConfiguration;
 import com.ai.orange.attention.AttentionItem;
 import com.ai.orange.attention.AttentionRepository;
 import com.ai.orange.attention.AttentionService;
+import com.ai.orange.planner.Plan;
+import com.ai.orange.planner.PlanRepository;
+import com.ai.orange.project.Project;
+import com.ai.orange.project.ProjectService;
+import com.ai.orange.project.SpaceItem;
+import com.ai.orange.project.SpaceService;
+import com.ai.orange.project.TaskPlacement;
 import com.ai.orange.run.RunKind;
 import com.ai.orange.run.RunRepository;
 import com.ai.orange.run.RunResult;
@@ -68,6 +75,10 @@ class TaskAttentionIT {
     @Autowired AttentionRepository items;
     @Autowired SchedulerPause pause;
     @Autowired DSLContext dsl;
+    @Autowired TaskAttention taskAttention;
+    @Autowired ProjectService projects;
+    @Autowired SpaceService space;
+    @Autowired PlanRepository plans;
 
     @BeforeEach
     void unpause() {
@@ -168,6 +179,39 @@ class TaskAttentionIT {
 
         assertThat(items.findById(item.id()).orElseThrow().status()).isEqualTo(AttentionItem.RESOLVED);
         assertThat(tasks.findById(task.id()).orElseThrow().status()).isEqualTo(TaskStatus.NEEDS_HUMAN);
+    }
+
+    @Test
+    void aStuckEventThatWasNotRecordedStillFilesEveryItem() {
+        Task task = runningTask(taskService, tasks, "Add a greeting.");
+
+        // The needs_human event could not be appended (-1): each stuck moment still gets its own item.
+        taskAttention.stuck(task, "first question", -1);
+        taskAttention.stuck(task, "second question", -1);
+
+        assertThat(itemsOf(task.id())).hasSize(2).extracting(AttentionItem::body)
+                .anySatisfy(b -> assertThat(b).contains("first question"))
+                .anySatisfy(b -> assertThat(b).contains("second question"));
+    }
+
+    @Test
+    void replayingKeepsThePlanAndMilestoneAndResolvesTheOriginalsItems() {
+        Project p = projects.create("replay-" + UUID.randomUUID().toString().substring(0, 8), null);
+        SpaceItem beta = space.add(p.id(), SpaceItem.MILESTONE, "beta", SpaceService.Author.USER, null, null, null);
+        Plan plan = plans.insert(p.id(), "Build it.", null, null, beta.id());
+        Task task = taskService.createGraph(List.of(new TaskDef("t-" + UUID.randomUUID(), "Planned work", "x",
+                "implementer", null, null, new TaskPlacement(p.id(), null), plan.id(), beta.id())), List.of()).get(0);
+        dsl.update(TASKS).set(TASKS.STATUS, "needs_human").where(TASKS.ID.eq(task.id())).execute();
+        taskAttention.stuck(tasks.findById(task.id()).orElseThrow(), "which way?", 1);
+        AttentionItem item = theItem(task.id());
+
+        Task copy = taskService.replayTask(task.id(), "operator");
+
+        assertThat(copy.planId()).isEqualTo(plan.id());
+        assertThat(copy.milestoneId()).isEqualTo(beta.id());
+        AttentionItem resolved = items.findById(item.id()).orElseThrow();
+        assertThat(resolved.status()).isEqualTo(AttentionItem.RESOLVED);
+        assertThat(resolved.resolution()).isEqualTo("replayed");
     }
 
     @Test
