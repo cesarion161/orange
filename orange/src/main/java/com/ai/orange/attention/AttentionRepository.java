@@ -119,6 +119,11 @@ public class AttentionRepository {
         return resolveWhere(ATTENTION_ITEMS.SESSION_ID.eq(sessionId), by, resolution);
     }
 
+    /** Resolves every unresolved item of a task; the number resolved. */
+    public int resolveForTask(UUID taskId, String by, String resolution) {
+        return resolveWhere(ATTENTION_ITEMS.TASK_ID.eq(taskId), by, resolution);
+    }
+
     public int resolveByKey(String dedupeKey, String by, String resolution) {
         return resolveWhere(ATTENTION_ITEMS.DEDUPE_KEY.eq(dedupeKey), by, resolution);
     }

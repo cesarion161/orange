@@ -37,8 +37,14 @@ public class AttentionService {
     /** As above, with the answer orange would give ({@code proposedAnswer}) for the user to take or change. */
     public AttentionItem raise(String kind, String dedupeKey, String urgency, UUID projectId, UUID sessionId,
                                String title, String body, String proposedAnswer) {
-        Optional<AttentionItem> created = items.insert(kind, dedupeKey, urgency, projectId, sessionId, null, title,
-                body, proposedAnswer);
+        return raise(kind, dedupeKey, urgency, projectId, sessionId, null, title, body, proposedAnswer);
+    }
+
+    /** As above, for an item about a task ({@code taskId}), which resolves with the task's answer. */
+    public AttentionItem raise(String kind, String dedupeKey, String urgency, UUID projectId, UUID sessionId,
+                               UUID taskId, String title, String body, String proposedAnswer) {
+        Optional<AttentionItem> created = items.insert(kind, dedupeKey, urgency, projectId, sessionId, taskId,
+                title, body, proposedAnswer);
         if (created.isPresent()) {
             log.info("attention: {} {} item {} — {}", urgency, kind, created.get().id(), title);
             return created.get();

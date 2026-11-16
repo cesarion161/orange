@@ -16,6 +16,8 @@ import org.jooq.JSONB;
  * @param prUrl    PR integration mode only (a later phase)
  * @param projectId the project the task belongs to; null for a task of the legacy base repo
  * @param repoId    the project's repo the work is done in; null with {@code projectId}
+ * @param planId    the plan that made it; null for a task created by hand or before plans were rows
+ * @param milestoneId the milestone item it was planned for; readers follow its supersede chain
  */
 public record Task(
         UUID id,
@@ -34,5 +36,7 @@ public record Task(
         OffsetDateTime createdAt,
         OffsetDateTime updatedAt,
         UUID projectId,
-        UUID repoId) {
+        UUID repoId,
+        UUID planId,
+        UUID milestoneId) {
 }

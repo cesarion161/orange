@@ -143,7 +143,8 @@ public class SessionService {
                 NeutralEvent.STOPPED.equals(e.type()) ? e.eventId() : d.status() == null ? s.stopEventId() : null,
                 // What the stop says of the checkout; a stop that says nothing leaves nothing stale behind.
                 NeutralEvent.STOPPED.equals(e.type()) ? e.payloadText("head_sha") : s.headSha(),
-                NeutralEvent.STOPPED.equals(e.type()) ? reportedFiles(e) : s.dirtyFiles());
+                NeutralEvent.STOPPED.equals(e.type()) ? reportedFiles(e) : s.dirtyFiles(),
+                s.steering());
         sessions.save(next);
         sessions.addEvent(s.id(), e.type(), JSONB.valueOf(e.payload().toString()), e.at());
 
