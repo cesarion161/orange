@@ -201,10 +201,16 @@ public class SessionService {
      * Whether this stop goes to the judge. Not when the judge is off or cannot run now (a paused
      * scheduler would leave the stop hook waiting for nothing), not for a muted project, not when
      * the project's {@code auto-answer} convention is {@code none}; and after too many answers in
-     * a row the loop guard asks the user instead.
+     * a row the loop guard asks the user instead. Nor a stop the reporter made longer than
+     * {@code hook-wait} ago.
      */
     private SessionReactor.Judging judging(NeutralEvent e, Session s, Project project, boolean muted) {
         if (!NeutralEvent.STOPPED.equals(e.type()) || muted || !judge.enabled() || pause.current().isPresent()) {
+            return SessionReactor.Judging.OFF;
+        }
+        // Replayed from the reporter's disk queue after its hook gave up: no hook will take a verdict,
+        // so a judge would only spend the plan. The rules decide it.
+        if (e.at() != null && Duration.between(e.at(), OffsetDateTime.now()).compareTo(judge.hookWait()) > 0) {
             return SessionReactor.Judging.OFF;
         }
         String autoAnswer = conventions.resolve("auto-answer", project == null ? null : project.id(), s.id())
