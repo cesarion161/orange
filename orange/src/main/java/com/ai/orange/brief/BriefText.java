@@ -230,13 +230,22 @@ public final class BriefText {
         return v.modelLines() ? title : title + " · facts only";
     }
 
-    /** The dated milestones nearest first, and since when the project is quiet. */
+    /**
+     * The dated milestones nearest first, each with orange's label when it has one; the project's tasks;
+     * and since when the project is quiet.
+     */
     private static List<String> facts(ProjectFacts p) {
         List<String> facts = new ArrayList<>();
         p.milestones().stream().filter(m -> m.daysLeft() != null)
                 .sorted(Comparator.comparingInt(Milestone::daysLeft))
                 .limit(MILESTONES_PER_LINE)
-                .forEach(m -> facts.add((BriefPrompt.line(m.text(), MILESTONE_CHARS) + " " + due(m.daysLeft())).strip()));
+                .forEach(m -> {
+                    String track = BriefPrompt.trackWords(m.track());
+                    facts.add((BriefPrompt.line(m.text(), MILESTONE_CHARS) + " " + due(m.daysLeft())).strip()
+                            + (track == null ? "" : ", " + track));
+                });
+        String tasks = BriefPrompt.tasksWords(p.tasks(), ", ");
+        if (tasks != null) facts.add("tasks: " + tasks);
         if (p.quiet().quiet()) {
             String last = BriefPrompt.line(p.quiet().lastActiveDay(), 20);
             facts.add(last.isEmpty() ? "quiet" : "quiet since " + last);
@@ -318,6 +327,16 @@ public final class BriefText {
         }
 
         int waiting = Math.max(p.waitingTotal(), p.waiting().size());
+        String tasks = BriefPrompt.tasksWords(p.tasks());
+        h.append("<h4>Tasks: ").append(esc(tasks == null ? "none" : tasks)).append("</h4>\n");
+        if (!p.tasks().needsHuman().isEmpty()) {
+            h.append("<ul>\n");
+            for (String title : p.tasks().needsHuman()) {
+                h.append("<li>needs a person · ").append(esc(title)).append("</li>\n");
+            }
+            h.append("</ul>\n");
+        }
+
         h.append("<h4>Waiting on you: ").append(esc(BriefPrompt.waitingWords(waiting, p.waitingUrgent())))
                 .append(esc(BriefPrompt.shown(waiting, p.waiting().size()))).append("</h4>\n");
         items(h, p.waiting(), at);

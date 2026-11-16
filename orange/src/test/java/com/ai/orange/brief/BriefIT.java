@@ -229,7 +229,7 @@ class BriefIT {
     BriefScheduler sweeper(boolean briefs, boolean pushes) {
         BriefProperties b = new BriefProperties(briefs, briefProps.sweep(), briefProps.catchUp(),
                 briefProps.firstWindow(), briefProps.freshMinInterval(), briefProps.focusWait(), briefProps.publicUrl(),
-                briefProps.linkTtl(), briefProps.retention());
+                briefProps.linkTtl(), briefProps.retention(), briefProps.onTrackMargin());
         NotifyProperties n = new NotifyProperties(pushes, notify.sweep(), notify.batchWindow(), notify.zone(),
                 notify.ntfy());
         return new BriefScheduler(service, delivery, this.briefs, b, n);

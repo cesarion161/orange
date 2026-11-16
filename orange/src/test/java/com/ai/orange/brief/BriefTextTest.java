@@ -11,6 +11,7 @@ import static com.ai.orange.brief.BriefFixtures.quietFor;
 import static com.ai.orange.brief.BriefFixtures.session;
 import static com.ai.orange.brief.BriefFixtures.snapshot;
 import static com.ai.orange.brief.BriefFixtures.tasks;
+import static com.ai.orange.brief.BriefFixtures.trackedMilestone;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.ai.orange.brief.BriefContent.Focus;
@@ -80,6 +81,39 @@ class BriefTextTest {
                 + "[Launch post 3 days overdue; Docs due today; quiet since 2026-11-10]\n");
         assertThat(text).contains("blog — Nothing moved. [Draft due in 1 day]\n");
         assertThat(text).doesNotContain("Public beta").doesNotContain("Someday").doesNotContain("facts only");
+    }
+
+    @Test
+    void printsTheMilestoneLabelAndTasks() {
+        BriefSnapshot s = snapshot(project("orange-ai")
+                .milestone(trackedMilestone("Beta", 3, 70, OnTrack.BEHIND, "merged", 1, "running", 1, "stuck", 1))
+                .milestone(trackedMilestone("Docs", 9, 40, OnTrack.ON_TRACK, "merged", 2, "not_started", 1))
+                .milestone(trackedMilestone("Later", 30, 10, null))
+                .tasks(tasks(1, List.of("Pick a database"), "running", 1, "needs_human", 1))).build();
+        // The model's line says nothing of the label: orange prints it beside the line all the same.
+        BriefContent content = new BriefContent(List.of(new Line("orange-ai", "Work goes on.")), List.of(), List.of());
+
+        String text = BriefText.text(brief(s, content, null));
+
+        assertThat(text).contains("orange-ai — Work goes on. [Beta due in 3 days, behind; Docs due in 9 days, on track; "
+                + "tasks: 1 running, 1 needs a person, 1 integrated since the last brief]\n");
+        String html = BriefText.html(brief(s, content, null));
+        assertThat(html).contains("<li>Beta: due 2026-11-10, in 3 days; 70% of its time has passed; 0 pieces of work "
+                        + "closed in the project since it was set (not linked to this milestone); tasks: 1 merged, "
+                        + "1 running, 1 stuck; orange&#39;s verdict: BEHIND</li>")
+                .contains("<li>Docs: due 2026-11-10, in 9 days; 40% of its time has passed; 0 pieces of work closed in "
+                        + "the project since it was set (not linked to this milestone); tasks: 2 merged, 1 not started; "
+                        + "orange&#39;s verdict: on track</li>")
+                .contains("<li>Later: due 2026-11-10, in 30 days; 10% of its time has passed; 0 pieces of work closed "
+                        + "in the project since it was set (not linked to this milestone)</li>")
+                .contains("<h4>Tasks: 1 running, 1 needs a person; 1 integrated since the last brief</h4>")
+                .contains("<li>needs a person · Pick a database</li>");
+        String prompt = BriefPrompt.prompt(s, "FENCE");
+        assertThat(prompt).contains("tasks: 1 merged, 1 running, 1 stuck; orange's verdict: BEHIND")
+                .contains("Tasks: 1 running, 1 needs a person; 1 integrated since the last brief\n");
+        // A task's title is written by the planner: it stands behind a ref, inside the fence.
+        assertThat(prompt.substring(0, prompt.indexOf("FENCE"))).doesNotContain("Pick a database");
+        assertThat(prompt.substring(prompt.indexOf("FENCE"))).contains("t1 title: Pick a database");
     }
 
     @Test

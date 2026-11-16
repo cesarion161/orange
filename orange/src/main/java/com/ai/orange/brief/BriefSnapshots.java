@@ -32,7 +32,6 @@ import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
-import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -78,11 +77,16 @@ public class BriefSnapshots {
     private final DSLContext dsl;
     private final Conventions conventions;
     private final AttentionProperties attention;
+    private final MilestoneTracks tracks;
+    private final BriefProperties props;
 
-    public BriefSnapshots(DSLContext dsl, Conventions conventions, AttentionProperties attention) {
+    public BriefSnapshots(DSLContext dsl, Conventions conventions, AttentionProperties attention,
+                          MilestoneTracks tracks, BriefProperties props) {
         this.dsl = dsl;
         this.conventions = conventions;
         this.attention = attention;
+        this.tracks = tracks;
+        this.props = props;
     }
 
     private record ProjectRow(UUID id, String name, String summary) {}
@@ -108,9 +112,9 @@ public class BriefSnapshots {
                 .map(p -> one(p.name(), BriefSnapshot.TITLE)).toList();
         List<UUID> ids = shown.stream().map(ProjectRow::id).toList();
 
-        Map<UUID, List<SpaceRow>> goals = new HashMap<>();
-        Map<UUID, List<SpaceRow>> milestones = new HashMap<>();
-        readSpace(ids, goals, milestones);
+        Map<UUID, List<SpaceRow>> goals = goals(ids);
+        Map<UUID, List<Milestone>> milestones = tracks.read(ids, at, today, zone, props.onTrackMargin());
+        Map<UUID, TaskFacts> projectTasks = projectTasks(ids, since);
         Map<UUID, List<SessionFacts>> sessions = sessions(ids, at);
         Map<UUID, List<Closed>> closed = closed(ids, since);
         Map<UUID, List<Item>> waiting = new HashMap<>();
@@ -132,18 +136,19 @@ public class BriefSnapshots {
                     one(p.summary(), BriefSnapshot.TEXT),
                     goals.getOrDefault(p.id(), List.of()).stream().limit(BriefSnapshot.MAX_GOALS)
                             .map(SpaceRow::text).toList(),
-                    milestones(p.id(), milestones.getOrDefault(p.id(), List.of()), at, today, zone),
+                    milestones.getOrDefault(p.id(), List.of()),
                     capped(itsSessions, BriefSnapshot.MAX_SESSIONS), itsSessions.size(),
                     capped(itsClosed, BriefSnapshot.MAX_CLOSED),
                     count(itsClosed, SessionWork.INTEGRATED), count(itsClosed, SessionWork.VERIFIED),
                     capped(itsWaiting, BriefSnapshot.MAX_WAITING), itsWaiting.size(),
                     (int) itsWaiting.stream().filter(i -> !AttentionItem.NORMAL.equals(i.urgency())).count(),
-                    itsFocus.prompts(), text(itsFocus.lastPromptAt()), quiet));
+                    itsFocus.prompts(), text(itsFocus.lastPromptAt()), quiet,
+                    projectTasks.getOrDefault(p.id(), new TaskFacts(null, 0, null))));
         }
         return new BriefSnapshot(at.toString(), since.toString(), zone.getId(), projects, others,
                 dsl.fetchCount(PROJECTS, PROJECTS.STATUS.eq(Project.PROPOSED)),
                 dsl.fetchCount(PROJECTS, PROJECTS.STATUS.eq(Project.PAUSED)),
-                promptsTotal, capped(elsewhere, BriefSnapshot.MAX_ELSEWHERE), elsewhere.size(), tasks(since));
+                promptsTotal, capped(elsewhere, BriefSnapshot.MAX_ELSEWHERE), elsewhere.size(), orphanTasks(since));
     }
 
     /** Active projects, the one heard from last first; those with no session at all come last, by name. */
@@ -163,50 +168,19 @@ public class BriefSnapshots {
         return rows;
     }
 
-    /** The projects' own active goals (newest first) and milestones (the nearest date first, undated last). */
-    private void readSpace(List<UUID> ids, Map<UUID, List<SpaceRow>> goals, Map<UUID, List<SpaceRow>> milestones) {
-        dsl.select(SPACE_ITEMS.PROJECT_ID, SPACE_ITEMS.KIND, SPACE_ITEMS.BODY, SPACE_ITEMS.DUE_AT,
-                        SPACE_ITEMS.CREATED_AT)
+    /** The projects' own active goals, newest first. Milestones are {@link MilestoneTracks}'. */
+    private Map<UUID, List<SpaceRow>> goals(List<UUID> ids) {
+        Map<UUID, List<SpaceRow>> goals = new HashMap<>();
+        dsl.select(SPACE_ITEMS.PROJECT_ID, SPACE_ITEMS.BODY, SPACE_ITEMS.DUE_AT, SPACE_ITEMS.CREATED_AT)
                 .from(SPACE_ITEMS)
                 .where(SPACE_ITEMS.PROJECT_ID.in(ids)
                         .and(SPACE_ITEMS.STATUS.eq(SpaceItem.ACTIVE))
                         .and(SPACE_ITEMS.SESSION_ID.isNull())
-                        .and(SPACE_ITEMS.KIND.in(SpaceItem.GOAL, SpaceItem.MILESTONE)))
+                        .and(SPACE_ITEMS.KIND.eq(SpaceItem.GOAL)))
                 .orderBy(SPACE_ITEMS.CREATED_AT.desc(), SPACE_ITEMS.ID.desc())
-                .forEach(r -> {
-                    SpaceRow row = new SpaceRow(one(bodyText(r.value3().data()), BriefSnapshot.TEXT), r.value4(),
-                            r.value5());
-                    (SpaceItem.GOAL.equals(r.value2()) ? goals : milestones)
-                            .computeIfAbsent(r.value1(), k -> new ArrayList<>()).add(row);
-                });
-        Comparator<SpaceRow> byDate = Comparator
-                .comparing(SpaceRow::dueAt, Comparator.nullsLast(Comparator.<OffsetDateTime>naturalOrder()))
-                .thenComparing(SpaceRow::createdAt);
-        milestones.values().forEach(rows -> rows.sort(byDate));
-    }
-
-    private List<Milestone> milestones(UUID projectId, List<SpaceRow> rows, OffsetDateTime at, LocalDate today,
-                                       ZoneId zone) {
-        List<Milestone> out = new ArrayList<>();
-        for (SpaceRow m : rows.subList(0, Math.min(rows.size(), BriefSnapshot.MAX_MILESTONES))) {
-            if (m.dueAt() == null) {
-                out.add(new Milestone(m.text(), null, null, null, false, null));
-                continue;
-            }
-            int daysLeft = (int) ChronoUnit.DAYS.between(today, m.dueAt().atZoneSameInstant(zone).toLocalDate());
-            long whole = Duration.between(m.createdAt(), m.dueAt()).toMillis();
-            long gone = Duration.between(m.createdAt(), at).toMillis();
-            int elapsed = whole <= 0 ? 100 : (int) Math.clamp(100 * gone / whole, 0, 100);
-            // Not linked to the milestone: nothing ties a piece of work to one (Phase D ruling 9).
-            int closedSince = dsl.fetchCount(dsl.selectOne().from(SESSION_WORK)
-                    .join(SESSIONS).on(SESSIONS.ID.eq(SESSION_WORK.SESSION_ID))
-                    .where(SESSIONS.PROJECT_ID.eq(projectId)
-                            .and(SESSION_WORK.STATUS.eq(SessionWork.CLOSED))
-                            .and(SESSION_WORK.CLOSED_AT.gt(m.createdAt()))));
-            out.add(new Milestone(m.text(), m.dueAt().toString(), daysLeft, elapsed, m.dueAt().isBefore(at),
-                    closedSince));
-        }
-        return out;
+                .forEach(r -> goals.computeIfAbsent(r.value1(), k -> new ArrayList<>()).add(
+                        new SpaceRow(one(bodyText(r.value2().data()), BriefSnapshot.TEXT), r.value3(), r.value4())));
+        return goals;
     }
 
     /** Sessions that have not ended and were heard from lately, the latest first. */
@@ -286,25 +260,69 @@ public class BriefSnapshots {
         return out;
     }
 
-    /** orange's own tasks: they have no project yet (Phase D ruling 10). */
-    private TaskFacts tasks(OffsetDateTime since) {
+    /**
+     * Each project's tasks (remote-first spec §7.6: tasks appear under their projects): open ones by
+     * status, those integrated since the last brief, and the titles of those that wait for a person.
+     */
+    private Map<UUID, TaskFacts> projectTasks(List<UUID> ids, OffsetDateTime since) {
+        if (ids.isEmpty()) return Map.of();
+        Map<UUID, Map<String, Integer>> counted = new HashMap<>();
+        dsl.select(TASKS.PROJECT_ID, TASKS.STATUS, DSL.count()).from(TASKS)
+                .where(TASKS.PROJECT_ID.in(ids).and(TASKS.STATUS.in(OPEN_TASKS.stream().map(TaskStatus::dbValue).toList())))
+                .groupBy(TASKS.PROJECT_ID, TASKS.STATUS)
+                .forEach(r -> counted.computeIfAbsent(r.value1(), k -> new HashMap<>()).put(r.value2(), r.value3()));
+        Map<UUID, Integer> integrated = new HashMap<>();
+        dsl.select(TASKS.PROJECT_ID, DSL.count()).from(TASK_EVENTS).join(TASKS).on(TASKS.ID.eq(TASK_EVENTS.TASK_ID))
+                .where(TASKS.PROJECT_ID.in(ids)
+                        .and(TASK_EVENTS.EVENT_TYPE.eq("integrated"))
+                        .and(TASK_EVENTS.CREATED_AT.gt(since)))
+                .groupBy(TASKS.PROJECT_ID)
+                .forEach(r -> integrated.put(r.value1(), r.value2()));
+        Map<UUID, List<String>> needsHuman = new HashMap<>();
+        dsl.select(TASKS.PROJECT_ID, TASKS.TITLE).from(TASKS)
+                .where(TASKS.PROJECT_ID.in(ids).and(TASKS.STATUS.eq(TaskStatus.NEEDS_HUMAN.dbValue())))
+                .orderBy(TASKS.CREATED_AT.asc(), TASKS.ID.asc())
+                .forEach(r -> {
+                    List<String> titles = needsHuman.computeIfAbsent(r.value1(), k -> new ArrayList<>());
+                    if (titles.size() < BriefSnapshot.MAX_PROJECT_NEEDS_HUMAN) {
+                        titles.add(one(r.value2(), BriefSnapshot.TITLE));
+                    }
+                });
+        Map<UUID, TaskFacts> out = new HashMap<>();
+        for (UUID id : ids) {
+            out.put(id, new TaskFacts(ordered(counted.getOrDefault(id, Map.of())), integrated.getOrDefault(id, 0),
+                    needsHuman.getOrDefault(id, List.of())));
+        }
+        return out;
+    }
+
+    /** orange's own tasks: those of no project (Phase D ruling 10; a project's are under it). */
+    private TaskFacts orphanTasks(OffsetDateTime since) {
         Map<String, Integer> counted = new HashMap<>();
         dsl.select(TASKS.STATUS, DSL.count()).from(TASKS)
-                .where(TASKS.STATUS.in(OPEN_TASKS.stream().map(TaskStatus::dbValue).toList()))
+                .where(TASKS.PROJECT_ID.isNull()
+                        .and(TASKS.STATUS.in(OPEN_TASKS.stream().map(TaskStatus::dbValue).toList())))
                 .groupBy(TASKS.STATUS)
                 .forEach(r -> counted.put(r.value1(), r.value2()));
+        int integrated = dsl.fetchCount(dsl.selectOne().from(TASK_EVENTS).join(TASKS).on(TASKS.ID.eq(TASK_EVENTS.TASK_ID))
+                .where(TASKS.PROJECT_ID.isNull()
+                        .and(TASK_EVENTS.EVENT_TYPE.eq("integrated"))
+                        .and(TASK_EVENTS.CREATED_AT.gt(since))));
+        List<String> needsHuman = dsl.select(TASKS.TITLE).from(TASKS)
+                .where(TASKS.PROJECT_ID.isNull().and(TASKS.STATUS.eq(TaskStatus.NEEDS_HUMAN.dbValue())))
+                .orderBy(TASKS.CREATED_AT.asc(), TASKS.ID.asc()).limit(BriefSnapshot.MAX_NEEDS_HUMAN)
+                .fetch(r -> one(r.value1(), BriefSnapshot.TITLE));
+        return new TaskFacts(ordered(counted), integrated, needsHuman);
+    }
+
+    /** Counts by status in the order of a task's life, only statuses that have some. */
+    private static Map<String, Integer> ordered(Map<String, Integer> counted) {
         Map<String, Integer> byStatus = new LinkedHashMap<>();
         for (TaskStatus status : OPEN_TASKS) {
             Integer n = counted.get(status.dbValue());
             if (n != null && n > 0) byStatus.put(status.dbValue(), n);
         }
-        int integrated = dsl.fetchCount(TASK_EVENTS,
-                TASK_EVENTS.EVENT_TYPE.eq("integrated").and(TASK_EVENTS.CREATED_AT.gt(since)));
-        List<String> needsHuman = dsl.select(TASKS.TITLE).from(TASKS)
-                .where(TASKS.STATUS.eq(TaskStatus.NEEDS_HUMAN.dbValue()))
-                .orderBy(TASKS.CREATED_AT.asc(), TASKS.ID.asc()).limit(BriefSnapshot.MAX_NEEDS_HUMAN)
-                .fetch(r -> one(r.value1(), BriefSnapshot.TITLE));
-        return new TaskFacts(byStatus, integrated, needsHuman);
+        return byStatus;
     }
 
     private static int count(List<Closed> closed, String result) {

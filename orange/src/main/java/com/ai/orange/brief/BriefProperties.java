@@ -17,6 +17,8 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param publicUrl        where a phone reaches orange, without a trailing slash; blank = the push carries no link
  * @param linkTtl          how long a brief's page key opens its page
  * @param retention        briefs older than this are deleted
+ * @param onTrackMargin    how far, as a share, a dated milestone's merged tasks may trail its time gone before
+ *                         it is behind ({@link OnTrack}; remote-first spec §7.6)
  */
 @ConfigurationProperties(prefix = "orange.brief")
 public record BriefProperties(@DefaultValue("true") boolean enabled,
@@ -27,7 +29,8 @@ public record BriefProperties(@DefaultValue("true") boolean enabled,
                               @DefaultValue("60s") Duration focusWait,
                               String publicUrl,
                               @DefaultValue("48h") Duration linkTtl,
-                              @DefaultValue("30d") Duration retention) {
+                              @DefaultValue("30d") Duration retention,
+                              @DefaultValue("0.20") double onTrackMargin) {
 
     public BriefProperties {
         publicUrl = publicUrl == null ? "" : publicUrl.strip();

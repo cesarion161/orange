@@ -166,6 +166,9 @@ orange:
     link-ttl: 48h
     # Briefs older than this are deleted (their snapshots hold session text).
     retention: 30d
+    # A dated milestone is behind when one of its tasks is stuck, or when the share of its tasks merged
+    # trails the share of its time gone by more than this (0.20 = 20 points). orange's rule, not the model's.
+    on-track-margin: 0.20
   notify:
     # Off = nothing is pushed: no attention items and no brief.
     enabled: ${ORANGE_NOTIFY_ENABLED:true}
