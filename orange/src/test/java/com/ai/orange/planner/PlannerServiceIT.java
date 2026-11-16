@@ -106,6 +106,41 @@ class PlannerServiceIT {
     }
 
     @Test
+    void parsesAskFirstRiskReasonMilestoneAndEvidence() throws Exception {
+        Path dir = plannerOutputRoot.resolve(java.util.UUID.randomUUID().toString());
+        Files.createDirectories(dir.resolve("repo"));
+        String milestone = java.util.UUID.randomUUID().toString();
+
+        PlannerService.PlanResult result = service.plan(dir, "Build checkout. [[fake:plan-ask]] [[fake:plan-risky]] "
+                + "[[fake:plan-evidence]] [[fake:plan-milestone:" + milestone + "]]");
+
+        assertThat(result.status()).isEqualTo("success");
+        assertThat(result.outputDir()).isEqualTo(dir);
+        assertThat(result.planId().toString()).isEqualTo(dir.getFileName().toString());
+        assertThat(result.runId()).isNotNull();
+        PlanJson plan = result.plan();
+        assertThat(plan.askFirst()).isTrue();
+        assertThat(plan.reason()).isEqualTo("the request is ambiguous");
+        assertThat(plan.tasks().getFirst().risk()).isTrue();
+        assertThat(plan.tasks().getFirst().riskReason()).isEqualTo("touches the migrations");
+        assertThat(plan.evidence()).containsExactly("sh test.sh");
+        assertThat(plan.milestone()).isEqualTo(milestone);
+        // It ran in the directory the caller prepared, and saw the clone there at repo/.
+        assertThat(dsl.selectFrom(RUNS).where(RUNS.ID.eq(result.runId())).fetchSingle().getKind()).isEqualTo("plan");
+        assertThat(Files.readString(runRoot.resolve(result.runId() + "/claude-config/fake-probe.txt")))
+                .contains("repo=visible");
+        assertThat(Files.exists(dir.resolve("plan.json"))).isTrue();
+
+        PlannerService.PlanResult plain = service.plan("A plain plan [[fake:plan]]");
+        assertThat(Files.readString(runRoot.resolve(plain.runId() + "/claude-config/fake-probe.txt")))
+                .contains("repo=hidden");
+        assertThat(plain.plan().askFirst()).isFalse();
+        assertThat(plain.plan().evidence()).isEmpty();
+        assertThat(plain.plan().milestone()).isNull();
+        assertThat(plain.plan().tasks()).allSatisfy(t -> assertThat(t.risk()).isNotEqualTo(Boolean.TRUE));
+    }
+
+    @Test
     void planner_failure_is_reported_without_a_plan() throws Exception {
         PlannerService.PlanResult result = service.plan("This planner run fails. [[fake:error]]");
         assertThat(result.status()).isEqualTo("failure");

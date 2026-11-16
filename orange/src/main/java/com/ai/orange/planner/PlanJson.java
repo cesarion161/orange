@@ -17,10 +17,27 @@ import java.util.Map;
  *
  * <p>{@code ask_first} and {@code reason} are the planner's judgement on whether the user should see
  * the plan before it dispatches (remote-first spec §7.2); {@link PlanApproval} has the last word.
+ * {@code milestone} is the id of a milestone from the planner's prompt that the plan serves (orange
+ * checks it), and {@code evidence} the commands the planner proposes when none are in force: they
+ * go in force only when the user approves the plan. {@code evidence} is never null.
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record PlanJson(List<PlanTask> tasks, List<PlanEdge> edges, String project, String repo,
-                       @JsonProperty("ask_first") boolean askFirst, String reason) {
+                       @JsonProperty("ask_first") Boolean askFirst, String reason, String milestone,
+                       List<String> evidence) {
+
+    /** {@code askFirst} is boxed only for the wire (a missing field is null there); it is never null here. */
+    public PlanJson {
+        askFirst = Boolean.TRUE.equals(askFirst);
+        evidence = evidence == null ? List.of()
+                : evidence.stream().filter(c -> c != null && !c.isBlank()).map(String::strip).toList();
+    }
+
+    /** A plan that names no milestone and proposes no evidence. */
+    public PlanJson(List<PlanTask> tasks, List<PlanEdge> edges, String project, String repo, Boolean askFirst,
+                    String reason) {
+        this(tasks, edges, project, repo, askFirst, reason, null, null);
+    }
 
     /** A plan without the planner's judgement on asking first. */
     public PlanJson(List<PlanTask> tasks, List<PlanEdge> edges, String project, String repo) {
