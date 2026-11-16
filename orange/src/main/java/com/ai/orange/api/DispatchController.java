@@ -51,7 +51,7 @@ public class DispatchController {
     }
 
     /**
-     * Invalid plan (bad input, cycle) → 422 so the MCP shim
+     * Invalid plan (bad input, cycle) → 422 so an operator client
      * can surface the reason verbatim. Mirrors the handler in ClaimController.
      */
     @ExceptionHandler({IllegalArgumentException.class, DagCycleException.class})

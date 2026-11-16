@@ -1,10 +1,13 @@
 # orange (Claude Code plugin)
 
-One-install front-end for the [orange-ai](../) orchestrator. Ships:
+One-install front-end for the [orange-ai](../) orchestrator: one Claude Code tab steers orange, which plans, runs, checks and merges the work on its own machine. Ships:
 
-- the **session reporter** (`hooks/`) — tells orange when any of your Claude Code sessions starts, gets a prompt, stops, waits for you or ends, so orange can file what needs you and push the urgent part to your phone
-- the `orange-steering` MCP server (served by the coordinator at `/mcp/steering`) — the project space, the attention inbox, your sessions and the focus brief: `orange_projects`, `orange_project`, `orange_project_update`, `orange_add`, `orange_set`, `orange_accept`, `orange_drop`, `orange_done`, `orange_attention`, `orange_resolve`, `orange_sessions`, `orange_focus`
-- the `orange-orchestrate` skill — teaches the chat when and how to drive orange end-to-end (idea → planner → review → dispatch → live narration while the coordinator runs the agents)
+- the `orange-steering` MCP server (served by the coordinator at `/mcp/steering`):
+  - projects and their space: `orange_projects`, `orange_project`, `orange_project_create`, `orange_project_update`, `orange_add`, `orange_set`, `orange_accept`, `orange_drop`, `orange_done`;
+  - work: `orange_plan`, `orange_status`, `orange_task`, `orange_tail`, `orange_cancel`, `orange_pause`, `orange_resume`;
+  - what needs you: `orange_attention`, `orange_resolve`, `orange_sessions`, `orange_focus`;
+- the `orange` skill: the tab's flow, status → hand over work → follow → answer, and which tool does each;
+- the **session reporter** (`hooks/`): tells orange when any of your Claude Code sessions starts, gets a prompt, stops, waits for you or ends, so orange can answer routine stops and file what needs you, and gives the steering tab orange's status when it starts.
 
 ## Install
 
@@ -22,15 +25,30 @@ For a single session without installing: `claude --plugin-dir /path/to/orange-ai
 ## Prerequisites
 
 - `python3` on `$PATH` (the reporter; standard library only)
-- the orange coordinator running (`cd orange && ./gradlew bootRun`); with it down, sessions work as if the plugin were not there
+- an orange coordinator to talk to (`ORANGE_URL`, and `ORANGE_API_TOKEN` when it has one); with it down, sessions work as if the plugin were not there
 
-The task tools (`orange_plan`, `orange_dispatch`, …) are not part of the plugin: they come from the `orange` MCP server in this repository's own `.mcp.json` (the Python shim in `orange-mcp/`, which needs `uv`), so they are available in sessions inside this repo until v2 PR 5 moves them into the coordinator.
+## The steering tab
 
-## What the skill triggers on
+The steering tab is the one Claude Code session you talk to orange in. A session is the steering tab when Claude Code starts with `ORANGE_STEERING=1` in its environment, or in `~/.orange/steering` (or below it; `ORANGE_STEERING_DIR` names another directory). An alias makes it one word:
 
-The skill describes itself as fitting "build a feature", "implement / ship X", "plan + execute a project". When a user asks for non-trivial software development work in chat, the orchestrator skill kicks in: it asks only the follow-up questions the request leaves open, runs the planner, drops the resulting `plan.json` DAG in chat for review (nothing runs yet), and on approve dispatches it; the coordinator then runs the agents, verifies each task with its own evidence and integrates it.
+```bash
+alias orange='mkdir -p ~/.orange/steering && cd ~/.orange/steering && claude'
+```
 
-For small one-off tasks (a single file edit, a typo fix), the skill explicitly defers to the regular chat — orange is overkill below the multi-task threshold.
+`ORANGE_STEERING=1 claude` works too, from any directory.
+
+- **It starts from facts.** At its start (and after `/clear`) the reporter asks orange for a few lines of status (`GET /steering/context`) and adds them to the session's context: active projects, what is running, what waits for you. With orange out of reach it starts without them.
+- **orange never judges it.** Its stops are you talking to orange: orange records the session, but queues no judge for it, files nothing about it and maps it to no project, whatever directory it runs in.
+- **Nothing lives in it.** Projects, plans, tasks and questions are all in orange: clear the tab or open a new one whenever you like.
+
+What you say there:
+
+- "what's the status", "are we on track": `orange_status`; "what's new", "where should I focus": `orange_focus`;
+- "start a project X on owner/repo" (or "with a new repo"): `orange_project_create`; give it the commands that prove work is done (`evidence`), or orange can implement there but never merges;
+- "build X in Y": `orange_plan`. orange plans in the background and then dispatches the tasks itself, or asks you first with one attention item: always when the project has no evidence commands yet, otherwise when the plan is large or risky or the project's `plan-approval` convention says `always`;
+- "what is task 1a2b3c4d doing": `orange_task`, `orange_tail`; "cancel it": `orange_cancel`; "stop everything": `orange_pause`, then `orange_resume`;
+- "what needs me": `orange_attention`; answer with `orange_resolve`: `approve`, `drop` or a note for a plan; for a stuck task, the answer reopens it with the answer as its note. A stuck task's branch is on GitHub as `orange/task/<short id>` so you can look at it first;
+- milestones: `orange_add` with `kind: milestone` and a `due` date, then plan work with `milestone`; the status and the brief then say whether it is on track or behind, from orange's own count.
 
 ## The session reporter
 
@@ -49,6 +67,8 @@ Set these in the shell your sessions start from:
 | `ORANGE_NODE` | the hostname | this machine's name in orange |
 | `ORANGE_REPORT` | `1` | `0` switches the reporter off |
 | `ORANGE_HOOK_WAIT` | `600` | seconds a Stop hook waits for orange's verdict; `0` = never wait |
+| `ORANGE_STEERING` | none | `1` makes the session the steering tab |
+| `ORANGE_STEERING_DIR` | `~/.orange/steering` | a session at or under it is the steering tab |
 
 orange's own agent runs use a private `CLAUDE_CONFIG_DIR`, so the reporter never fires inside them.
 

@@ -1,5 +1,5 @@
 {
   "name": "orange",
-  "version": "0.2.3",
-  "description": "orange's session reporter and steering tools: orange watches your Claude Code sessions, answers routine stops itself and files what needs you."
+  "version": "0.3.0",
+  "description": "orange in one Claude Code tab: start projects, hand over work, follow it and answer what needs you, while orange plans, runs, checks and merges it. Its reporter tells orange about your other sessions, so it answers routine stops and files what needs you."
 }
