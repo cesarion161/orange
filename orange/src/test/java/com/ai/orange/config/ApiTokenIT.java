@@ -54,6 +54,19 @@ class ApiTokenIT {
     }
 
     @Test
+    void steeringContextNeedsTheToken() throws Exception {
+        assertThat(status("GET", "/steering/context", null)).isEqualTo(403);
+        assertThat(status("GET", "/steering/context", "wrong")).isEqualTo(403);
+        HttpResponse<String> ok = http.send(HttpRequest.newBuilder(
+                        URI.create("http://127.0.0.1:" + port + "/steering/context"))
+                .header("Authorization", "Bearer t0ken").GET().build(), HttpResponse.BodyHandlers.ofString());
+        assertThat(ok.statusCode()).isEqualTo(200);
+        assertThat(ok.headers().firstValue("Content-Type").orElse("")).startsWith("text/plain");
+        assertThat(ok.body()).contains("build X in <project>");
+        assertThat(ok.body().lines().count()).isLessThanOrEqualTo(8);
+    }
+
+    @Test
     void probesAndEndpointsWithTheirOwnAuthStayOpen() throws Exception {
         assertThat(status("GET", "/actuator/health", null)).isEqualTo(200);
         assertThat(status("GET", "/api/ready", null)).isEqualTo(200);
