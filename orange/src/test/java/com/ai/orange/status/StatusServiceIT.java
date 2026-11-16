@@ -89,7 +89,10 @@ class StatusServiceIT {
         assertThat(total(after.unplacedByState()) - total(before.unplacedByState()))
                 .isEqualTo(StatusService.MAX_TASKS + 2);
         int inFlight = total(after.unplacedByState()) - after.unplacedByState().getOrDefault("needs_human", 0);
-        assertThat(StatusText.startContext(after)).contains("no project: " + inFlight + " in flight");
+        // The start context says the full count (read alone: the suite's other projects may fill its lines).
+        StatusReport alone = new StatusReport(after.at(), null, List.of(), 0, 0, 0, after.unplaced(),
+                after.unplacedByState());
+        assertThat(StatusText.startContext(alone)).contains("no project: " + inFlight + " in flight");
     }
 
     @Test
