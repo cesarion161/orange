@@ -45,26 +45,28 @@ public class SecurityConfig {
         http
                 .csrf(csrf -> csrf.disable())  // we expose no browser forms; all writes are HMAC- or token-authenticated
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/actuator/health", "/actuator/info", "/actuator/prometheus").permitAll()
+                        // Probes, and the endpoints that authenticate themselves
+                        .requestMatchers("/actuator/health", "/actuator/info").permitAll()
+                        .requestMatchers("/api/ready", "/api/status").permitAll()  // liveness pings: no data
                         .requestMatchers("/webhooks/github").permitAll()  // HMAC filter authenticates instead
                         .requestMatchers("/mcp/worker").permitAll()       // WorkerTokenFilter authenticates (per-run bearer token)
                         .requestMatchers("/error").permitAll()             // Tomcat forwards here on sendError(); must not denyAll
-                        .requestMatchers("/tasks", "/tasks/**").permitAll()  // operator-driven; auth lands later
-                        .requestMatchers("/plans", "/plans/**").permitAll()  // operator-driven; auth lands later
-                        .requestMatchers("/dispatch", "/dispatch/**").permitAll()  // operator-driven; auth lands later
-                        .requestMatchers("/scheduler", "/scheduler/**").permitAll()  // operator-driven; auth lands later
-                        .requestMatchers("/runs/**").permitAll()  // operator-driven; auth lands later
-                        .requestMatchers("/events/**").permitAll()           // live narration feed
-                        // nodes and steering clients: the API token, when orange.api.token is set
+                        .requestMatchers("/brief/*").permitAll()  // one brief: its page key or the API token, checked by BriefPageController
+                        // Everything else is the operator's, and wants the API token when orange.api.token is set.
+                        // Behind tailscale serve every request comes from 127.0.0.1, so the address proves nothing.
+                        .requestMatchers("/actuator/**").access(hasApiToken)
+                        .requestMatchers("/tasks", "/tasks/**").access(hasApiToken)
+                        .requestMatchers("/plans", "/plans/**").access(hasApiToken)
+                        .requestMatchers("/dispatch", "/dispatch/**").access(hasApiToken)
+                        .requestMatchers("/scheduler", "/scheduler/**").access(hasApiToken)
+                        .requestMatchers("/runs/**").access(hasApiToken)
+                        .requestMatchers("/events/**").access(hasApiToken)           // live narration feed
                         .requestMatchers("/sessions", "/sessions/**").access(hasApiToken)
                         .requestMatchers("/attention", "/attention/**").access(hasApiToken)
                         .requestMatchers("/mcp/steering").access(hasApiToken)
                         .requestMatchers("/brief").access(hasApiToken)  // the latest brief
-                        .requestMatchers("/brief/*").permitAll()  // one brief: its page key or the API token, checked by BriefPageController
-                        .requestMatchers("/dev-envs", "/dev-envs/**").permitAll()
-                        .requestMatchers("/health/**").permitAll()
-                        .requestMatchers("/api/status").permitAll()  // status smoke check
-                        .requestMatchers("/api/ready").permitAll()  // smoke / readiness probe
+                        .requestMatchers("/dev-envs", "/dev-envs/**").access(hasApiToken)
+                        .requestMatchers("/health/**").access(hasApiToken)
                         .anyRequest().denyAll()
                 )
                 // First of the two: a run's request is refused before anything else looks at it.

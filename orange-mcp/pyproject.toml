@@ -5,7 +5,7 @@ description = "MCP server that lets Claude Code drive the orange-ai orchestrator
 requires-python = ">=3.11"
 readme = "README.md"
 dependencies = [
-    "mcp>=1.0",
+    "mcp>=1.0,<2",  # 2.x drops Server.list_tools; R4 replaces this shim
     "httpx>=0.27",
 ]
 

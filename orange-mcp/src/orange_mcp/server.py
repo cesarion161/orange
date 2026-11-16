@@ -15,7 +15,8 @@ dispatch, watch and steer that work. (orange v2 replaces this shim with an MCP
 endpoint served by the coordinator.)
 
 Configuration via env vars:
-  ORANGE_BASE_URL          base URL of the orange-ai REST API (default localhost:8080)
+  ORANGE_BASE_URL          base URL of the orange-ai REST API (else ORANGE_URL, else localhost:8080)
+  ORANGE_API_TOKEN         bearer token, when the coordinator wants one (always on the VPS)
 """
 
 from __future__ import annotations
@@ -30,7 +31,10 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-BASE_URL = os.environ.get("ORANGE_BASE_URL", "http://localhost:8080").rstrip("/")
+BASE_URL = (os.environ.get("ORANGE_BASE_URL") or os.environ.get("ORANGE_URL")
+            or "http://localhost:8080").rstrip("/")
+_TOKEN = os.environ.get("ORANGE_API_TOKEN", "").strip()
+HEADERS = {"Authorization": f"Bearer {_TOKEN}"} if _TOKEN else {}
 
 server: Server = Server("orange-mcp")
 
@@ -328,7 +332,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 async def _plan(args: dict[str, Any]) -> list[TextContent]:
     description = args["description"]
     body = {"description": description}
-    async with httpx.AsyncClient(timeout=httpx.Timeout(600.0)) as client:
+    async with httpx.AsyncClient(headers=HEADERS, timeout=httpx.Timeout(600.0)) as client:
         r = await client.post(f"{BASE_URL}/plans", json=body)
         if r.status_code == 422:
             payload = r.json()
@@ -350,7 +354,7 @@ async def _dispatch(args: dict[str, Any]) -> list[TextContent]:
     else:
         body["plan"] = plan
         body["architectureMd"] = args.get("architecture_md")
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(headers=HEADERS, timeout=60.0) as client:
         r = await client.post(f"{BASE_URL}/dispatch", json=body)
         if r.status_code in (404, 422):
             payload = r.json()
@@ -363,7 +367,7 @@ async def _dispatch(args: dict[str, Any]) -> list[TextContent]:
 async def _create_task(args: dict[str, Any]) -> list[TextContent]:
     body = {k: v for k, v in args.items() if v is not None}
     body.setdefault("role", "implementer")
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(headers=HEADERS, timeout=30.0) as client:
         r = await client.post(f"{BASE_URL}/tasks", json=body)
         r.raise_for_status()
         payload = r.json()
@@ -380,7 +384,7 @@ async def _list_tasks(args: dict[str, Any]) -> list[TextContent]:
         params["status"] = args["status"]
     if args.get("limit"):
         params["limit"] = args["limit"]
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(headers=HEADERS, timeout=30.0) as client:
         r = await client.get(f"{BASE_URL}/tasks", params=params)
         r.raise_for_status()
         rows = r.json()
@@ -394,7 +398,7 @@ async def _list_tasks(args: dict[str, Any]) -> list[TextContent]:
 
 
 async def _task(args: dict[str, Any]) -> list[TextContent]:
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(headers=HEADERS, timeout=30.0) as client:
         r = await client.get(f"{BASE_URL}/tasks/{args['task_id']}")
         r.raise_for_status()
         row = r.json()
@@ -413,7 +417,7 @@ async def _tail(args: dict[str, Any]) -> list[TextContent]:
     params: dict[str, Any] = {"since": args.get("since", 0)}
     if args.get("limit"):
         params["limit"] = args["limit"]
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(headers=HEADERS, timeout=30.0) as client:
         r = await client.get(f"{BASE_URL}/tasks/{args['task_id']}/events", params=params)
         r.raise_for_status()
         rows = r.json()
@@ -442,7 +446,7 @@ async def _tail(args: dict[str, Any]) -> list[TextContent]:
 
 
 async def _cancel(args: dict[str, Any]) -> list[TextContent]:
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(headers=HEADERS, timeout=30.0) as client:
         r = await client.post(f"{BASE_URL}/tasks/{args['task_id']}/cancel")
         if r.status_code == 409:
             return _err(f"task {args['task_id']} is already in a terminal state")
@@ -462,7 +466,7 @@ async def _status_live(args: dict[str, Any]) -> list[TextContent]:
         params["role"] = args["role"]
     if args.get("per_task_limit"):
         params["limit"] = args["per_task_limit"]
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with httpx.AsyncClient(headers=HEADERS, timeout=15.0) as client:
         r = await client.get(f"{BASE_URL}/events/live", params=params)
         r.raise_for_status()
         rows = r.json()
@@ -481,7 +485,7 @@ async def _status_live(args: dict[str, Any]) -> list[TextContent]:
 async def _replay_task(args: dict[str, Any]) -> list[TextContent]:
     task_id = args["task_id"]
     body = {"actor": args.get("actor")}
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with httpx.AsyncClient(headers=HEADERS, timeout=15.0) as client:
         r = await client.post(f"{BASE_URL}/tasks/{task_id}/replay", json=body)
         if r.status_code == 404:
             return _err(f"task {task_id} not found")
@@ -496,7 +500,7 @@ async def _replay_task(args: dict[str, Any]) -> list[TextContent]:
 async def _reopen_task(args: dict[str, Any]) -> list[TextContent]:
     task_id = args["task_id"]
     body = {"reason": args.get("reason"), "actor": args.get("actor")}
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with httpx.AsyncClient(headers=HEADERS, timeout=15.0) as client:
         r = await client.post(f"{BASE_URL}/tasks/{task_id}/reopen", json=body)
         if r.status_code == 404:
             return _err(f"task {task_id} not found")
@@ -512,7 +516,7 @@ async def _reopen_task(args: dict[str, Any]) -> list[TextContent]:
 
 
 async def _health(_args: dict[str, Any]) -> list[TextContent]:
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(headers=HEADERS, timeout=10.0) as client:
         r = await client.get(f"{BASE_URL}/health/aggregate")
         r.raise_for_status()
         payload = r.json()
@@ -540,7 +544,7 @@ async def _health(_args: dict[str, Any]) -> list[TextContent]:
 
 
 async def _envs(_args: dict[str, Any]) -> list[TextContent]:
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(headers=HEADERS, timeout=10.0) as client:
         r = await client.get(f"{BASE_URL}/dev-envs")
         r.raise_for_status()
         rows = r.json()
