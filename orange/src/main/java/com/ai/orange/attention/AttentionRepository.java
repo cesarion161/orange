@@ -71,6 +71,14 @@ public class AttentionRepository {
                 .fetch().map(AttentionRepository::toDomain);
     }
 
+    /** A task's items that are not resolved yet, oldest first. */
+    public List<AttentionItem> findUnresolvedByTask(UUID taskId) {
+        return dsl.selectFrom(ATTENTION_ITEMS)
+                .where(ATTENTION_ITEMS.TASK_ID.eq(taskId).and(ATTENTION_ITEMS.STATUS.ne(AttentionItem.RESOLVED)))
+                .orderBy(ATTENTION_ITEMS.CREATED_AT.asc(), ATTENTION_ITEMS.ID.asc())
+                .fetch().map(AttentionRepository::toDomain);
+    }
+
     /** Open, unpushed items the notifier may push: urgent and critical, oldest first. */
     public List<AttentionItem> findUnpushed() {
         return dsl.selectFrom(ATTENTION_ITEMS)

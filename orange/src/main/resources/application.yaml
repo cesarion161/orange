@@ -37,6 +37,8 @@ orange:
     # A fine-grained personal access token per owner, owner=token[,owner=token]. orange's own git
     # gets it through a credential helper; it never reaches a container, a log or a file.
     tokens: ${ORANGE_GITHUB_TOKENS:}
+    # GitHub's REST API, where orange_project_create makes a repo (create: true). Blank: GitHub's own.
+    github-api-url: ${ORANGE_GITHUB_API_URL:https://api.github.com}
   worktrees:
     # Outside every repository (v2 decision 15): one directory per task, named by its id.
     root: ${WORKTREES_ROOT:${user.home}/.orange/worktrees}
