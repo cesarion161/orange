@@ -1,5 +1,6 @@
 package com.ai.orange.task;
 
+import com.ai.orange.attention.AttentionRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
@@ -26,12 +27,15 @@ public class TaskService {
     private final TaskEdgeRepository edges;
     private final TaskEventRepository events;
     private final DagValidator dagValidator;
+    private final AttentionRepository attention;
     private final ObjectMapper json = new ObjectMapper();
 
     public TaskService(TaskRepository tasks,
                        TaskEdgeRepository edges,
                        TaskEventRepository events,
-                       DagValidator dagValidator) {
+                       DagValidator dagValidator,
+                       AttentionRepository attention) {
+        this.attention = attention;
         this.tasks = tasks;
         this.edges = edges;
         this.events = events;
@@ -97,13 +101,25 @@ public class TaskService {
      * {@code reopen_reason} block in metadata for the next attempt's prompt. CANCELLED stays
      * terminal — that was an explicit user decision.
      *
-     * <p>Called through {@code POST /tasks/{id}/reopen}.
+     * <p>Called through {@code POST /tasks/{id}/reopen}. The task's open attention items are resolved
+     * ({@code reopened}): the question they asked is answered by the reopen.
      *
      * @return {@code true} if the task was actually transitioned. {@code false}
      *     if the task was in a non-reopenable state.
      */
     @Transactional
     public boolean reopenTask(UUID taskId, String reason, String actor) {
+        if (!reopen(taskId, reason, actor)) return false;
+        attention.resolveForTask(taskId, actor == null ? "system" : actor, "reopened");
+        return true;
+    }
+
+    /**
+     * The reopen itself, leaving the task's attention items as they are: {@link TaskAttention} reopens
+     * from inside the resolve of the item that carries the answer, which records that answer itself.
+     */
+    @Transactional
+    boolean reopen(UUID taskId, String reason, String actor) {
         Task t = tasks.findById(taskId).orElse(null);
         if (t == null) return false;
         if (t.status() != TaskStatus.FAILED && t.status() != TaskStatus.NEEDS_HUMAN) {
@@ -130,7 +146,8 @@ public class TaskService {
     }
 
     /**
-     * Copy an existing task as a fresh ready task. Same title/description/role;
+     * Copy an existing task as a fresh ready task. Same title/description/role, project, repo, plan
+     * and milestone; the original's open attention items are resolved ({@code replayed});
      * metadata gets a {@code replayed_from} pointer back to the
      * original so the agent can see the lineage and the operator can audit it.
      * No dependencies are copied — replay is a clean re-attempt, not a graph
@@ -151,10 +168,14 @@ public class TaskService {
                 src.role(),
                 src.priority(),
                 asJsonb(meta),
-                new com.ai.orange.project.TaskPlacement(src.projectId(), src.repoId()));
+                new com.ai.orange.project.TaskPlacement(src.projectId(), src.repoId()),
+                src.planId(),
+                src.milestoneId());
         Task created = createGraph(List.of(def), List.of()).get(0);
         events.append(created.id(), actor == null ? "system" : actor, "task_replayed",
                 asJsonb(Map.of("source_task_id", sourceTaskId.toString())));
+        // The copy is the re-attempt: what the original asked of the user is answered by it.
+        attention.resolveForTask(sourceTaskId, actor == null ? "system" : actor, "replayed");
         return created;
     }
 

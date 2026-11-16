@@ -31,6 +31,12 @@ public record AttentionItem(UUID id, UUID projectId, UUID sessionId, UUID taskId
     public static final String PROJECT_PROPOSED = "project_proposed";
     /** The brief's model flagged something that cannot wait for the next brief and was not in the inbox. */
     public static final String BRIEF_URGENT = "brief_urgent";
+    /** orange holds a plan for the user's approve, drop or note (remote-first spec §7.2). */
+    public static final String PLAN_APPROVAL = "plan_approval";
+    /** The planner did not deliver a plan the user asked for. */
+    public static final String PLAN_FAILED = "plan_failed";
+    /** A task is stuck and waits for a person (remote-first spec §7.5). */
+    public static final String TASK_NEEDS_HUMAN = "task_needs_human";
 
     public boolean critical() {
         return CRITICAL.equals(urgency);

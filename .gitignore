@@ -11,7 +11,7 @@
 .DS_Store
 Thumbs.db
 
-# Python (covers orange-mcp/)
+# Python (the plugin's hooks)
 __pycache__/
 *.py[cod]
 *$py.class

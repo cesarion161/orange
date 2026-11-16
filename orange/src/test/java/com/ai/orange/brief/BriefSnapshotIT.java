@@ -31,6 +31,7 @@ import com.ai.orange.session.Session;
 import com.ai.orange.session.SessionService;
 import com.ai.orange.session.SessionWork;
 import com.ai.orange.session.SessionWorkRepository;
+import com.ai.orange.project.TaskPlacement;
 import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskDef;
 import com.ai.orange.task.TaskEventRepository;
@@ -70,6 +71,7 @@ class BriefSnapshotIT {
     @Autowired TaskService tasks;
     @Autowired TaskEventRepository taskEvents;
     @Autowired DSLContext dsl;
+    @Autowired BriefRepository briefs;
 
     /** The moment the test reads its facts at, and the start of what its brief covers. */
     final ZonedDateTime now = ZonedDateTime.now(ZoneOffset.UTC).truncatedTo(ChronoUnit.MILLIS);
@@ -588,6 +590,73 @@ class BriefSnapshotIT {
         assertThat(s.tasks().needsHuman().get(0)).isEqualTo("Rotate the key");
         assertThat(s.tasks().needsHuman().get(1)).startsWith("Second in line zzz").hasSize(BriefSnapshot.TITLE);
         assertThat(s.projects()).isEmpty();
+    }
+
+    @Test
+    void projectTasksAppearUnderTheirProject() {
+        Project p = active("alpha");
+        SpaceItem beta = space.add(p.id(), SpaceItem.MILESTONE, "Beta", Author.USER,
+                now.toOffsetDateTime().plusDays(3), null, null);
+        TaskPlacement alpha = new TaskPlacement(p.id(), null);
+        List<Task> created = tasks.createGraph(List.of(
+                new TaskDef("a", "Pick a  database", null, null, null, null, alpha, null, beta.id()),
+                new TaskDef("b", "Build the API", null, null, null, null, alpha, null, beta.id()),
+                new TaskDef("c", "Ship it", null, null, null, null, alpha, null, beta.id()),
+                new TaskDef("d", "Orange's own", null, null, null, null)), List.of());
+        status(created.get(0), "needs_human");
+        status(created.get(1), "running");
+        status(created.get(2), "integrated");
+        taskEvents.append(created.get(2).id(), "orange", "integrated", null);
+
+        BriefSnapshot s = read();
+
+        ProjectFacts facts = facts(s, "alpha");
+        assertThat(facts.tasks().byStatus()).containsExactly(entry("running", 1), entry("needs_human", 1));
+        assertThat(facts.tasks().integratedSince()).isEqualTo(1);
+        assertThat(facts.tasks().needsHuman()).containsExactly("Pick a database");
+        Milestone m = facts.milestones().getFirst();
+        assertThat(m.id()).isEqualTo(beta.id().toString());
+        assertThat(m.tasks()).containsExactly(entry(MilestoneTracks.MERGED, 1), entry(MilestoneTracks.RUNNING, 1),
+                entry(MilestoneTracks.STUCK, 1));
+        assertThat(m.track()).isEqualTo(OnTrack.BEHIND);
+        // The top level keeps only the tasks of no project.
+        assertThat(s.tasks().byStatus()).containsExactly(entry("ready", 1));
+        assertThat(s.tasks().integratedSince()).isZero();
+        assertThat(s.tasks().needsHuman()).isEmpty();
+        assertThat(s.hasNews(s)).as("a project's task waits for a person").isTrue();
+        assertThat(BriefSnapshot.parse(s.toJsonb())).isEqualTo(s);
+    }
+
+    @Test
+    void aStoredSnapshotWithoutTheNewFieldsStillParses() throws Exception {
+        Project p = active("alpha");
+        space.add(p.id(), SpaceItem.MILESTONE, "Beta", Author.USER, now.toOffsetDateTime().plusDays(3), null, null);
+        ObjectNode stored = (ObjectNode) Json.mapper().readTree(read().toJsonb().data());
+        // As a brief written before milestones knew their tasks stored it.
+        for (var project : stored.get("projects")) {
+            ((ObjectNode) project).remove("tasks");
+            for (var milestone : project.get("milestones")) {
+                ((ObjectNode) milestone).remove(List.of("id", "tasks", "track"));
+            }
+        }
+        assertThat(stored.toString()).doesNotContain("\"track\"");
+        dsl.insertInto(BRIEFS).set(BRIEFS.SNAPSHOT_AT, now.toOffsetDateTime())
+                .set(BRIEFS.SNAPSHOT, org.jooq.JSONB.valueOf(stored.toString()))
+                .set(BRIEFS.PAGE_KEY, "k".repeat(32)).set(BRIEFS.PUSHABLE, false).execute();
+
+        Brief brief = briefs.latest().orElseThrow();
+        BriefSnapshot s = BriefSnapshot.parse(brief.snapshot());
+
+        ProjectFacts alpha = facts(s, "alpha");
+        assertThat(alpha.tasks().byStatus()).isEmpty();
+        assertThat(alpha.tasks().needsHuman()).isEmpty();
+        Milestone m = alpha.milestones().getFirst();
+        assertThat(m.text()).isEqualTo("Beta");
+        assertThat(m.id()).isNull();
+        assertThat(m.tasks()).isEmpty();
+        assertThat(m.track()).isNull();
+        assertThat(BriefText.text(brief)).contains("Beta due in 3 days");
+        assertThat(BriefText.html(brief)).contains("Beta");
     }
 
     void status(Task task, String status) {

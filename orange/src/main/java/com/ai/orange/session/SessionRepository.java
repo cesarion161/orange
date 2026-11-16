@@ -74,6 +74,7 @@ public class SessionRepository {
                 .set(SESSIONS.STOP_EVENT_ID, s.stopEventId())
                 .set(SESSIONS.HEAD_SHA, s.headSha())
                 .set(SESSIONS.DIRTY_FILES, dirtyJson(s.dirtyFiles()))
+                .set(SESSIONS.STEERING, s.steering())
                 .where(SESSIONS.ID.eq(s.id()))
                 .execute();
     }
@@ -140,7 +141,7 @@ public class SessionRepository {
                 r.getRepoRoot(), r.getBranch(), r.getWorktree(), r.getIntent(), r.getStatus(), r.getWaitingReason(),
                 r.getWaitingSince(), r.getLastMessage(), r.getAutoContinues(), r.getLastEventAt(),
                 r.getLastUserPromptAt(), r.getClosedReason(), r.getCreatedAt(), r.getStopEventId(), r.getHeadSha(),
-                dirtyFiles(r.getDirtyFiles()));
+                dirtyFiles(r.getDirtyFiles()), r.getSteering());
     }
 
     private static JSONB dirtyJson(java.util.List<String> files) {

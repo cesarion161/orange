@@ -83,10 +83,16 @@ public class SessionService {
         Session s = sessions.lock(e.harness(), e.sessionId())
                 .orElseGet(() -> sessions.insert(e.harness(), e.sessionId(), e.node()));
 
-        Project project = e.repoRoot() == null ? null
+        // The steering tab (remote-first spec decision 8): its reporter marks its events, and once marked a
+        // session stays steering. It is the user talking to orange, so it belongs to no project (its cwd
+        // proposes none), is never judged and files nothing.
+        boolean steering = s.steering() || e.payload().path("steering").asBoolean(false);
+        Project project = steering || e.repoRoot() == null ? null
                 : projectService.resolve(e.node(), e.repoRoot(), e.remoteUrl(), e.defaultBranch());
-        if (project == null && s.projectId() != null) project = projects.findById(s.projectId()).orElse(null);
-        boolean muted = project != null && project.archived();
+        if (!steering && project == null && s.projectId() != null) {
+            project = projects.findById(s.projectId()).orElse(null);
+        }
+        boolean muted = steering || project != null && project.archived();
 
         String lastMessage = e.payloadText("last_message");
         boolean asks = NeutralEvent.STOPPED.equals(e.type()) && QuestionDetector.asks(lastMessage);
@@ -123,7 +129,7 @@ public class SessionService {
             newIntent = work.openIfNone(s.id(), first) && hadWork;
         }
         Session next = new Session(s.id(),
-                project != null ? project.id() : s.projectId(),
+                steering ? null : project != null ? project.id() : s.projectId(),
                 s.harness(), s.externalId(), e.node(),
                 coalesce(e.cwd(), s.cwd()),
                 coalesce(e.repoRoot(), s.repoRoot()),
@@ -143,7 +149,8 @@ public class SessionService {
                 NeutralEvent.STOPPED.equals(e.type()) ? e.eventId() : d.status() == null ? s.stopEventId() : null,
                 // What the stop says of the checkout; a stop that says nothing leaves nothing stale behind.
                 NeutralEvent.STOPPED.equals(e.type()) ? e.payloadText("head_sha") : s.headSha(),
-                NeutralEvent.STOPPED.equals(e.type()) ? reportedFiles(e) : s.dirtyFiles());
+                NeutralEvent.STOPPED.equals(e.type()) ? reportedFiles(e) : s.dirtyFiles(),
+                steering);
         sessions.save(next);
         sessions.addEvent(s.id(), e.type(), JSONB.valueOf(e.payload().toString()), e.at());
 
@@ -179,7 +186,7 @@ public class SessionService {
             Project project = s.projectId() == null ? null : projects.findById(s.projectId()).orElse(null);
             SessionReactor.Sweep sweep = SessionReactor.onSweep(s.waitingReason(),
                     Duration.between(s.waitingSince(), now), props.waitingEscalateAfter(), props.idleAfter(),
-                    project != null && project.archived());
+                    s.steering() || project != null && project.archived());
             if (sweep.escalate()) {
                 int n = attentionItems.escalateForSession(s.id(),
                         List.of(AttentionItem.SESSION_QUESTION, AttentionItem.SESSION_WAITING), AttentionItem.URGENT);

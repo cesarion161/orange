@@ -134,6 +134,12 @@ class BriefSnapshotTest {
                 .build().hasNews(before)).as("a task that needs a person").isTrue();
         assertThat(snapshot(project("orange-ai")).tasks(tasks(0, List.of(), "needs_human", 1)).build()
                 .hasNews(before)).as("a task that needs a person, by count").isTrue();
+        assertThat(snapshot(project("orange-ai").tasks(tasks(1, List.of()))).build().hasNews(before))
+                .as("a project's integrated task").isTrue();
+        assertThat(snapshot(project("orange-ai").tasks(tasks(0, List.of("Pick a database"), "needs_human", 1)))
+                .build().hasNews(before)).as("a project's task that needs a person").isTrue();
+        assertThat(snapshot(project("orange-ai").tasks(tasks(0, List.of(), "needs_human", 1))).build()
+                .hasNews(before)).as("a project's task that needs a person, by count").isTrue();
         assertThat(snapshot(project("orange-ai").milestone(milestoneIn("Beta", -1))).build().hasNews(before))
                 .as("an overdue milestone").isTrue();
         assertThat(snapshot(project("orange-ai").milestone(milestone("Beta", "2026-11-10T08:00+01:00", 0, 100,
@@ -152,7 +158,7 @@ class BriefSnapshotTest {
                 .milestone(milestoneIn("Beta", 3))
                 .milestone(milestone("Someday", null, null, null, false, null))
                 .session(session("working", "feat/x", "Build the brief")),
-                project("blog").quiet(tooNew()))
+                project("blog").quiet(tooNew()).tasks(tasks(0, List.of(), "running", 1)))
                 .otherProjects("a").proposedAndPaused(1, 1)
                 .tasks(tasks(0, List.of(), "running", 2, "pending", 4)).build().hasNews(before))
                 .as("work under way, a milestone three days away, tasks running").isFalse();

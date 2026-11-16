@@ -73,7 +73,7 @@ class WorkerMcpRealClaudeLiveIT {
         allowed.addAll(List.of("mcp__orange__report_result", "mcp__orange__request_human"));
         RunSpec spec = new RunSpec(UUID.randomUUID(), "Reply with exactly: ORANGE_OK", "You are orange's MCP check.",
                 "claude-haiku-5-5", "claude-haiku-5-5", Effort.LOW, cwd, tools, allowed, List.of(), "acceptEdits",
-                mcpConfig, new Credentials.Subscription("sk-ant-oat01-orange-mcp-check-not-a-real-token"),
+                mcpConfig, new Credentials.Subscription("sk-ant-oat01-orange-worker-mcp-check-not-a-real-token"),
                 Duration.ofMinutes(2));
 
         List<RunEvent> events = new CopyOnWriteArrayList<>();

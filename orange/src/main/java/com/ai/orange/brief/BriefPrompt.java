@@ -123,6 +123,14 @@ public final class BriefPrompt {
             refs.fence(ref, "intent", c.intent(), BriefSnapshot.TEXT);
         }
 
+        String tasks = tasksWords(p.tasks());
+        b.append("Tasks: ").append(tasks == null ? "none" : tasks).append('\n');
+        for (String title : p.tasks().needsHuman()) {
+            String ref = refs.next('t');
+            b.append("- ").append(ref).append(": needs a person\n");
+            refs.fence(ref, "title", title, BriefSnapshot.TITLE);
+        }
+
         int waiting = Math.max(p.waitingTotal(), p.waiting().size());
         b.append("Waiting on the user: ").append(waiting == 0 ? "nothing" : waitingWords(waiting, p.waitingUrgent()))
                 .append(shown(waiting, p.waiting().size())).append('\n');
@@ -180,11 +188,37 @@ public final class BriefPrompt {
             b.append("; ").append(m.elapsedPercent()).append("% of its time has passed");
         }
         if (m.closedSince() != null) {
-            // Nothing links work to a milestone: the count is the project's, and it says so every time.
+            // Nothing links a session's work to a milestone: the count is the project's, and it says so every time.
             b.append("; ").append(count(m.closedSince(), "piece of work", "pieces of work"))
                     .append(" closed in the project since it was set (not linked to this milestone)");
         }
-        return b.toString();
+        return b.append(milestoneTasksAndVerdict(m)).toString();
+    }
+
+    /** {@code ; tasks: 1 merged, 1 stuck; orange's verdict: BEHIND}; empty when it has no task. */
+    private static String milestoneTasksAndVerdict(Milestone m) {
+        String tasks = milestoneTasksWords(m);
+        if (tasks == null) return "";
+        String verdict = trackWords(m.track());
+        return "; tasks: " + tasks + (verdict == null ? "" : "; orange's verdict: "
+                + (OnTrack.BEHIND.equals(m.track()) ? verdict.toUpperCase(Locale.ROOT) : verdict));
+    }
+
+    /** {@code 2 merged, 1 running, 1 stuck, 1 not started}; null when the milestone has no task. */
+    static String milestoneTasksWords(Milestone m) {
+        List<String> parts = new ArrayList<>();
+        for (String state : MilestoneTracks.STATES) {
+            Integer n = m.tasks().get(state);
+            if (n != null && n > 0) parts.add(n + " " + state.replace('_', ' '));
+        }
+        return parts.isEmpty() ? null : String.join(", ", parts);
+    }
+
+    /** {@code on track} or {@code behind}, orange's label in words; null for none. */
+    static String trackWords(String track) {
+        if (OnTrack.ON_TRACK.equals(track)) return "on track";
+        if (OnTrack.BEHIND.equals(track)) return "behind";
+        return null;
     }
 
     /** {@code in 21 days}, {@code today} or {@code 3 days overdue}. */
@@ -315,6 +349,11 @@ public final class BriefPrompt {
 
     /** {@code 3 running, 1 needs a person; 2 integrated since the last brief}; null when there is no task to speak of. */
     static String tasksWords(TaskFacts t) {
+        return tasksWords(t, "; ");
+    }
+
+    /** As above, with {@code beforeIntegrated} between the open tasks and the integrated ones. */
+    static String tasksWords(TaskFacts t, String beforeIntegrated) {
         Map<String, Integer> counts = new HashMap<>(t.byStatus());
         List<String> parts = new ArrayList<>();
         for (String status : TASK_STATUSES) {
@@ -332,7 +371,8 @@ public final class BriefPrompt {
                 .forEach(e -> parts.add(e.getValue() + " " + line(e.getKey(), 40)));
         String words = String.join(", ", parts);
         if (t.integratedSince() > 0) {
-            words = (words.isEmpty() ? "" : words + "; ") + t.integratedSince() + " integrated since the last brief";
+            words = (words.isEmpty() ? "" : words + beforeIntegrated) + t.integratedSince()
+                    + " integrated since the last brief";
         }
         return words.isEmpty() ? null : words;
     }

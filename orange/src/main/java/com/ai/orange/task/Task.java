@@ -16,6 +16,8 @@ import org.jooq.JSONB;
  * @param prUrl    PR integration mode only (a later phase)
  * @param projectId the project the task belongs to; null for a task of the legacy base repo
  * @param repoId    the project's repo the work is done in; null with {@code projectId}
+ * @param planId    the plan that made it; null for a task created by hand or before plans were rows
+ * @param milestoneId the milestone item it was planned for; readers follow its supersede chain
  */
 public record Task(
         UUID id,
@@ -34,5 +36,20 @@ public record Task(
         OffsetDateTime createdAt,
         OffsetDateTime updatedAt,
         UUID projectId,
-        UUID repoId) {
+        UUID repoId,
+        UUID planId,
+        UUID milestoneId) {
+
+    /**
+     * The short id people see and stuck branches are named by ({@code orange/task/<short id>}): the
+     * last 8 hex digits. uuidv7's first 8 are a timestamp that tasks of one plan share.
+     */
+    public static String shortId(UUID id) {
+        String s = id.toString();
+        return s.substring(s.length() - 8);
+    }
+
+    public String shortId() {
+        return shortId(id);
+    }
 }

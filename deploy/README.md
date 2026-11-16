@@ -58,4 +58,6 @@ Nothing host-specific is in this repo: the tailnet name and addresses are read o
 
 The plugin reads `ORANGE_URL` (the `public-url` the deploy prints) and `ORANGE_API_TOKEN` from
 Claude Code's environment, e.g. the `env` block of `~/.claude/settings.json`. The phone subscribes in
-the ntfy app to the attention topic at the `ntfy-url` the deploy prints, logged in as `phone`.
+the ntfy app to the attention topic at the `ntfy-url` the deploy prints, logged in as `phone`. The
+steering tab is a Claude Code session started with `ORANGE_STEERING=1` or in `~/.orange/steering`
+(the alias in `plugin/README.md`).

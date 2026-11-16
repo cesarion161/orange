@@ -7,9 +7,14 @@ into one of orange's neutral session events and posts it to the coordinator
 coordinator never needs to read them.
 
 It must never get in the session's way: it always exits 0 and gives up on the coordinator after
-a short timeout (a session works the same with orange down). It prints nothing, with one
-exception: at a Stop, when orange decides to answer the session itself, it prints the hook
-decision that blocks the stop with orange's answer.
+a short timeout (a session works the same with orange down). It prints nothing, with two
+exceptions: at a Stop, when orange decides to answer the session itself, it prints the hook
+decision that blocks the stop with orange's answer; and at the start of a steering session it
+prints orange's few lines of status as the session's added context.
+
+A steering session is the tab the user talks to orange in (started with ORANGE_STEERING=1, or in
+the steering directory). Its events carry payload.steering, and orange records them but never
+judges the session, files nothing about it and maps it to no project.
 
 While orange is out of reach (the laptop offline, the VPS restarting) events wait on disk, one file
 each under <node dir>/queue/, and the next hook that gets through sends them first, oldest first.
@@ -27,6 +32,8 @@ Environment:
   ORANGE_REPORT_TIMEOUT  seconds to wait for the coordinator (default 2)
   ORANGE_NODE_DIR        where the reporter keeps its markers (default ~/.orange/node)
   ORANGE_HOOK_WAIT       seconds a Stop hook waits for orange's verdict (default 600; 0 = never wait)
+  ORANGE_STEERING        set to 1 to make this session the steering tab
+  ORANGE_STEERING_DIR    a session at or under it is the steering tab too (default ~/.orange/steering)
 """
 
 import json
@@ -124,11 +131,21 @@ def prune(files):
     return kept[-QUEUE_MAX:]
 
 
+def request(url, headers, method, data=None):
+    """A request to orange whose Authorization header is never sent on to wherever a redirect points."""
+    plain = {k: v for k, v in headers.items() if k.lower() != "authorization"}
+    req = urllib.request.Request(url, data=data, headers=plain, method=method)
+    for k, v in headers.items():
+        if k.lower() == "authorization":
+            req.add_unredirected_header(k, v)
+    return req
+
+
 def post(url, data, headers, timeout):
     """Posts one event: "ok", "retry" (orange out of reach, or a refusal that may pass later) or "drop"."""
     try:
-        request = urllib.request.Request(url, data=data, headers=headers, method="POST")
-        urllib.request.urlopen(request, timeout=timeout).read()
+        request_ = request(url, headers, "POST", data)
+        urllib.request.urlopen(request_, timeout=timeout).read()
         return "ok"
     except urllib.error.HTTPError as e:
         return "retry" if e.code >= 500 or e.code in RETRY_STATUSES else "drop"
@@ -255,6 +272,38 @@ def git_facts(cwd):
     return facts
 
 
+def steering(cwd):
+    """Whether this is the steering tab: ORANGE_STEERING=1, or a cwd at or under ORANGE_STEERING_DIR (real paths)."""
+    if os.environ.get("ORANGE_STEERING") == "1":
+        return True
+    root = os.environ.get("ORANGE_STEERING_DIR") or os.path.join(os.path.expanduser("~"), ".orange", "steering")
+    if not cwd:
+        return False
+    try:
+        root = os.path.realpath(root)
+        here = os.path.realpath(cwd)
+        return os.path.commonpath([root, here]) == root
+    except (OSError, ValueError):  # another drive, an unreadable path: not under it
+        return False
+
+
+def steering_context(headers, deadline):
+    """orange's start context for the steering tab, or None: anything but a 200 with text is nothing."""
+    left = deadline - time.monotonic()
+    if left <= 0.05:
+        return None
+    url = os.environ.get("ORANGE_URL", "http://localhost:8080").rstrip("/") + "/steering/context"
+    try:
+        context = request(url, {k: v for k, v in headers.items() if k == "Authorization"}, "GET")
+        with urllib.request.urlopen(context, timeout=left) as response:
+            if response.status != 200:
+                return None
+            text = response.read(64 * 1024).decode("utf-8").strip()
+    except Exception:  # noqa: BLE001 — orange down, a refusal, a timeout: the tab just starts without it
+        return None
+    return text or None
+
+
 def translate(hook):
     """(type, payload, with_git) for a hook, or None when orange has no use for it."""
     name = hook.get("hook_event_name") or (sys.argv[1] if len(sys.argv) > 1 else "")
@@ -319,6 +368,8 @@ def main():
     remember_wait(session_id, event_type, payload)
 
     cwd = hook.get("cwd") or os.getcwd()
+    if steering(cwd):
+        payload["steering"] = True
     event = {
         "event_id": str(uuid.uuid4()),
         "harness": "claude-code",
@@ -347,10 +398,17 @@ def main():
             enqueue(event)
         delivered = outcome == "ok"
 
+    if event_type == "session_started" and payload.get("steering") and delivered:
+        # The tab starts from facts: orange's few lines of status, in what is left of the budget. Asked
+        # only of an orange that just took the event; one that did not would not answer this either.
+        context = steering_context(headers, deadline)
+        if context:
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}}))
+
     if event_type == "stopped" and delivered:
         message = wait_for_verdict(event, headers)
         if message:
-            # The one thing this reporter ever prints: orange's answer, which keeps the session going.
+            # orange's answer, which keeps the session going.
             print(json.dumps({"decision": "block", "reason": message}))
 
 
@@ -367,16 +425,15 @@ def wait_for_verdict(event, headers):
         wait = max(1, min(20, int(deadline - time.monotonic())))
         query = urlencode({"harness": event["harness"], "session_id": event["session_id"],
                            "event_id": event["event_id"], "wait": wait})
-        request = urllib.request.Request(base + query, headers=headers, method="GET")
-        answer = json.load(urllib.request.urlopen(request, timeout=wait + 10))
+        poll = request(base + query, headers, "GET")
+        answer = json.load(urllib.request.urlopen(poll, timeout=wait + 10))
         state = answer.get("state")
         if state == "verdict":
             if answer.get("kind") != "continue" or not answer.get("message"):
                 return None
             # The answer counts only once orange has it as delivered. If the user spoke meanwhile, or
             # this call fails, say nothing: orange keeps the answer for the user instead.
-            ack = urllib.request.Request(base.replace("/verdict?", "/verdict/ack?") + query, headers=headers,
-                                         data=b"", method="POST")
+            ack = request(base.replace("/verdict?", "/verdict/ack?") + query, headers, "POST", b"")
             ok = json.load(urllib.request.urlopen(ack, timeout=5)).get("ok")
             return answer["message"] if ok else None
         if state != "pending":

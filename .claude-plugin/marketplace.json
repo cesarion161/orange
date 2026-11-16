@@ -8,7 +8,7 @@
     {
       "name": "orange",
       "source": "./plugin",
-      "description": "orange's session reporter (hooks) and steering tools: orange watches your Claude Code sessions, answers routine stops and files what needs you."
+      "description": "orange in one Claude Code tab (steering tools and skill) plus its session reporter (hooks): hand work to orange, follow it, answer what needs you."
     }
   ]
 }

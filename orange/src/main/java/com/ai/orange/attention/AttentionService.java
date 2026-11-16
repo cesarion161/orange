@@ -8,6 +8,7 @@ import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -22,10 +23,14 @@ public class AttentionService {
 
     private final AttentionRepository items;
     private final ProjectRepository projects;
+    /** Through a provider: resolvers (plans, tasks) file items through this service themselves. */
+    private final ObjectProvider<AttentionResolver> resolvers;
 
-    public AttentionService(AttentionRepository items, ProjectRepository projects) {
+    public AttentionService(AttentionRepository items, ProjectRepository projects,
+                            ObjectProvider<AttentionResolver> resolvers) {
         this.items = items;
         this.projects = projects;
+        this.resolvers = resolvers;
     }
 
     /** Files an item, or returns the one already filed under {@code dedupeKey}. */
@@ -37,8 +42,14 @@ public class AttentionService {
     /** As above, with the answer orange would give ({@code proposedAnswer}) for the user to take or change. */
     public AttentionItem raise(String kind, String dedupeKey, String urgency, UUID projectId, UUID sessionId,
                                String title, String body, String proposedAnswer) {
-        Optional<AttentionItem> created = items.insert(kind, dedupeKey, urgency, projectId, sessionId, null, title,
-                body, proposedAnswer);
+        return raise(kind, dedupeKey, urgency, projectId, sessionId, null, title, body, proposedAnswer);
+    }
+
+    /** As above, for an item about a task ({@code taskId}), which resolves with the task's answer. */
+    public AttentionItem raise(String kind, String dedupeKey, String urgency, UUID projectId, UUID sessionId,
+                               UUID taskId, String title, String body, String proposedAnswer) {
+        Optional<AttentionItem> created = items.insert(kind, dedupeKey, urgency, projectId, sessionId, taskId,
+                title, body, proposedAnswer);
         if (created.isPresent()) {
             log.info("attention: {} {} item {} — {}", urgency, kind, created.get().id(), title);
             return created.get();
@@ -60,10 +71,13 @@ public class AttentionService {
 
     /**
      * The user's answer to an item. For a proposed project the answer decides its fate:
-     * {@code confirm} activates it, {@code ignore} archives it.
+     * {@code confirm} activates it, {@code ignore} archives it. An item of a kind an
+     * {@link AttentionResolver} handles (a plan, a task) goes to it first, in this transaction. A
+     * resolved item stays as it is: answering it again does nothing.
      *
      * @return the resolved item; empty when there is no such item
-     * @throws IllegalArgumentException when a proposed project gets an answer other than confirm or ignore
+     * @throws IllegalArgumentException when the answer is refused (a proposed project's other than confirm
+     *                                  or ignore, or a resolver's); nothing is resolved then
      */
     @Transactional
     public Optional<AttentionItem> resolve(UUID id, String answer, String by) {
@@ -81,6 +95,8 @@ public class AttentionService {
             projects.findById(item.projectId()).filter(p -> Project.PROPOSED.equals(p.status()))
                     .ifPresent(p -> projects.update(p.id(), p.name(), status, p.summary()));
         }
+        resolvers.orderedStream().filter(r -> r.kinds().contains(item.kind())).findFirst()
+                .ifPresent(r -> r.onResolve(item, answer));
         items.resolve(id, by, answer);
         return items.findById(id);
     }

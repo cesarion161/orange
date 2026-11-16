@@ -64,6 +64,7 @@ public class SecurityConfig {
                         .requestMatchers("/sessions", "/sessions/**").access(hasApiToken)
                         .requestMatchers("/attention", "/attention/**").access(hasApiToken)
                         .requestMatchers("/mcp/steering").access(hasApiToken)
+                        .requestMatchers("/steering", "/steering/**").access(hasApiToken)  // the steering tab's start context
                         .requestMatchers("/brief").access(hasApiToken)  // the latest brief
                         .requestMatchers("/dev-envs", "/dev-envs/**").access(hasApiToken)
                         .requestMatchers("/health/**").access(hasApiToken)

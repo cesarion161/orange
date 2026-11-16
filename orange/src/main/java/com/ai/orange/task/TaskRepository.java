@@ -5,8 +5,11 @@ import static com.ai.orange.db.jooq.Tables.TASKS;
 import com.ai.orange.db.jooq.tables.records.TasksRecord;
 import com.ai.orange.task.exception.IllegalStatusTransitionException;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.regex.Pattern;
+import org.jooq.Condition;
 import org.jooq.DSLContext;
 import org.jooq.JSONB;
 import org.springframework.stereotype.Repository;
@@ -15,6 +18,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Repository
 public class TaskRepository {
+
+    /** A whole task id, or at least its first 8 characters. */
+    private static final Pattern ID_PREFIX = Pattern.compile("[0-9a-f-]{8,36}");
 
     private final DSLContext dsl;
 
@@ -31,6 +37,8 @@ public class TaskRepository {
                 .set(TASKS.METADATA, def.metadataOrEmpty())
                 .set(TASKS.PROJECT_ID, def.placement().projectId())
                 .set(TASKS.REPO_ID, def.placement().repoId())
+                .set(TASKS.PLAN_ID, def.planId())
+                .set(TASKS.MILESTONE_ID, def.milestoneId())
                 // status defaults to 'pending' from the schema
                 .returning()
                 .fetchOne();
@@ -39,6 +47,57 @@ public class TaskRepository {
 
     public Optional<Task> findById(UUID id) {
         return dsl.selectFrom(TASKS).where(TASKS.ID.eq(id)).fetchOptional().map(TaskRepository::toDomain);
+    }
+
+    /**
+     * Tasks whose id starts with {@code prefix} (a full id, or at least 8 of its leading characters, any
+     * case), at most two: one is the task, two means the prefix is ambiguous.
+     *
+     * @throws IllegalArgumentException when the prefix is shorter than 8 characters or not part of an id
+     */
+    public List<Task> findByIdPrefix(String prefix) {
+        String p = prefix == null ? "" : prefix.strip().toLowerCase(Locale.ROOT);
+        if (!ID_PREFIX.matcher(p).matches()) {
+            throw new IllegalArgumentException("a task id is a UUID or at least 8 of its first characters");
+        }
+        // Only hex and dashes get here, so the pattern has no wildcard of the caller's.
+        return dsl.selectFrom(TASKS).where(TASKS.ID.cast(String.class).like(p + "%"))
+                .orderBy(TASKS.CREATED_AT.desc()).limit(2)
+                .fetch().map(TaskRepository::toDomain);
+    }
+
+    /** Tasks found by {@link #findByRef}, and how many matched in all. */
+    public record RefMatch(int count, List<Task> tasks) {}
+
+    /**
+     * The tasks a person's reference names: a full id, or at least 8 hex digits (dashes allowed, any case)
+     * that an id starts or ends with. People see the short id, the last 8 ({@link Task#shortId}); a prefix
+     * of 8 is only uuidv7's timestamp, which tasks of one plan share.
+     *
+     * @return the count of matches and at most {@code limit} of them, newest first
+     * @throws IllegalArgumentException when the reference is shorter than 8 characters or not part of an id
+     */
+    public RefMatch findByRef(String ref, int limit) {
+        String p = ref == null ? "" : ref.strip().toLowerCase(Locale.ROOT);
+        if (!ID_PREFIX.matcher(p).matches()) {
+            throw new IllegalArgumentException("a task id is a UUID, or at least 8 of its first or last characters");
+        }
+        try {
+            UUID id = UUID.fromString(p);
+            if (p.length() == 36) {
+                List<Task> one = findById(id).map(List::of).orElse(List.of());
+                return new RefMatch(one.size(), one);
+            }
+        } catch (IllegalArgumentException notAFullId) {
+            // a part of one
+        }
+        // Only hex and dashes get here, so the pattern has no wildcard of the caller's.
+        Condition matches = TASKS.ID.cast(String.class).like(p + "%").or(TASKS.ID.cast(String.class).like("%" + p));
+        int count = dsl.fetchCount(TASKS, matches);
+        List<Task> tasks = count == 0 ? List.of() : dsl.selectFrom(TASKS).where(matches)
+                .orderBy(TASKS.CREATED_AT.desc(), TASKS.ID.desc()).limit(Math.max(1, limit))
+                .fetch().map(TaskRepository::toDomain);
+        return new RefMatch(count, tasks);
     }
 
     /**
@@ -220,6 +279,8 @@ public class TaskRepository {
                 r.getCreatedAt(),
                 r.getUpdatedAt(),
                 r.getProjectId(),
-                r.getRepoId());
+                r.getRepoId(),
+                r.getPlanId(),
+                r.getMilestoneId());
     }
 }

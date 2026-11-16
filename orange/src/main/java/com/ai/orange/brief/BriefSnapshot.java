@@ -39,6 +39,8 @@ public record BriefSnapshot(String at, String since, String zone, List<ProjectFa
     public static final int MAX_WAITING = 8;
     public static final int MAX_ELSEWHERE = 5;
     public static final int MAX_NEEDS_HUMAN = 5;
+    /** Titles of a project's tasks that wait for a person, beyond which they are only counted. */
+    public static final int MAX_PROJECT_NEEDS_HUMAN = 3;
     /** Characters kept of a summary, a goal, a milestone or an intent. */
     public static final int TEXT = 200;
     /** Characters kept of a name, a branch or a title. */
@@ -75,12 +77,14 @@ public record BriefSnapshot(String at, String since, String zone, List<ProjectFa
      * @param waitingTotal  open attention items, before the cap on {@code waiting}
      * @param waitingUrgent how many of them are urgent or critical
      * @param prompts       the user's prompts in this project since the last brief
+     * @param tasks         the project's tasks (remote-first spec §7.6), titles capped at
+     *                      {@link #MAX_PROJECT_NEEDS_HUMAN}; empty in a snapshot stored before they were read
      */
     public record ProjectFacts(String id, String name, String summary, List<String> goals,
                                List<Milestone> milestones, List<SessionFacts> sessions, int sessionsTotal,
                                List<Closed> closed, int integrated, int verified,
                                List<Item> waiting, int waitingTotal, int waitingUrgent,
-                               int prompts, String lastPromptAt, Quiet quiet) {
+                               int prompts, String lastPromptAt, Quiet quiet, TaskFacts tasks) {
 
         public ProjectFacts {
             goals = list(goals);
@@ -89,16 +93,29 @@ public record BriefSnapshot(String at, String since, String zone, List<ProjectFa
             closed = list(closed);
             waiting = list(waiting);
             if (quiet == null) quiet = new Quiet(Quiet.UNKNOWN, 0, null, null, null, null, null);
+            if (tasks == null) tasks = new TaskFacts(null, 0, null);
         }
     }
 
     /**
+     * A milestone of a project ({@link MilestoneTracks}). A snapshot stored before milestones knew their
+     * tasks has no {@code id}, no {@code tasks} and no {@code track}: they read as null, empty and null.
+     *
+     * @param id             the space item it is now, at the end of its supersede chain
      * @param daysLeft       calendar days from today to the due day, negative when past; null without a date
      * @param elapsedPercent how much of the time from its creation to its due date has passed
-     * @param closedSince    the project's work closed since the milestone was set; not linked to it
+     * @param closedSince    the project's session work closed since the milestone was set; not linked to it
+     * @param tasks          the tasks planned for it (over its supersede chain) by state, only states that
+     *                       have some: {@code merged}, {@code running}, {@code stuck}, {@code not_started}
+     * @param track          {@link OnTrack#ON_TRACK} or {@link OnTrack#BEHIND}, orange's label; null for none
      */
-    public record Milestone(String text, String dueAt, Integer daysLeft, Integer elapsedPercent, boolean overdue,
-                            Integer closedSince) {}
+    public record Milestone(String id, String text, String dueAt, Integer daysLeft, Integer elapsedPercent,
+                            boolean overdue, Integer closedSince, Map<String, Integer> tasks, String track) {
+
+        public Milestone {
+            tasks = tasks == null ? Map.of() : Collections.unmodifiableMap(new LinkedHashMap<>(tasks));
+        }
+    }
 
     /** @param state see {@link #state} */
     public record SessionFacts(String state, String branch, String intent, String lastEventAt, String waitingSince) {}
@@ -157,6 +174,10 @@ public record BriefSnapshot(String at, String since, String zone, List<ProjectFa
         }
         for (ProjectFacts p : projects) {
             if (p.waitingTotal() > 0 || p.prompts() > 0) return true;
+            if (p.tasks().integratedSince() > 0 || !p.tasks().needsHuman().isEmpty()
+                    || p.tasks().byStatus().getOrDefault("needs_human", 0) > 0) {
+                return true;
+            }
             if (p.integrated() > 0 || p.verified() > 0 || !p.closed().isEmpty()) return true;
             for (Milestone m : p.milestones()) {
                 if (m.overdue() || (m.daysLeft() != null && m.daysLeft() <= MILESTONE_NEAR_DAYS)) return true;

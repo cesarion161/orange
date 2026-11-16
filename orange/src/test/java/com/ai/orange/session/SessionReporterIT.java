@@ -23,6 +23,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import org.jooq.DSLContext;
@@ -109,6 +110,12 @@ class SessionReporterIT {
     }
 
     void hook(String fixture, Path cwd, String url) throws Exception {
+        // A hook's stdout can end up in the session's context, so the reporter says nothing, ever.
+        assertThat(run(fixture, cwd, url, Map.of())).isEmpty();
+    }
+
+    /** Runs the reporter with these variables added, applies what it posted, and returns what it printed. */
+    String run(String fixture, Path cwd, String url, Map<String, String> env) throws Exception {
         String payload;
         try (var in = getClass().getResourceAsStream("/hooks/" + fixture + ".json")) {
             payload = new String(in.readAllBytes(), StandardCharsets.UTF_8)
@@ -121,15 +128,18 @@ class SessionReporterIT {
         // These tests apply events only after the hook has returned; a Stop hook must not wait for a verdict.
         pb.environment().put("ORANGE_HOOK_WAIT", "0");
         pb.environment().remove("ORANGE_API_TOKEN");
+        // Not a steering session unless a test says so, whatever the machine running the suite has.
+        pb.environment().remove("ORANGE_STEERING");
+        pb.environment().put("ORANGE_STEERING_DIR", tmp.resolve("steering-unused").toString());
+        pb.environment().putAll(env);
         Process p = pb.start();
         p.getOutputStream().write(payload.getBytes(StandardCharsets.UTF_8));
         p.getOutputStream().close();
         String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
         assertThat(p.waitFor(20, TimeUnit.SECONDS)).isTrue();
-        // A hook's stdout can end up in the session's context, so the reporter says nothing, ever.
-        assertThat(out).isEmpty();
         assertThat(p.exitValue()).isZero();
         processor.drain();
+        return out;
     }
 
     void hook(String fixture) throws Exception {
@@ -423,6 +433,154 @@ class SessionReporterIT {
         hook("user-prompt-submit");
         assertThat(queued()).isEmpty();
         assertThat(eventTypes()).containsExactly("user_prompt");
+    }
+
+    @Test
+    void theTokenNeverFollowsARedirect() throws Exception {
+        // Something at ORANGE_URL that sends every request elsewhere: the token must not go along.
+        List<String> landed = new java.util.concurrent.CopyOnWriteArrayList<>();
+        List<String> asked = new java.util.concurrent.CopyOnWriteArrayList<>();
+        com.sun.net.httpserver.HttpServer server = com.sun.net.httpserver.HttpServer.create(
+                new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        String base = "http://127.0.0.1:" + server.getAddress().getPort();
+        server.createContext("/", ex -> {
+            ex.getRequestBody().readAllBytes();
+            if (ex.getRequestURI().getPath().startsWith("/elsewhere")) {
+                landed.add(ex.getRequestMethod() + " " + ex.getRequestURI().getPath() + " "
+                        + ex.getRequestHeaders().getFirst("Authorization"));
+                byte[] body = "{\"state\":\"none\"}".getBytes(StandardCharsets.UTF_8);
+                ex.sendResponseHeaders(200, body.length);
+                ex.getResponseBody().write(body);
+            } else {
+                asked.add(ex.getRequestHeaders().getFirst("Authorization"));
+                ex.getResponseHeaders().add("Location", base + "/elsewhere" + ex.getRequestURI().getPath());
+                ex.sendResponseHeaders(302, -1);
+            }
+            ex.close();
+        });
+        server.start();
+        try {
+            Map<String, String> env = Map.of("ORANGE_API_TOKEN", "secret-test-token", "ORANGE_STEERING", "1",
+                    "ORANGE_HOOK_WAIT", "2");
+            run("session-start", repo, base, env);
+            run("stop-finished", repo, base, env);
+        } finally {
+            server.stop(0);
+        }
+
+        // orange itself is asked with the token; the event post, the steering context and the verdict
+        // poll were each sent on, without it.
+        assertThat(asked).hasSizeGreaterThanOrEqualTo(3).allSatisfy(a -> assertThat(a).isEqualTo("Bearer secret-test-token"));
+        assertThat(landed).anySatisfy(l -> assertThat(l).startsWith("GET /elsewhere/sessions/events"))
+                .anySatisfy(l -> assertThat(l).startsWith("GET /elsewhere/steering/context"))
+                .anySatisfy(l -> assertThat(l).startsWith("GET /elsewhere/sessions/verdict"))
+                .allSatisfy(l -> assertThat(l).endsWith(" null").doesNotContain("secret-test-token"));
+    }
+
+    /** What orange answers at {@code GET /steering/context} right now. */
+    String steeringContext() throws Exception {
+        HttpResponse<String> res = HttpClient.newHttpClient().send(
+                HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/steering/context")).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertThat(res.statusCode()).isEqualTo(200);
+        return res.body();
+    }
+
+    /** The one thing a steering start prints: the SessionStart hook's added context. */
+    static String addedContext(String out) throws Exception {
+        var json = com.ai.orange.json.Json.mapper().readTree(out);
+        assertThat(json.size()).isEqualTo(1);
+        assertThat(json.path("hookSpecificOutput").path("hookEventName").asText()).isEqualTo("SessionStart");
+        assertThat(json.path("hookSpecificOutput").size()).isEqualTo(2);
+        return json.path("hookSpecificOutput").path("additionalContext").asText();
+    }
+
+    @Test
+    void steeringStartPrintsOrangesContext() throws Exception {
+        String out = run("session-start", repo, "http://localhost:" + port, Map.of("ORANGE_STEERING", "1"));
+
+        assertThat(out.strip().lines()).as("one line of JSON and nothing else").hasSize(1);
+        String context = addedContext(out);
+        assertThat(context).isNotBlank().isEqualTo(steeringContext());
+        assertThat(session().steering()).isTrue();
+        String payload = dsl.select(SESSION_EVENTS.PAYLOAD).from(SESSION_EVENTS)
+                .where(SESSION_EVENTS.SESSION_ID.eq(session().id())).fetchOne(r -> r.value1().data());
+        assertThat(payload).contains("\"steering\": true");
+
+        // Only a start adds context: the tab's other hooks print nothing, and the session stays steering.
+        assertThat(run("user-prompt-submit", repo, "http://localhost:" + port, Map.of("ORANGE_STEERING", "1"))).isEmpty();
+        assertThat(session().steering()).isTrue();
+    }
+
+    @Test
+    void steeringStartWithOrangeDownPrintsNothing() throws Exception {
+        long start = System.nanoTime();
+        String out = run("session-start", repo, unreachable(), Map.of("ORANGE_STEERING", "1"));
+
+        assertThat(java.time.Duration.ofNanos(System.nanoTime() - start)).isLessThan(java.time.Duration.ofSeconds(4));
+        assertThat(out).isEmpty();
+        // The start waits on disk as any event does, and says it is the steering tab's.
+        assertThat(queued()).singleElement().satisfies(f -> assertThat(Files.readString(f))
+                .contains("\"session_started\"").contains("\"steering\": true"));
+    }
+
+    @Test
+    void aSessionUnderTheSteeringDirIsSteering() throws Exception {
+        Path dir = Files.createDirectories(tmp.resolve("steering-real").resolve("today")).toRealPath();
+        // The variable names the directory through a link; the session's cwd is the real path below it.
+        Path link = Files.createSymbolicLink(tmp.resolve("steering-link"), dir.getParent());
+        String out = run("session-start", dir, "http://localhost:" + port, Map.of("ORANGE_STEERING_DIR", link.toString()));
+        assertThat(addedContext(out)).isNotBlank();
+        assertThat(session().steering()).isTrue();
+
+        // A sibling whose name merely starts the same is not under it.
+        Path sibling = Files.createDirectories(tmp.resolve("steering-realness")).toRealPath();
+        sessionId = "sess-" + UUID.randomUUID();
+        assertThat(run("session-start", sibling, "http://localhost:" + port,
+                Map.of("ORANGE_STEERING_DIR", dir.getParent().toString()))).isEmpty();
+        assertThat(session().steering()).isFalse();
+    }
+
+    @Test
+    void aNormalSessionPrintsNothingAtStart() throws Exception {
+        assertThat(run("session-start", repo, "http://localhost:" + port, Map.of("ORANGE_STEERING", "0"))).isEmpty();
+        assertThat(session().steering()).isFalse();
+        assertThat(session().projectId()).isNotNull();
+    }
+
+    @Test
+    void aSteeringSessionInARepoProposesNoProject() throws Exception {
+        Map<String, String> steering = Map.of("ORANGE_STEERING", "1");
+        run("session-start", repo, "http://localhost:" + port, steering);
+        run("user-prompt-submit", repo, "http://localhost:" + port, steering);
+
+        Session s = session();
+        assertThat(s.steering()).isTrue();
+        assertThat(s.projectId()).isNull();
+        assertThat(projects.findRepo("test-node", repo.toString())).as("the repo is not taken for a project").isEmpty();
+        assertThat(attention.findByKey("project:" + repo + ":proposed")).isEmpty();
+        assertThat(items()).isEmpty();
+    }
+
+    @Test
+    void aSteeringQuestionFilesNothing() throws Exception {
+        Map<String, String> steering = Map.of("ORANGE_STEERING", "1");
+        run("user-prompt-submit", repo, "http://localhost:" + port, steering);
+        run("stop-question", repo, "http://localhost:" + port, steering);
+        // A later event that does not say so (an older reporter, a replay) keeps the session steering.
+        hook("notification-permission");
+
+        assertThat(session().steering()).isTrue();
+        assertThat(session().status()).isEqualTo(Session.WAITING_ON_USER);
+        waitedFor(60);
+        sessionService.sweep();
+        assertThat(items()).isEmpty();
+
+        hook("user-prompt-submit");
+        hook("stop-finished");
+        waitedFor(60);
+        sessionService.sweep();
+        assertThat(items()).as("not even a finished, idle tab").isEmpty();
     }
 
     HttpResponse<String> post(HttpClient http, String body) throws Exception {

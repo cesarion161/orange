@@ -1,6 +1,7 @@
 package com.ai.orange.task;
 
 import com.ai.orange.project.TaskPlacement;
+import java.util.UUID;
 import org.jooq.JSONB;
 
 /**
@@ -13,7 +14,8 @@ import org.jooq.JSONB;
  * {@code implementer}, matching what V14 did to existing rows.
  *
  * <p>{@code placement} is the project and repo the task's work is done in; {@link TaskPlacement#NONE}
- * (or null) is the legacy base repo.
+ * (or null) is the legacy base repo. {@code planId} and {@code milestoneId} are the plan that made the
+ * task and the milestone it serves; both null for a task created by hand.
  */
 public record TaskDef(
         String key,
@@ -22,7 +24,9 @@ public record TaskDef(
         String role,
         Integer priority,
         JSONB metadata,
-        TaskPlacement placement) {
+        TaskPlacement placement,
+        UUID planId,
+        UUID milestoneId) {
 
     public static final String IMPLEMENTER = "implementer";
     public static final String CHORE = "chore";
@@ -32,6 +36,12 @@ public record TaskDef(
         if (title == null || title.isBlank()) throw new IllegalArgumentException("title required");
         role = normalizeRole(role);
         if (placement == null) placement = TaskPlacement.NONE;
+    }
+
+    /** A task of no plan. */
+    public TaskDef(String key, String title, String description, String role, Integer priority, JSONB metadata,
+                   TaskPlacement placement) {
+        this(key, title, description, role, priority, metadata, placement, null, null);
     }
 
     /** A task of no project: the legacy base repo. */

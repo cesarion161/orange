@@ -55,12 +55,26 @@ public final class BriefFixtures {
 
     public static Milestone milestone(String text, String dueAt, Integer daysLeft, Integer elapsedPercent,
                                       boolean overdue, Integer closedSince) {
-        return new Milestone(text, dueAt, daysLeft, elapsedPercent, overdue, closedSince);
+        return new Milestone(null, text, dueAt, daysLeft, elapsedPercent, overdue, closedSince, null, null);
     }
 
     /** A dated milestone that many days away (negative = that many days overdue), a third of its time gone. */
     public static Milestone milestoneIn(String text, int days) {
-        return new Milestone(text, "2026-11-10T23:59+01:00", days, days < 0 ? 100 : 30, days < 0, 0);
+        return milestone(text, "2026-11-10T23:59+01:00", days, days < 0 ? 100 : 30, days < 0, 0);
+    }
+
+    /**
+     * A dated milestone with tasks, counted by state as pairs ({@code "merged", 2}), and orange's label
+     * ({@link OnTrack}; null for none).
+     */
+    public static Milestone trackedMilestone(String text, int days, int elapsedPercent, String track,
+                                             Object... tasksByState) {
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        for (int i = 0; i + 1 < tasksByState.length; i += 2) {
+            counts.put((String) tasksByState[i], (Integer) tasksByState[i + 1]);
+        }
+        return new Milestone(UUID.nameUUIDFromBytes(text.getBytes(StandardCharsets.UTF_8)).toString(), text,
+                "2026-11-10T23:59+01:00", days, elapsedPercent, days < 0, 0, counts, track);
     }
 
     public static SessionFacts session(String state, String branch, String intent) {
@@ -122,6 +136,7 @@ public final class BriefFixtures {
         private int prompts;
         private String lastPromptAt;
         private Quiet quiet = normal();
+        private TaskFacts tasks;
 
         private ProjectBuilder(String name) {
             this.name = name;
@@ -195,6 +210,12 @@ public final class BriefFixtures {
             return this;
         }
 
+        /** The project's own tasks. */
+        public ProjectBuilder tasks(TaskFacts tasks) {
+            this.tasks = tasks;
+            return this;
+        }
+
         public ProjectFacts build() {
             int urgent = (int) waiting.stream().filter(i -> !"normal".equals(i.urgency())).count();
             return new ProjectFacts(id, name, summary, goals, milestones, sessions,
@@ -202,7 +223,7 @@ public final class BriefFixtures {
                     integrated != null ? integrated : count("integrated"),
                     verified != null ? verified : count("verified"),
                     waiting, waitingTotal != null ? waitingTotal : waiting.size(),
-                    waitingUrgent != null ? waitingUrgent : urgent, prompts, lastPromptAt, quiet);
+                    waitingUrgent != null ? waitingUrgent : urgent, prompts, lastPromptAt, quiet, tasks);
         }
 
         private int count(String result) {

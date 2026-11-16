@@ -15,7 +15,7 @@ class BriefLinksTest {
     static BriefLinks links(String publicUrl) {
         return new BriefLinks(new BriefProperties(true, Duration.ofSeconds(60), Duration.ofHours(2),
                 Duration.ofHours(24), Duration.ofMinutes(10), Duration.ofSeconds(60), publicUrl,
-                Duration.ofHours(48), Duration.ofDays(30)));
+                Duration.ofHours(48), Duration.ofDays(30), 0.2));
     }
 
     @Test

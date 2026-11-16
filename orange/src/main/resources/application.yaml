@@ -37,6 +37,8 @@ orange:
     # A fine-grained personal access token per owner, owner=token[,owner=token]. orange's own git
     # gets it through a credential helper; it never reaches a container, a log or a file.
     tokens: ${ORANGE_GITHUB_TOKENS:}
+    # GitHub's REST API, where orange_project_create makes a repo (create: true). Blank: GitHub's own.
+    github-api-url: ${ORANGE_GITHUB_API_URL:https://api.github.com}
   worktrees:
     # Outside every repository (v2 decision 15): one directory per task, named by its id.
     root: ${WORKTREES_ROOT:${user.home}/.orange/worktrees}
@@ -110,6 +112,9 @@ orange:
     reaper-sweep: 30s
     # Finished runs' directories under orange.harness.run-root are deleted after this long.
     retention: 14d
+  planner:
+    # Under plan-approval: auto, a plan of more tasks than this asks the user before it dispatches.
+    ask-above-tasks: 6
   mcp:
     # Where agents reach /mcp/worker. Blank = http://127.0.0.1:<server port>/mcp/worker.
     worker-url: ${ORANGE_MCP_WORKER_URL:}
@@ -163,6 +168,9 @@ orange:
     link-ttl: 48h
     # Briefs older than this are deleted (their snapshots hold session text).
     retention: 30d
+    # A dated milestone is behind when one of its tasks is stuck, or when the share of its tasks merged
+    # trails the share of its time gone by more than this (0.20 = 20 points). orange's rule, not the model's.
+    on-track-margin: 0.20
   notify:
     # Off = nothing is pushed: no attention items and no brief.
     enabled: ${ORANGE_NOTIFY_ENABLED:true}
@@ -193,6 +201,10 @@ orange:
     # merge (rebase, fast-forward the base, push it when there is an origin), branch (leave it),
     # ask (the user integrates), pr (not built: treated as ask). "remote-push: false" keeps it local.
     integration: merge
+    # Whether a plan asks the user before it dispatches (remote-first spec §7.2): auto (the planner's
+    # judgement plus orange's rules: a large or risky plan asks), always or never. A project without
+    # evidence commands in force always asks: approving the plan is how its proposed commands go in force.
+    plan-approval: auto
     auto-answer: routine
     always-ask: []
     auto-answer-confidence: 0.8

@@ -12,9 +12,9 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 /**
- * Pins the JSON shape of {@code POST /plans} responses — the DAG contract the
- * orange-mcp {@code _summarise_plan} shim parses ({@code plan.tasks[].key},
- * {@code plan.edges[].from/to}). Pure mapping test, no Spring context.
+ * Pins the JSON shape of {@code POST /plans} responses — the DAG contract operator
+ * clients read ({@code plan.tasks[].key}, {@code plan.edges[].from/to}). Pure mapping
+ * test, no Spring context.
  */
 class PlanResponseTest {
 
@@ -37,7 +37,7 @@ class PlanResponseTest {
 
         assertThat(json.get("planId").asText()).isEqualTo(planId.toString());
         assertThat(json.get("status").asText()).isEqualTo("success");
-        // The DAG the MCP renders for review.
+        // The DAG a client renders for review.
         assertThat(json.get("plan").get("tasks")).hasSize(2);
         assertThat(json.get("plan").get("tasks").get(0).get("key").asText()).isEqualTo("a");
         assertThat(json.get("plan").get("tasks").get(1).get("role").asText()).isEqualTo("chore");
