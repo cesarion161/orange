@@ -11,6 +11,13 @@ a short timeout (a session works the same with orange down). It prints nothing, 
 exception: at a Stop, when orange decides to answer the session itself, it prints the hook
 decision that blocks the stop with orange's answer.
 
+While orange is out of reach (the laptop offline, the VPS restarting) events wait on disk, one file
+each under <node dir>/queue/, and the next hook that gets through sends them first, oldest first.
+Each keeps its event id, so a replay that orange already took is stored once. The queue keeps the
+newest 1000 events of the last 7 days. An event orange refuses for good (a 4xx other than
+401/403/408/425/429) is dropped; anything else waits for the next hook. A stop is waited on for a
+verdict only when it got through at once; orange never judges one that arrives late.
+
 Environment:
   ORANGE_URL             the coordinator (default http://localhost:8080)
   ORANGE_API_TOKEN       bearer token, when the coordinator wants one
@@ -27,6 +34,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 import uuid
 from datetime import datetime, timezone
@@ -37,6 +45,15 @@ MAX_MESSAGE = 8000
 # At a stop: at most this many uncommitted paths, and this long for git to say them.
 MAX_DIRTY = 50
 STOP_GIT_TIMEOUT = 5
+# The disk queue: its bounds, and the refusals that are worth sending again.
+QUEUE_MAX = 1000
+QUEUE_MAX_AGE = 7 * 24 * 3600
+RETRY_STATUSES = {401, 403, 408, 425, 429}
+
+try:
+    import fcntl
+except ImportError:  # not on this platform: flushes then just do not exclude each other
+    fcntl = None
 
 # Notification types that mean "the session cannot go on without the user".
 WAITING = {
@@ -58,6 +75,97 @@ def marker(session_id):
     # The id is the harness's own; keep it from naming anything outside the directory.
     safe = "".join(c for c in session_id if c.isalnum() or c in "-_")
     return os.path.join(node_dir(), "waiting", safe or "unknown")
+
+
+def queue_dir():
+    return os.path.join(node_dir(), "queue")
+
+
+def queued():
+    """The queued events' files, oldest first (their names start with the time they were made)."""
+    try:
+        names = sorted(n for n in os.listdir(queue_dir()) if n.endswith(".json") and not n.startswith("."))
+    except OSError:
+        return []
+    return [os.path.join(queue_dir(), n) for n in names]
+
+
+def enqueue(event):
+    """Writes the event to the queue in one rename, so a reader never sees half of it. Returns its path."""
+    os.makedirs(queue_dir(), exist_ok=True)
+    safe = "".join(c for c in event["event_id"] if c.isalnum() or c == "-")[:64]
+    name = "%d-%s.json" % (time.time_ns(), safe)  # 19 digits until the year 2286: sorts by time
+    tmp = os.path.join(queue_dir(), "." + name + ".tmp")
+    with open(tmp, "w") as f:
+        json.dump(event, f)
+    path = os.path.join(queue_dir(), name)
+    os.replace(tmp, path)
+    return path
+
+
+def prune(files):
+    """Drops what is older than QUEUE_MAX_AGE, then all but the newest QUEUE_MAX. Returns what is left."""
+    cutoff = time.time() - QUEUE_MAX_AGE
+    kept = []
+    for f in files:
+        try:
+            if os.path.getmtime(f) < cutoff:
+                os.remove(f)
+                continue
+        except OSError:
+            continue
+        kept.append(f)
+    for f in kept[:-QUEUE_MAX]:
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+    return kept[-QUEUE_MAX:]
+
+
+def post(url, data, headers, timeout):
+    """Posts one event: "ok", "retry" (orange out of reach, or a refusal that may pass later) or "drop"."""
+    try:
+        request = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        urllib.request.urlopen(request, timeout=timeout).read()
+        return "ok"
+    except urllib.error.HTTPError as e:
+        return "retry" if e.code >= 500 or e.code in RETRY_STATUSES else "drop"
+    except Exception:  # noqa: BLE001 — unreachable, timed out, reset: all mean "later"
+        return "retry"
+
+
+def flush(url, headers, deadline):
+    """Sends the queue oldest first until it is empty, orange fails, or the hook's time is up.
+
+    One hook at a time: another one holding the lock is already sending, so this one leaves it.
+    """
+    try:
+        os.makedirs(queue_dir(), exist_ok=True)
+        lock = open(os.path.join(queue_dir(), ".lock"), "w")
+    except OSError:
+        return
+    with lock:
+        if fcntl is not None:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return
+        for f in prune(queued()):
+            left = deadline - time.monotonic()
+            if left <= 0.05:
+                return
+            try:
+                with open(f, "rb") as fh:
+                    data = fh.read()
+            except OSError:
+                continue
+            if post(url, data, headers, left) == "retry":
+                return
+            try:
+                os.remove(f)
+            except OSError:
+                pass
 
 
 def git(cwd, *args):
@@ -177,7 +285,17 @@ def main():
     hook = json.load(sys.stdin)
     session_id = hook.get("session_id")
     translated = translate(hook)
+    timeout = float(os.environ.get("ORANGE_REPORT_TIMEOUT", "2"))
+    deadline = time.monotonic() + timeout
+    url = os.environ.get("ORANGE_URL", "http://localhost:8080").rstrip("/") + "/sessions/events"
+    headers = {"Content-Type": "application/json"}
+    token = os.environ.get("ORANGE_API_TOKEN")
+    if token:
+        headers["Authorization"] = "Bearer " + token
     if not session_id or translated is None:
+        # Nothing to say, but a chance to send what waits.
+        if queued():
+            flush(url, headers, deadline)
         return
     event_type, payload, with_git = translated
     remember_wait(session_id, event_type, payload)
@@ -198,15 +316,20 @@ def main():
     if event_type == "stopped":
         event["payload"].update(stop_facts(cwd))
 
-    url = os.environ.get("ORANGE_URL", "http://localhost:8080").rstrip("/") + "/sessions/events"
-    headers = {"Content-Type": "application/json"}
-    token = os.environ.get("ORANGE_API_TOKEN")
-    if token:
-        headers["Authorization"] = "Bearer " + token
-    request = urllib.request.Request(url, data=json.dumps(event).encode("utf-8"), headers=headers, method="POST")
-    urllib.request.urlopen(request, timeout=float(os.environ.get("ORANGE_REPORT_TIMEOUT", "2"))).read()
+    # The budget is for talking to orange; git (up to STOP_GIT_TIMEOUT at a stop) does not spend it.
+    deadline = time.monotonic() + timeout
+    if queued():
+        # Behind what waits: orange applies a session's events in the order it gets them.
+        mine = enqueue(event)
+        flush(url, headers, deadline)
+        delivered = not os.path.exists(mine)
+    else:
+        outcome = post(url, json.dumps(event).encode("utf-8"), headers, timeout)
+        if outcome == "retry":
+            enqueue(event)
+        delivered = outcome == "ok"
 
-    if event_type == "stopped":
+    if event_type == "stopped" and delivered:
         message = wait_for_verdict(event, headers)
         if message:
             # The one thing this reporter ever prints: orange's answer, which keeps the session going.

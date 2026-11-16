@@ -1,6 +1,7 @@
 package com.ai.orange.session;
 
 import static com.ai.orange.db.jooq.Tables.SESSIONS;
+import static com.ai.orange.db.jooq.Tables.SESSION_EVENTS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -83,13 +84,38 @@ class SessionReporterIT {
 
     /** Runs the reporter the way Claude Code runs a hook, then lets the inbox apply what it posted. */
     void hook(String fixture, Path cwd) throws Exception {
+        hook(fixture, cwd, "http://localhost:" + port);
+    }
+
+    /** An address where nothing listens: orange out of reach (the laptop offline, the VPS down). */
+    static String unreachable() throws Exception {
+        try (java.net.ServerSocket s = new java.net.ServerSocket(0)) {
+            return "http://127.0.0.1:" + s.getLocalPort();
+        }
+    }
+
+    /** What is queued: the files in the reporter's queue directory, oldest first. */
+    List<Path> queued() throws Exception {
+        Path q = nodeDir.resolve("queue");
+        if (!Files.isDirectory(q)) return List.of();
+        try (var files = Files.list(q)) {
+            return files.filter(f -> f.getFileName().toString().endsWith(".json")).sorted().toList();
+        }
+    }
+
+    List<String> eventTypes() {
+        return dsl.select(SESSION_EVENTS.TYPE).from(SESSION_EVENTS).where(SESSION_EVENTS.SESSION_ID.eq(session().id()))
+                .orderBy(SESSION_EVENTS.ID).fetch(SESSION_EVENTS.TYPE);
+    }
+
+    void hook(String fixture, Path cwd, String url) throws Exception {
         String payload;
         try (var in = getClass().getResourceAsStream("/hooks/" + fixture + ".json")) {
             payload = new String(in.readAllBytes(), StandardCharsets.UTF_8)
                     .replace("SESSION", sessionId).replace("CWD", cwd.toString());
         }
         ProcessBuilder pb = new ProcessBuilder("python3", REPORTER.toString()).redirectErrorStream(true);
-        pb.environment().put("ORANGE_URL", "http://localhost:" + port);
+        pb.environment().put("ORANGE_URL", url);
         pb.environment().put("ORANGE_NODE", "test-node");
         pb.environment().put("ORANGE_NODE_DIR", nodeDir.toString());
         // These tests apply events only after the hook has returned; a Stop hook must not wait for a verdict.
@@ -328,6 +354,68 @@ class SessionReporterIT {
         assertThat(post(http, event.replace("claude-code", "vim")).statusCode()).isEqualTo(400);
         assertThat(post(http, "{\"harness\":\"claude-code\",\"session_id\":\"x\",\"type\":\"stopped\"}").statusCode())
                 .isEqualTo(400);
+    }
+
+    @Test
+    void orangeOutOfReachQueuesTheEventAndReturnsAtOnce() throws Exception {
+        long start = System.nanoTime();
+        hook("user-prompt-submit", repo, unreachable());
+        assertThat(java.time.Duration.ofNanos(System.nanoTime() - start)).isLessThan(java.time.Duration.ofSeconds(4));
+        assertThat(queued()).singleElement().satisfies(f -> assertThat(Files.readString(f)).contains("\"user_prompt\""));
+        assertThat(sessions.find("claude-code", sessionId)).isEmpty();
+    }
+
+    @Test
+    void theNextHookReplaysTheQueueFirstInOrder() throws Exception {
+        String down = unreachable();
+        hook("session-start", repo, down);
+        hook("user-prompt-submit", repo, down);
+        assertThat(queued()).hasSize(2);
+
+        hook("stop-finished");
+        assertThat(queued()).isEmpty();
+        assertThat(eventTypes()).containsExactly("session_started", "user_prompt", "stopped");
+    }
+
+    @Test
+    void aReplayIsIdempotent() throws Exception {
+        hook("user-prompt-submit", repo, unreachable());
+        Path file = queued().getFirst();
+        String copy = Files.readString(file);
+        hook("post-tool-use");
+        // The same event once more, as if a replay had been cut off after orange took it.
+        Files.writeString(file, copy);
+        hook("post-tool-use");
+        assertThat(eventTypes().stream().filter("user_prompt"::equals)).hasSize(1);
+        assertThat(queued()).isEmpty();
+    }
+
+    @Test
+    void theQueueIsBounded() throws Exception {
+        Path q = Files.createDirectories(nodeDir.resolve("queue"));
+        long base = System.currentTimeMillis() * 1_000_000L;
+        for (int i = 0; i < 1005; i++) {
+            Files.writeString(q.resolve(String.format("%d-%s.json", base + i, UUID.randomUUID())), "{}");
+        }
+        Path old = q.resolve(String.format("%d-%s.json", base - 1, UUID.randomUUID()));
+        Files.writeString(old, "{}");
+        Files.setLastModifiedTime(old, java.nio.file.attribute.FileTime.from(java.time.Instant.now().minus(java.time.Duration.ofDays(8))));
+
+        hook("user-prompt-submit", repo, unreachable());
+        assertThat(queued()).hasSize(1000).doesNotContain(old);
+        // The newest stay: the hook's own event among them.
+        assertThat(Files.readString(queued().getLast())).contains("\"user_prompt\"");
+    }
+
+    @Test
+    void anEventOrangeRefusesIsDroppedNotRetried() throws Exception {
+        Path q = Files.createDirectories(nodeDir.resolve("queue"));
+        // No type: orange answers 400, and no replay will ever change that.
+        Files.writeString(q.resolve("1-bad.json"), "{\"event_id\":\"" + UUID.randomUUID() + "\",\"harness\":\"claude-code\","
+                + "\"session_id\":\"" + sessionId + "\"}");
+        hook("user-prompt-submit");
+        assertThat(queued()).isEmpty();
+        assertThat(eventTypes()).containsExactly("user_prompt");
     }
 
     HttpResponse<String> post(HttpClient http, String body) throws Exception {
