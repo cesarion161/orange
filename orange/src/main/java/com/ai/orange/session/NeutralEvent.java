@@ -22,7 +22,8 @@ import java.util.Set;
  * {@code dirty_files} (its {@code git status --porcelain} lines, at most 50; absent when git could
  * not be read); {@code waiting} has {@code reason} ({@code permission}, {@code input}
  * or {@code idle}) and {@code message}; {@code session_started} has {@code source};
- * {@code session_ended} has {@code reason}.
+ * {@code session_ended} has {@code reason}. Any event of the steering tab has {@code steering: true}
+ * (remote-first spec decision 8).
  */
 public record NeutralEvent(String eventId, String harness, String sessionId, String type, OffsetDateTime at,
                            String node, String cwd, String repoRoot, String worktree, String branch,

@@ -37,7 +37,7 @@ public final class SessionReactor {
      * @param type          the event's type
      * @param waitKind      for a {@code waiting} event: {@code permission}, {@code input} or {@code idle}
      * @param asks          for a {@code stopped} event: whether the last message asks something
-     * @param muted         the session's project is archived: nothing is filed
+     * @param muted         the session's project is archived, or it is the steering tab: nothing is filed
      */
     public static Decision onEvent(String status, String waitingReason, String type, String waitKind, boolean asks,
                                    boolean muted) {

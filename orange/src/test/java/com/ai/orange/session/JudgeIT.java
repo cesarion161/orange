@@ -402,6 +402,30 @@ class JudgeIT {
     }
 
     @Test
+    void aSteeringSessionsStopIsNeverJudged() throws Exception {
+        // The steering tab's reporter marks the session; its first event is enough, steering is sticky.
+        String eventId = UUID.randomUUID().toString();
+        ObjectNode e = Json.mapper().createObjectNode().put("event_id", eventId).put("harness", "claude-code")
+                .put("session_id", sessionId).put("type", "user_prompt").put("cwd", repoRoot).put("repo_root", repoRoot)
+                .put("branch", "main");
+        e.putObject("payload").put("prompt", "what's the status?").put("steering", true);
+        HttpResponse<String> res = http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/sessions/events"))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(e.toString())).build(), HttpResponse.BodyHandlers.ofString());
+        assertThat(res.statusCode()).isEqualTo(202);
+        processor.drain();
+
+        // Its stops are the user talking to orange: a question in it is no work to answer.
+        String stop = stop("Should I plan the retry work in billing now?");
+        assertThat(session().steering()).isTrue();
+        assertThat(session().projectId()).isNull();
+        assertThat(session().status()).isEqualTo(Session.STOPPED);
+        assertThat(runs.findBySession(session().id())).isEmpty();
+        assertThat(attention.findBySession(session().id())).isEmpty();
+        assertThat(poll(stop).state()).isEqualTo(Poll.State.NONE);
+    }
+
+    @Test
     void aProjectThatAnswersNothingItselfIsNotJudged() throws Exception {
         event("user_prompt", "prompt", "start");
         space.setConvention(session().projectId(), null, "auto-answer", Json.mapper().readTree("\"none\""),
