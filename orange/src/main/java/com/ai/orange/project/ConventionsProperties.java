@@ -25,7 +25,8 @@ public record ConventionsProperties(@DefaultValue({"evidence", "integrated"}) Li
                                     @DefaultValue("0.8") double autoAnswerConfidence,
                                     @DefaultValue({"09:00", "14:00"}) List<String> briefTimes,
                                     @DefaultValue({"22:00", "08:00"}) List<String> quietHours,
-                                    @DefaultValue("risky") String review) {
+                                    @DefaultValue("risky") String review,
+                                    @DefaultValue("auto") String planApproval) {
 
     public ConventionsProperties {
         done = done == null ? List.of() : List.copyOf(done);
@@ -62,6 +63,7 @@ public record ConventionsProperties(@DefaultValue({"evidence", "integrated"}) Li
         n.set("brief-times", Json.mapper().valueToTree(briefTimes));
         n.set("quiet-hours", Json.mapper().valueToTree(quietHours));
         if (review != null) n.put("review", review);
+        if (planApproval != null) n.put("plan-approval", planApproval);
         return n;
     }
 

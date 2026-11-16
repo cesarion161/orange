@@ -101,6 +101,7 @@ public class SteeringTools {
                                 + "\"required\":[\"project\",\"kind\",\"text\"]}", this::add),
                 spec("orange_set", "Set a convention for a project (or for one session of it, as an override). "
                         + "Keys include done, integration, evidence, base-branch, remote-push, review (never, risky, always), "
+                        + "plan-approval (auto, always, never: whether a plan asks before it dispatches), "
                         + "auto-answer, always-ask, auto-answer-confidence, cadence; value is any JSON.",
                         "{\"type\":\"object\",\"properties\":{" + PROJECT_ARG + ","
                                 + "\"key\":{\"type\":\"string\"},\"value\":{},"
