@@ -15,10 +15,10 @@ JAR=$(ls "$ROOT"/orange/build/libs/orange-*.jar | grep -v -- '-plain' | head -1)
 
 echo "== copying to $HOST"
 ssh "$HOST" 'mkdir -p /opt/orange/deploy /opt/orange/worker'
-# root runs and builds from these: they must be root's, not this machine's uid.
-rsync -a --chown=root:root --delete "$ROOT/deploy/vps/" "$HOST:/opt/orange/deploy/"
-rsync -a --chown=root:root --delete "$ROOT/orange/worker/" "$HOST:/opt/orange/worker/"
-rsync -a --chown=root:root "$JAR" "$HOST:/opt/orange/orange.jar.new"
+# root runs and builds from these: copied without owner or group, so they are root's, not this machine's uid (macOS rsync has no --chown).
+rsync -rlpt --delete "$ROOT/deploy/vps/" "$HOST:/opt/orange/deploy/"
+rsync -rlpt --delete "$ROOT/orange/worker/" "$HOST:/opt/orange/worker/"
+rsync -rlpt "$JAR" "$HOST:/opt/orange/orange.jar.new"
 
 echo "== secrets"
 "$ROOT/deploy/push-secrets.sh" "$HOST" --no-restart

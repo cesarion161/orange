@@ -31,10 +31,11 @@ Nothing host-specific is in this repo: the tailnet name and addresses are read o
 - **Firewall and SSH**: ufw denies everything incoming but SSH, Tailscale (the `tailscale0`
   interface and its UDP port) and the run bridge to orange's port (not to sshd). sshd takes keys
   only, and only once root is known to have a key.
-- **What runs may not reach** (`run-egress.sh`, kept by `orange-run-egress.service`): Docker
-  forwards bridge traffic past ufw, so `DOCKER-USER` drops what comes from the run bridge for the
-  tailnet (100.64.0.0/10), link-local addresses (a provider's metadata service) and the private
-  ranges. The internet stays open to runs.
+- **What runs may not reach** (`run-egress.sh`, kept by `orange-run-egress.service`): the tailnet
+  (100.64.0.0/10), link-local addresses (a provider's metadata service) and the private ranges,
+  dropped in the raw table as they come off the run bridge. Filtering in FORWARD would not hold:
+  Tailscale's chain there accepts everything bound for `tailscale0` first, and Docker forwards
+  bridge traffic past ufw. The internet stays open to runs.
 - **Checks**:
   - the API wants the token;
   - a container on the run network gets 403 everywhere but `/mcp/worker`, and cannot reach

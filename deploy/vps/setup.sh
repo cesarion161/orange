@@ -113,6 +113,11 @@ env.update({
     "ORANGE_PUBLIC_URL": os.environ["PUBLIC_URL"],
     "ORANGE_NTFY_URL": "http://127.0.0.1:" + os.environ["NTFY_PORT"],
     "NTFY_IMAGE": os.environ["NTFY_IMAGE"],
+    # No OpenTelemetry collector here (the laptop's Grafana LGTM is for development).
+    "MANAGEMENT_OTLP_METRICS_EXPORT_ENABLED": "false",
+    "MANAGEMENT_OTLP_TRACING_EXPORT_ENABLED": "false",
+    "MANAGEMENT_OTLP_LOGGING_EXPORT_ENABLED": "false",
+    "MANAGEMENT_TRACING_EXPORT_ENABLED": "false",
 })
 if os.environ["ORANGE_ZONE"]:
     env["ORANGE_NOTIFY_ZONE"] = os.environ["ORANGE_ZONE"]
@@ -215,7 +220,7 @@ ufw --force enable >/dev/null
 install -m 0644 "$OPT/deploy/orange-run-egress.service" /etc/systemd/system/orange-run-egress.service
 systemctl daemon-reload
 systemctl enable orange-run-egress.service >/dev/null 2>&1
-"$OPT/deploy/run-egress.sh" "$RUN_BRIDGE"
+systemctl restart orange-run-egress.service
 # Passwords go off only once a key is known to let root in; nothing is written before that.
 mkdir -p /run/sshd
 keys=$(sshd -T 2>/dev/null | sed -n 's/^authorizedkeysfile //p' | tr ' ' '\n' | sed "s|%h|/root|; s|%u|root|; s|^\([^/]\)|/root/\1|")
