@@ -196,7 +196,7 @@ orange runs on one Linux host, the laptop runs only the plugin. `deploy/vps/setu
 - the user `orange` (in the `docker` group, never root) and `orange.service` (systemd, `java -jar`, container mode); a new jar that does not get healthy is swapped back;
 - Postgres and ntfy in compose on 127.0.0.1 (ntfy: no anonymous access, `upstream-base-url` ntfy.sh for the iPhone);
 - the run network with a fixed subnet and its bridge `orange-runs0`, orange listening on 127.0.0.1 plus that gateway;
-- Claude Code on the host at the worker's pinned version (plan, brief, judge) and the worker image built as `orange`;
+- Claude Code on the host at the worker's pinned version (brief, judge; a plan runs in the worker image) and the worker image built as `orange`;
 - `tailscale serve` (443 → orange, 8443 → ntfy), ufw (incoming only SSH, Tailscale and the run bridge to orange's port), runs kept off the tailnet and private ranges (`run-egress.sh`), and sshd keys only;
 - then it checks it all, from loopback and from a container on the run network. Nothing host-specific is committed: the tailnet name is read on the host.
 
