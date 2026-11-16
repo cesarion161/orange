@@ -77,6 +77,7 @@ class JudgeIT {
     @Autowired WorkerRunner runner;
     @Autowired com.ai.orange.run.RunExecutors executors;
     @Autowired SchedulerPause pause;
+    @Autowired JudgeProperties judgeProps;
     @Autowired DSLContext dsl;
     final HttpClient http = HttpClient.newHttpClient();
 
@@ -92,10 +93,16 @@ class JudgeIT {
 
     /** Posts an event the way a reporter does and applies it; returns its event id. */
     String event(String type, String payloadField, String payloadText) throws Exception {
+        return event(type, payloadField, payloadText, null);
+    }
+
+    /** The same, for an event the reporter made at {@code at} (null: it does not say). */
+    String event(String type, String payloadField, String payloadText, java.time.OffsetDateTime at) throws Exception {
         String eventId = UUID.randomUUID().toString();
         ObjectNode e = Json.mapper().createObjectNode().put("event_id", eventId).put("harness", "claude-code")
                 .put("session_id", sessionId).put("type", type).put("cwd", repoRoot).put("repo_root", repoRoot)
                 .put("branch", "main");
+        if (at != null) e.put("at", at.toString());
         if (payloadField != null) e.putObject("payload").put(payloadField, payloadText);
         HttpResponse<String> res = http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/sessions/events"))
                 .header("Content-Type", "application/json")
@@ -352,6 +359,46 @@ class JudgeIT {
         assertThat(questions()).singleElement()
                 .satisfies(i -> assertThat(i.kind()).isEqualTo(AttentionItem.SESSION_QUESTION));
         assertThat(poll(stop).state()).isEqualTo(Poll.State.NONE);
+    }
+
+    @Test
+    void aStopReplayedAfterItsHookStoppedWaitingIsNotJudged() throws Exception {
+        event("user_prompt", "prompt", "start");
+        // The laptop slept: the reporter queued this stop and sends it on wake, long after its hook gave up.
+        java.time.OffsetDateTime late = java.time.OffsetDateTime.now().minus(judgeProps.hookWait()).minusMinutes(1);
+        String stop = event("stopped", "last_message", "Should I proceed?", late);
+        assertThat(session().status()).isEqualTo(Session.STOPPED);
+        assertThat(runs.findBySession(session().id())).isEmpty();  // no judge spends the plan on it
+        assertThat(questions()).singleElement()
+                .satisfies(i -> assertThat(i.kind()).isEqualTo(AttentionItem.SESSION_QUESTION));
+        assertThat(poll(stop).state()).isEqualTo(Poll.State.NONE);
+
+        // A stop that is late but still inside the hook's wait is judged as ever.
+        event("user_prompt", "prompt", "go on");
+        event("stopped", "last_message", "Should I proceed now?", java.time.OffsetDateTime.now().minusMinutes(1));
+        assertThat(session().status()).isEqualTo(Session.JUDGING);
+        event("user_prompt", "prompt", "never mind");  // cancels that judge run, which no later test may claim
+    }
+
+    @Test
+    void aStopTheReporterReplayedFromItsQueueIsNotJudgedEvenWhenRecent() throws Exception {
+        event("user_prompt", "prompt", "start");
+        // orange restarted for a minute: the hook that made this stop gave up and queued it; a later hook sent it.
+        String eventId = UUID.randomUUID().toString();
+        ObjectNode e = Json.mapper().createObjectNode().put("event_id", eventId).put("harness", "claude-code")
+                .put("session_id", sessionId).put("type", "stopped").put("cwd", repoRoot).put("repo_root", repoRoot)
+                .put("branch", "main").put("at", java.time.OffsetDateTime.now().minusMinutes(1).toString());
+        e.putObject("payload").put("last_message", "Should I proceed?").put("replayed", true);
+        HttpResponse<String> res = http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/sessions/events"))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(e.toString())).build(), HttpResponse.BodyHandlers.ofString());
+        assertThat(res.statusCode()).isEqualTo(202);
+        processor.drain();
+
+        assertThat(session().status()).isEqualTo(Session.STOPPED);
+        assertThat(runs.findBySession(session().id())).isEmpty();
+        assertThat(questions()).singleElement()
+                .satisfies(i -> assertThat(i.kind()).isEqualTo(AttentionItem.SESSION_QUESTION));
     }
 
     @Test

@@ -85,6 +85,21 @@ class DockerCommandTest {
     }
 
     @Test
+    void aHostAddressNamesTheHostForRuns() {
+        // On Linux host-gateway is docker0's address, where orange does not listen: the deploy names the run network's gateway.
+        RunnerProperties.Container gateway = new RunnerProperties.Container(null, null, null, null, null, null, null, null,
+                4096, null, "10.0.0.1");
+        assertThat(DockerCommand.run(coding(true), gateway, "501:20"))
+                .containsSequence("--add-host", "host.docker.internal:10.0.0.1");
+        assertThat(DockerCommand.run(coding(true), settings("", "", null), "501:20"))
+                .containsSequence("--add-host", "host.docker.internal:host-gateway");
+        for (String bad : List.of("-x", "10.0.0.1 --privileged", "example.com", "host-gateway;x")) {
+            assertThatThrownBy(() -> new RunnerProperties.Container(null, null, null, null, null, null, null, null, 4096,
+                    null, bad)).as(bad).isInstanceOf(IllegalArgumentException.class);
+        }
+    }
+
+    @Test
     void offlineMeansNoNetworkNoHostNameAndNoVolumes() {
         RunnerProperties.Container withVolume = settings("", "", List.of("orange-gradle-cache:/home/agent/.gradle"));
 

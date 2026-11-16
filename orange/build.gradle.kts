@@ -122,6 +122,9 @@ tasks.named<org.springframework.boot.gradle.tasks.run.BootRun>("bootRun") {
 }
 
 tasks.withType<Test> {
+    // The operator's own orange settings (the plugin's ORANGE_URL and ORANGE_API_TOKEN, …) stay out of
+    // the suite: Spring reads ORANGE_API_TOKEN as orange.api.token, and every test would then want it.
+    environment.keys.filter { it.startsWith("ORANGE_") }.toList().forEach { environment.remove(it) }
     // Docker Desktop on macOS publishes its socket under the user dir.
     // Testcontainers checks /var/run/docker.sock by default, so point it explicitly.
     val userSocket = file("${System.getProperty("user.home")}/.docker/run/docker.sock")

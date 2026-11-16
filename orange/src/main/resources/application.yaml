@@ -26,6 +26,10 @@ management:
       application: ${spring.application.name}
 
 orange:
+  server:
+    # More addresses to listen on beside server.address, comma-separated (blank: none). On the VPS:
+    # the run network's gateway, so contained runs reach /mcp/worker and nothing else listens publicly.
+    extra-addresses: ${ORANGE_SERVER_EXTRA_ADDRESSES:}
   repos:
     # One bare mirror per GitHub repo (remote-first spec §7.1): <root>/<owner>/<name>.git. Blank: ~/.orange/repos.
     root: ${ORANGE_REPOS_ROOT:}
@@ -234,6 +238,9 @@ orange:
       claude-command: [claude]
       # Created when missing: a bridge without traffic between containers.
       network: ${ORANGE_RUNNER_NETWORK:orange-runs}
+      # What runs call host.docker.internal: Docker's host-gateway, or an IP. On Linux host-gateway is
+      # docker0's address; the VPS names the run network's gateway, where orange listens for runs.
+      host-address: ${ORANGE_RUNNER_HOST_ADDRESS:host-gateway}
       # uid:gid inside the container. Blank = orange's own, so what a run writes is orange's to read.
       user: ${ORANGE_RUNNER_USER:}
       home: /home/agent

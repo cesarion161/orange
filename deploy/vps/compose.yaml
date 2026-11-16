@@ -1,0 +1,40 @@
+# orange's stateful neighbours on the VPS: Postgres and ntfy, published on 127.0.0.1 only.
+# setup.sh runs this as: docker compose -p orange --env-file /etc/orange/orange.env -f compose.yaml up -d
+name: orange
+services:
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: orange
+      POSTGRES_USER: orange
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set by setup.sh}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orange -d orange"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  ntfy:
+    image: ${NTFY_IMAGE:?set by setup.sh}
+    restart: unless-stopped
+    command: serve
+    ports:
+      # tailscale serve puts HTTPS on the tailnet in front of it; nothing else reaches it.
+      - "127.0.0.1:2586:80"
+    volumes:
+      - /etc/orange/ntfy/server.yml:/etc/ntfy/server.yml:ro
+      - ntfy:/var/lib/ntfy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --tries=1 http://localhost:80/v1/health -O - | grep -q true"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
+  ntfy:

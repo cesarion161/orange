@@ -1,0 +1,26 @@
+# orange on the VPS (remote-first spec, builder's call 1): on the host, as the user orange, in the
+# docker group, because it starts the run containers. Installed by setup.sh.
+[Unit]
+Description=orange coordinator
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=orange
+Group=orange
+SupplementaryGroups=docker
+EnvironmentFile=/etc/orange/orange.env
+WorkingDirectory=/var/lib/orange
+ExecStart=/usr/bin/java -Xms256m -Xmx1536m -jar /opt/orange/orange.jar
+SuccessExitStatus=143
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=60
+LimitNOFILE=65536
+NoNewPrivileges=yes
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

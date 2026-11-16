@@ -71,7 +71,7 @@ public final class DockerCommand {
         if (c.online()) {
             a.add(p.network());
             a.add("--add-host");
-            a.add(ContainerUrls.HOST + ":host-gateway");
+            a.add(ContainerUrls.HOST + ":" + p.hostAddress());
         } else {
             a.add("none");
         }

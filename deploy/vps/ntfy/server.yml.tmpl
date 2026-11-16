@@ -1,0 +1,14 @@
+# ntfy on the VPS (remote-first spec, decision 2 and builder's call 4). setup.sh fills in @BASE_URL@.
+# Only the tailnet reaches it (tailscale serve); nobody reads or writes without an account.
+base-url: "@BASE_URL@"
+listen-http: ":80"
+behind-proxy: true
+cache-file: "/var/lib/ntfy/cache.db"
+cache-duration: "24h"
+auth-file: "/var/lib/ntfy/auth.db"
+auth-default-access: "deny-all"
+# The iPhone app is woken through APNs, which a self-hosted server reaches through ntfy.sh. Only a
+# hash of the topic URL and the message id go there, never the message.
+upstream-base-url: "https://ntfy.sh"
+enable-signup: false
+enable-login: true

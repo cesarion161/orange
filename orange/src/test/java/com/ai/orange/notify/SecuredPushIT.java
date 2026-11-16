@@ -141,8 +141,9 @@ class SecuredPushIT {
         assertThat(status("POST", "/%61ttention/" + UUID.randomUUID() + "/resolve", null)).isIn(400, 403);
         assertThat(status("POST", "/mcp/steering", null)).isEqualTo(403);
         assertThat(status("POST", "/mcp/steering", "s3cret-token")).isNotIn(401, 403);
-        // The older operator API is as open as before, and the worker endpoint keeps its own tokens.
-        assertThat(status("GET", "/tasks", null)).isEqualTo(200);
+        // The rest of the operator API wants it too (ApiTokenIT), and the worker endpoint keeps its own tokens.
+        assertThat(status("GET", "/tasks", null)).isEqualTo(403);
+        assertThat(status("GET", "/tasks", "s3cret-token")).isEqualTo(200);
         assertThat(status("POST", "/mcp/worker", "s3cret-token")).isEqualTo(401);
     }
 

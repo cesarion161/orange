@@ -6,9 +6,12 @@ import java.security.MessageDigest;
 
 /**
  * The coordinator's API token ({@code orange.api.token}, {@code ORANGE_API_TOKEN}): the bearer
- * token nodes and steering clients send to {@code /sessions}, {@code /attention},
- * {@code /mcp/steering} and {@code /brief}. With no token configured those endpoints are open,
- * like the rest of the operator API, which is only right while orange listens on localhost.
+ * token the reporter, steering clients and the operator send to the whole operator API (tasks,
+ * plans, dispatch, scheduler, runs, sessions, attention, {@code /mcp/steering}, the brief,
+ * metrics). Probes, the webhook (HMAC) and {@code /mcp/worker} (per-run tokens) authenticate
+ * otherwise. With no token configured everything is open, which is only right while orange
+ * listens on localhost and nothing proxies to it; behind {@code tailscale serve} every request
+ * comes from 127.0.0.1, so on the VPS the token is mandatory.
  *
  * <p>One brief's page ({@code /brief/{id}}) is the exception: a phone that taps a push sends no
  * header, so {@code BriefPageController} takes this token or the brief's own page key.

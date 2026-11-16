@@ -9,7 +9,8 @@
         "orange-mcp"
       ],
       "env": {
-        "ORANGE_BASE_URL": "http://localhost:8080"
+        "ORANGE_BASE_URL": "${ORANGE_URL:-http://localhost:8080}",
+        "ORANGE_API_TOKEN": "${ORANGE_API_TOKEN:-}"
       }
     }
   }
