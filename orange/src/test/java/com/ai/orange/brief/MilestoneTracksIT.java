@@ -148,6 +148,25 @@ class MilestoneTracksIT {
     }
 
     @Test
+    void elapsedAfterASupersedeKeepsTheOriginalStart() {
+        Project p = project();
+        SpaceItem first = milestone(p, "Beta", null);
+        task(p, first.id(), "integrated");
+        task(p, first.id(), "ready");
+        task(p, first.id(), "ready");
+        task(p, first.id(), "ready");
+        // Edited just now, due on the same day: half of its time is still gone, and so it is still behind.
+        SpaceItem edited = space.add(p.id(), SpaceItem.MILESTONE, "Public beta", Author.USER, at.plusDays(5), null,
+                first.id());
+
+        Milestone m = read(p).getFirst();
+
+        assertThat(m.id()).isEqualTo(edited.id().toString());
+        assertThat(m.elapsedPercent()).isEqualTo(50);
+        assertThat(m.track()).isEqualTo(OnTrack.BEHIND);
+    }
+
+    @Test
     void anAgentsProposedEditDoesNotTakeTheTasks() {
         Project p = project();
         SpaceItem beta = milestone(p, "Beta", null);

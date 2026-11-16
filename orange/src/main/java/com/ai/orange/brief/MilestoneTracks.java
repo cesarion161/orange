@@ -145,7 +145,10 @@ public class MilestoneTracks {
                     int n = counted.getOrDefault(state, 0);
                     if (n > 0) tasks.put(state, n);
                 }
-                milestones.add(milestone(projectId, m, tasks, at, today, zone, margin));
+                // Editing a milestone supersedes it: its time runs from the first item of its chain.
+                List<UUID> chain = chains.get(m.id());
+                OffsetDateTime start = all.get(chain.getLast()).createdAt();
+                milestones.add(milestone(projectId, m, start, tasks, at, today, zone, margin));
             }
             out.put(projectId, milestones);
         }
@@ -192,21 +195,22 @@ public class MilestoneTracks {
         return chain;
     }
 
-    private Milestone milestone(UUID projectId, Row m, Map<String, Integer> tasks, OffsetDateTime at, LocalDate today,
-                                ZoneId zone, double margin) {
+    /** @param start when the milestone was first set: the oldest item of its supersede chain */
+    private Milestone milestone(UUID projectId, Row m, OffsetDateTime start, Map<String, Integer> tasks,
+                                OffsetDateTime at, LocalDate today, ZoneId zone, double margin) {
         if (m.dueAt() == null) {
             return new Milestone(m.id().toString(), m.text(), null, null, null, false, null, tasks, null);
         }
         int daysLeft = (int) ChronoUnit.DAYS.between(today, m.dueAt().atZoneSameInstant(zone).toLocalDate());
-        long whole = Duration.between(m.createdAt(), m.dueAt()).toMillis();
-        long gone = Duration.between(m.createdAt(), at).toMillis();
+        long whole = Duration.between(start, m.dueAt()).toMillis();
+        long gone = Duration.between(start, at).toMillis();
         int elapsed = whole <= 0 ? 100 : (int) Math.clamp(100 * gone / whole, 0, 100);
         // Session work is not linked to a milestone (Phase D ruling 9): the count is the project's.
         int closedSince = dsl.fetchCount(dsl.selectOne().from(SESSION_WORK)
                 .join(SESSIONS).on(SESSIONS.ID.eq(SESSION_WORK.SESSION_ID))
                 .where(SESSIONS.PROJECT_ID.eq(projectId)
                         .and(SESSION_WORK.STATUS.eq(SessionWork.CLOSED))
-                        .and(SESSION_WORK.CLOSED_AT.gt(m.createdAt()))));
+                        .and(SESSION_WORK.CLOSED_AT.gt(start))));
         int total = tasks.values().stream().mapToInt(Integer::intValue).sum();
         String track = OnTrack.label(elapsed, tasks.getOrDefault(MERGED, 0), total, tasks.getOrDefault(STUCK, 0),
                 margin);
