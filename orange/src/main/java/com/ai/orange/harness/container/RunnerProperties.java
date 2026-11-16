@@ -4,6 +4,7 @@ import java.math.BigInteger;
 import java.util.List;
 import java.util.regex.Pattern;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
 /**
@@ -44,6 +45,10 @@ public record RunnerProperties(@DefaultValue("process") Isolation isolation, @De
      * @param pidsLimit     {@code --pids-limit} per container (it counts threads)
      * @param volumes       extra mounts of online containers, {@code source:target[:ro]}, e.g. a
      *                      named volume for a dependency cache; shared by every run. Never the Docker socket
+     * @param hostAddress   what online containers call {@code host.docker.internal}: Docker's
+     *                      {@code host-gateway} (the default), or an IP address. On Linux host-gateway
+     *                      is the default bridge's gateway, so the VPS names the run network's gateway,
+     *                      the one address of the host orange listens on for runs
      */
     public record Container(@DefaultValue("docker") List<String> docker,
                             @DefaultValue(Container.DEFAULT_IMAGE) String image,
@@ -54,14 +59,19 @@ public record RunnerProperties(@DefaultValue("process") Isolation isolation, @De
                             @DefaultValue("") String memory,
                             @DefaultValue("") String cpus,
                             @DefaultValue("4096") int pidsLimit,
-                            List<String> volumes) {
+                            List<String> volumes,
+                            @DefaultValue(Container.HOST_GATEWAY) String hostAddress) {
 
         static final String DEFAULT_IMAGE = "orange-worker:local";
         static final String DEFAULT_NETWORK = "orange-runs";
         static final String DEFAULT_HOME = "/home/agent";
         static final int DEFAULT_PIDS_LIMIT = 4096;
+        static final String HOST_GATEWAY = "host-gateway";
+        /** An IPv4 or IPv6 literal: digits, hex, dots and colons only, so it cannot smuggle an option in. */
+        private static final Pattern IP = Pattern.compile("[0-9A-Fa-f.:]+");
         private static final Pattern USER = Pattern.compile("\\d+(:\\d+)?");
 
+        @ConstructorBinding
         public Container {
             docker = docker == null || docker.isEmpty() ? List.of("docker") : List.copyOf(docker);
             // An empty variable in .env binds as an empty string, which must mean the default.
@@ -99,11 +109,22 @@ public record RunnerProperties(@DefaultValue("process") Isolation isolation, @De
                             + volume);
                 }
             }
+            hostAddress = hostAddress == null || hostAddress.isBlank() ? HOST_GATEWAY : hostAddress.strip();
+            if (!hostAddress.equals(HOST_GATEWAY) && !IP.matcher(hostAddress).matches()) {
+                throw new IllegalArgumentException("orange.runner.container.host-address must be host-gateway or an IP address: "
+                        + hostAddress);
+            }
+        }
+
+        /** Every setting but the host's address, which stays Docker's host-gateway. */
+        public Container(List<String> docker, String image, List<String> claudeCommand, String network, String user,
+                         String home, String memory, String cpus, int pidsLimit, List<String> volumes) {
+            this(docker, image, claudeCommand, network, user, home, memory, cpus, pidsLimit, volumes, HOST_GATEWAY);
         }
 
         /** Every setting at its default. */
         public static Container defaults() {
-            return new Container(null, null, null, null, null, null, null, null, DEFAULT_PIDS_LIMIT, null);
+            return new Container(null, null, null, null, null, null, null, null, DEFAULT_PIDS_LIMIT, null, null);
         }
     }
 }
