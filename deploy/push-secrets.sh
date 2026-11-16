@@ -18,7 +18,7 @@ for a in "$@"; do
   esac
 done
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-ENV="$ROOT/orange/.env"
+ENV="${ORANGE_ENV_FILE:-$ROOT/orange/.env}"  # another checkout's: ORANGE_ENV_FILE=…
 [ -f "$ENV" ] || { echo "push-secrets: no $ENV" >&2; exit 1; }
 lines=$(grep -E '^(CLAUDE_CODE_OAUTH_TOKEN|ORANGE_GITHUB_TOKENS)=.+' "$ENV" || true)
 [ -n "$lines" ] || { echo "push-secrets: neither secret is set in $ENV" >&2; exit 1; }
