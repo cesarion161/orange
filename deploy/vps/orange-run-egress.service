@@ -1,0 +1,13 @@
+# Keeps run containers off the tailnet and private networks (run-egress.sh). Installed by setup.sh.
+[Unit]
+Description=orange: what run containers may not reach
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/orange/deploy/run-egress.sh orange-runs0
+
+[Install]
+WantedBy=multi-user.target

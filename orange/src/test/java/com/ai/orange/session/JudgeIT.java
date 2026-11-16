@@ -381,6 +381,27 @@ class JudgeIT {
     }
 
     @Test
+    void aStopTheReporterReplayedFromItsQueueIsNotJudgedEvenWhenRecent() throws Exception {
+        event("user_prompt", "prompt", "start");
+        // orange restarted for a minute: the hook that made this stop gave up and queued it; a later hook sent it.
+        String eventId = UUID.randomUUID().toString();
+        ObjectNode e = Json.mapper().createObjectNode().put("event_id", eventId).put("harness", "claude-code")
+                .put("session_id", sessionId).put("type", "stopped").put("cwd", repoRoot).put("repo_root", repoRoot)
+                .put("branch", "main").put("at", java.time.OffsetDateTime.now().minusMinutes(1).toString());
+        e.putObject("payload").put("last_message", "Should I proceed?").put("replayed", true);
+        HttpResponse<String> res = http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/sessions/events"))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(e.toString())).build(), HttpResponse.BodyHandlers.ofString());
+        assertThat(res.statusCode()).isEqualTo(202);
+        processor.drain();
+
+        assertThat(session().status()).isEqualTo(Session.STOPPED);
+        assertThat(runs.findBySession(session().id())).isEmpty();
+        assertThat(questions()).singleElement()
+                .satisfies(i -> assertThat(i.kind()).isEqualTo(AttentionItem.SESSION_QUESTION));
+    }
+
+    @Test
     void aProjectThatAnswersNothingItselfIsNotJudged() throws Exception {
         event("user_prompt", "prompt", "start");
         space.setConvention(session().projectId(), null, "auto-answer", Json.mapper().readTree("\"none\""),

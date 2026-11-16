@@ -15,8 +15,9 @@ While orange is out of reach (the laptop offline, the VPS restarting) events wai
 each under <node dir>/queue/, and the next hook that gets through sends them first, oldest first.
 Each keeps its event id, so a replay that orange already took is stored once. The queue keeps the
 newest 1000 events of the last 7 days. An event orange refuses for good (a 4xx other than
-401/403/408/425/429) is dropped; anything else waits for the next hook. A stop is waited on for a
-verdict only when it got through at once; orange never judges one that arrives late.
+401/403/408/425/429) is dropped; anything else waits for the next hook. A replayed event carries
+payload.replayed, and orange never judges a replayed stop: its hook is gone. A stop is waited on for
+a verdict only when this hook sent it.
 
 Environment:
   ORANGE_URL             the coordinator (default http://localhost:8080)
@@ -135,10 +136,12 @@ def post(url, data, headers, timeout):
         return "retry"
 
 
-def flush(url, headers, deadline):
+def flush(url, headers, deadline, mine=None):
     """Sends the queue oldest first until it is empty, orange fails, or the hook's time is up.
 
     One hook at a time: another one holding the lock is already sending, so this one leaves it.
+    Every event but this hook's own (`mine`) goes with payload.replayed: its hook is gone, so
+    nothing waits for a verdict on it and orange does not judge it.
     """
     try:
         os.makedirs(queue_dir(), exist_ok=True)
@@ -160,12 +163,27 @@ def flush(url, headers, deadline):
                     data = fh.read()
             except OSError:
                 continue
+            if f != mine:
+                data = replayed(data)
             if post(url, data, headers, left) == "retry":
                 return
             try:
                 os.remove(f)
             except OSError:
                 pass
+
+
+def replayed(data):
+    """The event marked as sent late; anything that is not an event goes as it is (orange refuses it)."""
+    try:
+        event = json.loads(data)
+        if isinstance(event, dict):
+            payload = event.get("payload")
+            event["payload"] = dict(payload, replayed=True) if isinstance(payload, dict) else {"replayed": True}
+            return json.dumps(event).encode("utf-8")
+    except ValueError:
+        pass
+    return data
 
 
 def git(cwd, *args):
@@ -321,7 +339,7 @@ def main():
     if queued():
         # Behind what waits: orange applies a session's events in the order it gets them.
         mine = enqueue(event)
-        flush(url, headers, deadline)
+        flush(url, headers, deadline, mine)
         delivered = not os.path.exists(mine)
     else:
         outcome = post(url, json.dumps(event).encode("utf-8"), headers, timeout)

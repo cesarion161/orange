@@ -210,16 +210,28 @@ ufw allow 22/tcp >/dev/null                  # the way back in when Tailscale br
 ufw allow 41641/udp >/dev/null               # Tailscale's direct connections
 ufw allow in on tailscale0 >/dev/null
 ufw allow in on "$RUN_BRIDGE" to "$RUN_GATEWAY" port "$PORT" proto tcp >/dev/null  # runs reach /mcp/worker
+ufw insert 1 deny in on "$RUN_BRIDGE" to any port 22 proto tcp >/dev/null  # but not sshd
 ufw --force enable >/dev/null
-cat > /etc/ssh/sshd_config.d/00-orange.conf <<'SSHD'
+install -m 0644 "$OPT/deploy/orange-run-egress.service" /etc/systemd/system/orange-run-egress.service
+systemctl daemon-reload
+systemctl enable orange-run-egress.service >/dev/null 2>&1
+"$OPT/deploy/run-egress.sh" "$RUN_BRIDGE"
+# Passwords go off only once a key is known to let root in; nothing is written before that.
+mkdir -p /run/sshd
+keys=$(sshd -T 2>/dev/null | sed -n 's/^authorizedkeysfile //p' | tr ' ' '\n' | sed "s|%h|/root|; s|%u|root|; s|^\([^/]\)|/root/\1|")
+has_key=0
+for f in $keys; do [ -s "$f" ] && has_key=1; done
+[ "$has_key" = 1 ] || fail "root has no authorized key ($keys); refusing to turn passwords off"
+DROPIN=/etc/ssh/sshd_config.d/00-orange.conf
+trap 'rm -f "$DROPIN.new"' EXIT
+cat > "$DROPIN.new" <<'SSHD'
 # Written by orange's setup.sh: keys only.
 PermitRootLogin prohibit-password
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 SSHD
-mkdir -p /run/sshd
-[ -s /root/.ssh/authorized_keys ] || fail "root has no authorized key; refusing to turn passwords off"
-sshd -t || { rm -f /etc/ssh/sshd_config.d/00-orange.conf; fail "sshd refused the new config; left it as it was"; }
+mv -f "$DROPIN.new" "$DROPIN"
+sshd -t || { rm -f "$DROPIN"; fail "sshd refused the new config; left it as it was"; }
 systemctl reload ssh.service 2>/dev/null || true
 
 say "checks"
@@ -237,6 +249,9 @@ check "a run is refused the operator API, token or not" 403 "$(probe -H "Authori
 check "a run reaches /mcp/worker (which wants its run token)" 401 "$(probe -X POST "http://host.docker.internal:$PORT/mcp/worker")"
 check "a run does not reach Postgres" 000 "$(probe "http://$RUN_GATEWAY:5432/")"
 check "a run does not reach ntfy" 000 "$(probe "http://$RUN_GATEWAY:$NTFY_PORT/")"
+check "a run does not reach sshd" 000 "$(probe "http://$RUN_GATEWAY:22/")"
+check "a run does not reach the tailnet (MagicDNS)" 000 "$(probe http://100.100.100.100/)"
+check "a run does not reach link-local (metadata)" 000 "$(probe http://169.254.169.254/)"
 check "a run reaches the internet" 200 "$(probe https://api.github.com/zen)"
 ntfy_anon=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$NTFY_PORT/$TOPIC/json?poll=1")
 check "ntfy wants an account" refused "$(case $ntfy_anon in 401|403) echo refused;; *) echo "$ntfy_anon";; esac)"

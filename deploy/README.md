@@ -29,11 +29,16 @@ Nothing host-specific is in this repo: the tailnet name and addresses are read o
 - **The tailnet entry**: `tailscale serve` gives HTTPS on the host's MagicDNS name: port 443 is
   orange, port 8443 is ntfy.
 - **Firewall and SSH**: ufw denies everything incoming but SSH, Tailscale (the `tailscale0`
-  interface and its UDP port) and the run bridge to orange's port. sshd takes keys only.
+  interface and its UDP port) and the run bridge to orange's port (not to sshd). sshd takes keys
+  only, and only once root is known to have a key.
+- **What runs may not reach** (`run-egress.sh`, kept by `orange-run-egress.service`): Docker
+  forwards bridge traffic past ufw, so `DOCKER-USER` drops what comes from the run bridge for the
+  tailnet (100.64.0.0/10), link-local addresses (a provider's metadata service) and the private
+  ranges. The internet stays open to runs.
 - **Checks**:
   - the API wants the token;
   - a container on the run network gets 403 everywhere but `/mcp/worker`, and cannot reach
-    Postgres or ntfy, but does reach the internet;
+    Postgres, ntfy, sshd, the tailnet or link-local addresses, but does reach the internet;
   - ntfy wants an account;
   - sshd and ufw are as above.
 

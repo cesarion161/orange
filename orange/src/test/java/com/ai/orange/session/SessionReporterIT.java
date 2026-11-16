@@ -375,6 +375,13 @@ class SessionReporterIT {
         hook("stop-finished");
         assertThat(queued()).isEmpty();
         assertThat(eventTypes()).containsExactly("session_started", "user_prompt", "stopped");
+        // What waited says so, and orange judges none of it; the hook's own event is as fresh as ever.
+        assertThat(dsl.select(SESSION_EVENTS.PAYLOAD).from(SESSION_EVENTS).where(SESSION_EVENTS.SESSION_ID.eq(session().id()))
+                .orderBy(SESSION_EVENTS.ID).fetch(r -> r.value1().data()))
+                .satisfiesExactly(
+                        first -> assertThat(first).contains("\"replayed\": true"),
+                        second -> assertThat(second).contains("\"replayed\": true"),
+                        own -> assertThat(own).doesNotContain("replayed"));
     }
 
     @Test
