@@ -15,6 +15,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import org.jooq.JSONB;
 import org.springframework.stereotype.Service;
 
@@ -78,6 +79,14 @@ public class PlanGraphService {
      * @throws IllegalArgumentException when the project or a repo cannot be placed; nothing is inserted
      */
     public List<Task> ingest(PlanJson plan, String project, String repo) {
+        return ingest(plan, project, repo, null, null);
+    }
+
+    /**
+     * Like {@link #ingest(PlanJson, String, String)}, for the plan {@code planId} (a {@code plans} row),
+     * whose tasks serve {@code milestoneId}; either may be null.
+     */
+    public List<Task> ingest(PlanJson plan, String project, String repo, UUID planId, UUID milestoneId) {
         if (plan == null || plan.tasks() == null || plan.tasks().isEmpty()) {
             throw new IllegalArgumentException("plan has no tasks");
         }
@@ -88,7 +97,7 @@ public class PlanGraphService {
         List<TaskDef> defs = new ArrayList<>(plan.tasks().size());
         for (PlanJson.PlanTask t : plan.tasks()) {
             TaskPlacement own = t.repo() == null || t.repo().isBlank() ? placement : projects.placeTask(projectRef, t.repo());
-            defs.add(toDef(t, own));
+            defs.add(toDef(t, own, planId, milestoneId));
         }
         return taskService.createGraph(defs, toEdges(plan.edges()));
     }
@@ -96,7 +105,7 @@ public class PlanGraphService {
     // ─────────────────────────── helpers ────────────────────────────────
 
     /** A plan task as a {@link TaskDef}, with its metadata and where it is done. */
-    private static TaskDef toDef(PlanJson.PlanTask t, TaskPlacement placement) {
+    private static TaskDef toDef(PlanJson.PlanTask t, TaskPlacement placement, UUID planId, UUID milestoneId) {
         return new TaskDef(
                 t.key(),
                 t.title(),
@@ -104,7 +113,9 @@ public class PlanGraphService {
                 t.role(), // TaskDef normalises it to implementer or chore
                 t.priority(),
                 metadata(t),
-                placement);
+                placement,
+                planId,
+                milestoneId);
     }
 
     private static List<EdgeKey> toEdges(List<PlanJson.PlanEdge> raw) {
