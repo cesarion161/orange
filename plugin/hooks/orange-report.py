@@ -131,11 +131,21 @@ def prune(files):
     return kept[-QUEUE_MAX:]
 
 
+def request(url, headers, method, data=None):
+    """A request to orange whose Authorization header is never sent on to wherever a redirect points."""
+    plain = {k: v for k, v in headers.items() if k.lower() != "authorization"}
+    req = urllib.request.Request(url, data=data, headers=plain, method=method)
+    for k, v in headers.items():
+        if k.lower() == "authorization":
+            req.add_unredirected_header(k, v)
+    return req
+
+
 def post(url, data, headers, timeout):
     """Posts one event: "ok", "retry" (orange out of reach, or a refusal that may pass later) or "drop"."""
     try:
-        request = urllib.request.Request(url, data=data, headers=headers, method="POST")
-        urllib.request.urlopen(request, timeout=timeout).read()
+        request_ = request(url, headers, "POST", data)
+        urllib.request.urlopen(request_, timeout=timeout).read()
         return "ok"
     except urllib.error.HTTPError as e:
         return "retry" if e.code >= 500 or e.code in RETRY_STATUSES else "drop"
@@ -284,9 +294,8 @@ def steering_context(headers, deadline):
         return None
     url = os.environ.get("ORANGE_URL", "http://localhost:8080").rstrip("/") + "/steering/context"
     try:
-        request = urllib.request.Request(url, headers={k: v for k, v in headers.items() if k == "Authorization"},
-                                         method="GET")
-        with urllib.request.urlopen(request, timeout=left) as response:
+        context = request(url, {k: v for k, v in headers.items() if k == "Authorization"}, "GET")
+        with urllib.request.urlopen(context, timeout=left) as response:
             if response.status != 200:
                 return None
             text = response.read(64 * 1024).decode("utf-8").strip()
@@ -416,16 +425,15 @@ def wait_for_verdict(event, headers):
         wait = max(1, min(20, int(deadline - time.monotonic())))
         query = urlencode({"harness": event["harness"], "session_id": event["session_id"],
                            "event_id": event["event_id"], "wait": wait})
-        request = urllib.request.Request(base + query, headers=headers, method="GET")
-        answer = json.load(urllib.request.urlopen(request, timeout=wait + 10))
+        poll = request(base + query, headers, "GET")
+        answer = json.load(urllib.request.urlopen(poll, timeout=wait + 10))
         state = answer.get("state")
         if state == "verdict":
             if answer.get("kind") != "continue" or not answer.get("message"):
                 return None
             # The answer counts only once orange has it as delivered. If the user spoke meanwhile, or
             # this call fails, say nothing: orange keeps the answer for the user instead.
-            ack = urllib.request.Request(base.replace("/verdict?", "/verdict/ack?") + query, headers=headers,
-                                         data=b"", method="POST")
+            ack = request(base.replace("/verdict?", "/verdict/ack?") + query, headers, "POST", b"")
             ok = json.load(urllib.request.urlopen(ack, timeout=5)).get("ok")
             return answer["message"] if ok else None
         if state != "pending":

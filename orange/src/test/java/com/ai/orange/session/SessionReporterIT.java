@@ -435,6 +435,48 @@ class SessionReporterIT {
         assertThat(eventTypes()).containsExactly("user_prompt");
     }
 
+    @Test
+    void theTokenNeverFollowsARedirect() throws Exception {
+        // Something at ORANGE_URL that sends every request elsewhere: the token must not go along.
+        List<String> landed = new java.util.concurrent.CopyOnWriteArrayList<>();
+        List<String> asked = new java.util.concurrent.CopyOnWriteArrayList<>();
+        com.sun.net.httpserver.HttpServer server = com.sun.net.httpserver.HttpServer.create(
+                new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        String base = "http://127.0.0.1:" + server.getAddress().getPort();
+        server.createContext("/", ex -> {
+            ex.getRequestBody().readAllBytes();
+            if (ex.getRequestURI().getPath().startsWith("/elsewhere")) {
+                landed.add(ex.getRequestMethod() + " " + ex.getRequestURI().getPath() + " "
+                        + ex.getRequestHeaders().getFirst("Authorization"));
+                byte[] body = "{\"state\":\"none\"}".getBytes(StandardCharsets.UTF_8);
+                ex.sendResponseHeaders(200, body.length);
+                ex.getResponseBody().write(body);
+            } else {
+                asked.add(ex.getRequestHeaders().getFirst("Authorization"));
+                ex.getResponseHeaders().add("Location", base + "/elsewhere" + ex.getRequestURI().getPath());
+                ex.sendResponseHeaders(302, -1);
+            }
+            ex.close();
+        });
+        server.start();
+        try {
+            Map<String, String> env = Map.of("ORANGE_API_TOKEN", "secret-test-token", "ORANGE_STEERING", "1",
+                    "ORANGE_HOOK_WAIT", "2");
+            run("session-start", repo, base, env);
+            run("stop-finished", repo, base, env);
+        } finally {
+            server.stop(0);
+        }
+
+        // orange itself is asked with the token; the event post, the steering context and the verdict
+        // poll were each sent on, without it.
+        assertThat(asked).hasSizeGreaterThanOrEqualTo(3).allSatisfy(a -> assertThat(a).isEqualTo("Bearer secret-test-token"));
+        assertThat(landed).anySatisfy(l -> assertThat(l).startsWith("GET /elsewhere/sessions/events"))
+                .anySatisfy(l -> assertThat(l).startsWith("GET /elsewhere/steering/context"))
+                .anySatisfy(l -> assertThat(l).startsWith("GET /elsewhere/sessions/verdict"))
+                .allSatisfy(l -> assertThat(l).endsWith(" null").doesNotContain("secret-test-token"));
+    }
+
     /** What orange answers at {@code GET /steering/context} right now. */
     String steeringContext() throws Exception {
         HttpResponse<String> res = HttpClient.newHttpClient().send(
