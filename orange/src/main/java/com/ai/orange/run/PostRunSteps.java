@@ -6,6 +6,7 @@ import org.springframework.context.annotation.Lazy;
 import com.ai.orange.evidence.EvidenceRepository;
 import com.ai.orange.json.Json;
 import com.ai.orange.task.Task;
+import com.ai.orange.task.TaskAttention;
 import com.ai.orange.task.TaskEventRepository;
 import com.ai.orange.task.TaskRepository;
 import com.ai.orange.task.TaskStatus;
@@ -51,10 +52,12 @@ public class PostRunSteps {
     private final RunRepository runs;
     private final SessionJudgement judgement;
     private final SessionClosing closing;
+    private final TaskAttention taskAttention;
 
     public PostRunSteps(TaskRepository tasks, TaskEventRepository taskEvents, SchedulerPause pause,
                         WorktreeService worktrees, EvidenceRepository evidence, RunRepository runs,
-                        @Lazy SessionJudgement judgement, @Lazy SessionClosing closing) {
+                        @Lazy SessionJudgement judgement, @Lazy SessionClosing closing, TaskAttention taskAttention) {
+        this.taskAttention = taskAttention;
         this.closing = closing;
         this.judgement = judgement;
         this.tasks = tasks;
@@ -229,7 +232,15 @@ public class PostRunSteps {
             log.info("task {} moved on before run {}'s question landed", task.id(), run.id());
             return;
         }
-        event(run, "needs_human", node(run).put("question", question));
+        long eventId;
+        try {
+            eventId = taskEvents.append(task.id(), ACTOR, "needs_human",
+                    JSONB.valueOf(node(run).put("question", question).toString()));
+        } catch (RuntimeException e) {
+            log.warn("could not persist needs_human for task {}: {}", task.id(), e.getMessage());
+            eventId = -1;
+        }
+        taskAttention.stuck(task, question, eventId);
     }
 
     /** Moves the task if it is still where this run left it; false (and nothing done) otherwise. */

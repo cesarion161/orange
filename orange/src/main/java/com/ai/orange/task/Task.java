@@ -39,4 +39,17 @@ public record Task(
         UUID repoId,
         UUID planId,
         UUID milestoneId) {
+
+    /**
+     * The short id people see and stuck branches are named by ({@code orange/task/<short id>}): the
+     * last 8 hex digits. uuidv7's first 8 are a timestamp that tasks of one plan share.
+     */
+    public static String shortId(UUID id) {
+        String s = id.toString();
+        return s.substring(s.length() - 8);
+    }
+
+    public String shortId() {
+        return shortId(id);
+    }
 }

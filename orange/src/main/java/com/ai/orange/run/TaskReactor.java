@@ -14,6 +14,7 @@ import com.ai.orange.run.ReactorDecision.Action;
 import com.ai.orange.run.ReactorDecision.LastRun;
 import com.ai.orange.run.ReactorDecision.TaskSnapshot;
 import com.ai.orange.task.Task;
+import com.ai.orange.task.TaskAttention;
 import com.ai.orange.task.TaskEventRepository;
 import com.ai.orange.task.TaskRepository;
 import com.ai.orange.task.TaskStatus;
@@ -58,6 +59,7 @@ public class TaskReactor {
     private final EvidenceAsk evidenceAsk;
     private final ProjectRepository projects;
     private final IntegrationProperties integration;
+    private final TaskAttention taskAttention;
     private final TransactionTemplate tx;
 
     public TaskReactor(TaskRepository tasks, RunRepository runs, EvidenceRepository evidence,
@@ -65,8 +67,9 @@ public class TaskReactor {
                        RoutingProperties routing, WorkConventions conventions, RiskPaths riskPaths,
                        RunsProperties props, TaskEvidence taskEvidence, EvidenceAsk evidenceAsk,
                        ProjectRepository projects, IntegrationProperties integration,
-                       PlatformTransactionManager txManager) {
+                       TaskAttention taskAttention, PlatformTransactionManager txManager) {
         this.integration = integration;
+        this.taskAttention = taskAttention;
         this.taskEvidence = taskEvidence;
         this.evidenceAsk = evidenceAsk;
         this.projects = projects;
@@ -85,12 +88,15 @@ public class TaskReactor {
 
     /** Decides and does the task's next step, in one transaction holding the task's row lock. */
     public void react(UUID taskId) {
-        tx.executeWithoutResult(status -> tasks.lockForUpdate(taskId).ifPresent(task -> {
+        // What has to wait for the commit (asking a person, which may push the task's branch) comes back
+        // from the transaction and runs after it, never under the task's row lock.
+        Runnable afterCommit = tx.execute(status -> tasks.lockForUpdate(taskId).map(task -> {
             Action action = ReactorDecision.decide(snapshot(task), needsHumanAfter());
             // Waiting for evidence is said once, by the attention item; the sweep would repeat it.
             if (!(action instanceof Action.None) && !(action instanceof Action.WaitForEvidence)) log.info("task {} ({}): {}", task.id(), task.status().dbValue(), action);
-            act(task, action);
-        }));
+            return act(task, action);
+        }).orElse(null));
+        if (afterCommit != null) afterCommit.run();
     }
 
     /** Reacts to every task that may have a next step. */
@@ -170,7 +176,8 @@ public class TaskReactor {
         }
     }
 
-    private void act(Task task, Action action) {
+    /** Does {@code action}; returns what has to run once the transaction has committed, or null. */
+    private Runnable act(Task task, Action action) {
         switch (action) {
             case Action.QueueImplement a -> {
                 Optional<Run> run = queue(task, RunKind.IMPLEMENT, task.role(), feedbackInput(a.feedback()));
@@ -189,13 +196,25 @@ public class TaskReactor {
             }
             case Action.NeedsHuman a -> {
                 if (tasks.transitionStatus(task.id(), task.status(), TaskStatus.NEEDS_HUMAN)) {
-                    event(task, "needs_human", Json.mapper().createObjectNode().put("reason", a.reason()));
+                    long eventId = event(task, "needs_human", Json.mapper().createObjectNode().put("reason", a.reason()));
+                    String why = whyStuck(task, a.reason());
+                    return () -> taskAttention.stuck(task, why, eventId);
                 }
             }
             case Action.WaitForEvidence a -> evidenceAsk.ask(projects.findById(task.projectId()).orElse(null),
                     EvidenceDetector.detect(worktrees.resolve(task.id())));
             case Action.None a -> { }
         }
+        return null;
+    }
+
+    /** The reactor's reason for giving up, in the user's words. */
+    private static String whyStuck(Task task, String reason) {
+        return switch (reason) {
+            case "failures" -> "it failed " + task.failures() + " times; orange stopped retrying";
+            case "worktree_moved" -> "its branch moved under orange: someone changed the task's worktree";
+            default -> reason;
+        };
     }
 
     private Optional<Run> queue(Task task, RunKind kind, String role, JSONB input) {
@@ -224,7 +243,7 @@ public class TaskReactor {
         return JSONB.valueOf(Json.mapper().createObjectNode().put("head_sha", headSha).toString());
     }
 
-    private void event(Task task, String type, ObjectNode payload) {
-        taskEvents.append(task.id(), ACTOR, type, JSONB.valueOf(payload.toString()));
+    private long event(Task task, String type, ObjectNode payload) {
+        return taskEvents.append(task.id(), ACTOR, type, JSONB.valueOf(payload.toString()));
     }
 }

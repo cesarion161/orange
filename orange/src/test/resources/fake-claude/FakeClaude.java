@@ -128,6 +128,10 @@ public class FakeClaude {
                 callTool("request_human", "{\"question\":\"Which database should I use, Postgres or SQLite?\"}");
                 finishOk(model, session, "Waiting for an answer.");
             }
+            case "report-blocked" -> {
+                callTool("report_result", "{\"status\":\"blocked\",\"summary\":\"The mail service needs an API key nobody gave me.\"}");
+                finishOk(model, session, "Blocked.");
+            }
             case "no-outcome" -> {
                 implement(cwd, prompt, firstLine);
                 finishOk(model, session, "Done, I think.");

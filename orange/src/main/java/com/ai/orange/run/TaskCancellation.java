@@ -1,5 +1,6 @@
 package com.ai.orange.run;
 
+import com.ai.orange.attention.AttentionRepository;
 import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskRepository;
 import com.ai.orange.task.TaskStatus;
@@ -10,7 +11,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Cancels a task and everything it has in flight. The task moves to {@code cancelled} first,
+ * Cancels a task and everything it has in flight, and resolves what it asked of the user. The task moves to {@code cancelled} first,
  * under its row lock and together with its queued runs, so the reactor (which takes the same lock)
  * can never queue a fresh run in between; then a running agent is killed. Executors that pick up
  * a run of an ended task finish it {@code cancelled} without doing its work.
@@ -21,10 +22,12 @@ public class TaskCancellation {
     private final TaskRepository tasks;
     private final RunRepository runs;
     private final WorkerRunner runner;
+    private final AttentionRepository attention;
     private final TransactionTemplate tx;
 
     public TaskCancellation(TaskRepository tasks, RunRepository runs, WorkerRunner runner,
-                            PlatformTransactionManager txManager) {
+                            AttentionRepository attention, PlatformTransactionManager txManager) {
+        this.attention = attention;
         this.tasks = tasks;
         this.runs = runs;
         this.runner = runner;
@@ -40,6 +43,8 @@ public class TaskCancellation {
             if (!t.status().isTerminal()) {
                 tasks.transitionStatus(t.id(), t.status(), TaskStatus.CANCELLED);
                 runs.cancelQueued(t.id());
+                // Nothing is asked of the user about a cancelled task any more.
+                attention.resolveForTask(t.id(), "user", "cancelled");
             }
             return t;
         }));
