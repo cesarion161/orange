@@ -58,6 +58,16 @@ public class TaskEventRepository {
                 .map(TaskEventRepository::toDomain);
     }
 
+    /** The task's latest event of {@code eventType}, if it has one. */
+    public java.util.Optional<TaskEvent> findLatestOfType(UUID taskId, String eventType) {
+        return dsl.selectFrom(TASK_EVENTS)
+                .where(TASK_EVENTS.TASK_ID.eq(taskId).and(TASK_EVENTS.EVENT_TYPE.eq(eventType)))
+                .orderBy(TASK_EVENTS.ID.desc())
+                .limit(1)
+                .fetchOptional()
+                .map(TaskEventRepository::toDomain);
+    }
+
     static TaskEvent toDomain(TaskEventsRecord r) {
         return new TaskEvent(
                 r.getId(),

@@ -5,6 +5,7 @@ import com.ai.orange.session.SessionJudgement;
 import org.springframework.context.annotation.Lazy;
 import com.ai.orange.evidence.EvidenceRepository;
 import com.ai.orange.json.Json;
+import com.ai.orange.task.StuckBranches;
 import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskAttention;
 import com.ai.orange.task.TaskEventRepository;
@@ -53,11 +54,14 @@ public class PostRunSteps {
     private final SessionJudgement judgement;
     private final SessionClosing closing;
     private final TaskAttention taskAttention;
+    private final StuckBranches stuckBranches;
 
     public PostRunSteps(TaskRepository tasks, TaskEventRepository taskEvents, SchedulerPause pause,
                         WorktreeService worktrees, EvidenceRepository evidence, RunRepository runs,
-                        @Lazy SessionJudgement judgement, @Lazy SessionClosing closing, TaskAttention taskAttention) {
+                        @Lazy SessionJudgement judgement, @Lazy SessionClosing closing, TaskAttention taskAttention,
+                        StuckBranches stuckBranches) {
         this.taskAttention = taskAttention;
+        this.stuckBranches = stuckBranches;
         this.closing = closing;
         this.judgement = judgement;
         this.tasks = tasks;
@@ -178,6 +182,8 @@ public class PostRunSteps {
                     event(run, "integrated", node(run).put("head_sha", outcome.headSha())
                             .put("pushed", Boolean.TRUE.equals(outcome.pushed()))
                             .put("local_base", outcome.localBase()));
+                    // A branch pushed while the task waited for a person has done its job.
+                    tasks.findById(run.taskId()).ifPresent(stuckBranches::delete);
                 }
             }
             case "rebased" -> {

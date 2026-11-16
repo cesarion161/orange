@@ -10,6 +10,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,9 +40,11 @@ public class TaskAttention implements AttentionResolver {
     private final ProjectRepository projects;
     private final AttentionService attention;
     private final TaskService taskService;
+    private final StuckBranches branches;
 
     public TaskAttention(TaskRepository tasks, TaskEventRepository events, ProjectRepository projects,
-                         AttentionService attention, TaskService taskService) {
+                         AttentionService attention, TaskService taskService, StuckBranches branches) {
+        this.branches = branches;
         this.tasks = tasks;
         this.events = events;
         this.projects = projects;
@@ -59,13 +62,17 @@ public class TaskAttention implements AttentionResolver {
      * stuck event ({@code eventId}), so a task stuck again after a reopen files a new one. Never throws:
      * the task is already stuck, and the inbox is how the user learns it.
      *
+     * <p>First the task's branch is pushed to GitHub ({@link StuckBranches#push}), so the item can name
+     * it; a push that fails only leaves the branch out.
+     *
      * @param why the run's question, or why orange gave up, in words for the user
      */
     public void stuck(Task task, String why, long eventId) {
         try {
+            Optional<String> branch = branches.push(task);
             String title = clip(task.title() + " needs you", MAX_TITLE);
             attention.raise(AttentionItem.TASK_NEEDS_HUMAN, KEY + task.id() + ":" + eventId, AttentionItem.URGENT,
-                    task.projectId(), null, task.id(), title, body(task, why, eventId), null);
+                    task.projectId(), null, task.id(), title, body(task, why, eventId, branch), null);
         } catch (RuntimeException e) {
             log.warn("task {} needs a person, but its attention item could not be filed: {}", task.id(), e.toString());
         }
@@ -85,7 +92,7 @@ public class TaskAttention implements AttentionResolver {
         }
     }
 
-    private String body(Task task, String why, long eventId) {
+    private String body(Task task, String why, long eventId, Optional<String> branch) {
         StringBuilder b = new StringBuilder();
         String project = task.projectId() == null ? "no project"
                 : projects.findById(task.projectId()).map(Project::name).orElse("no project");
@@ -99,6 +106,7 @@ public class TaskAttention implements AttentionResolver {
             b.append("Recent:\n");
             for (TaskEvent e : recent.reversed()) b.append("- ").append(eventLine(e)).append('\n');
         }
+        branch.ifPresent(name -> b.append("Branch: ").append(name).append(" on GitHub, to look at the work so far\n"));
         b.append("Answer with what the task should do and orange reopens it with your answer as its note; "
                 + "resolve it blank to leave the task waiting.");
         return b.toString();

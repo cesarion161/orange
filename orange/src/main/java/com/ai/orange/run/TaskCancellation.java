@@ -1,6 +1,7 @@
 package com.ai.orange.run;
 
 import com.ai.orange.attention.AttentionRepository;
+import com.ai.orange.task.StuckBranches;
 import com.ai.orange.task.Task;
 import com.ai.orange.task.TaskRepository;
 import com.ai.orange.task.TaskStatus;
@@ -23,11 +24,14 @@ public class TaskCancellation {
     private final RunRepository runs;
     private final WorkerRunner runner;
     private final AttentionRepository attention;
+    private final StuckBranches stuckBranches;
     private final TransactionTemplate tx;
 
     public TaskCancellation(TaskRepository tasks, RunRepository runs, WorkerRunner runner,
-                            AttentionRepository attention, PlatformTransactionManager txManager) {
+                            AttentionRepository attention, StuckBranches stuckBranches,
+                            PlatformTransactionManager txManager) {
         this.attention = attention;
+        this.stuckBranches = stuckBranches;
         this.tasks = tasks;
         this.runs = runs;
         this.runner = runner;
@@ -50,6 +54,8 @@ public class TaskCancellation {
         }));
         if (before != null && before.isPresent() && !before.get().status().isTerminal()) {
             runner.cancel(taskId);
+            // A branch pushed while the task waited for a person goes with the task.
+            stuckBranches.delete(before.get());
         }
         return before == null ? Optional.empty() : before;
     }
